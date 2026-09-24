@@ -1,0 +1,20 @@
+%% Fig. 4 — Candidate architectures compared in the proposal (A0-A3).
+flowchart TB
+  subgraph A0[A0 - No world model baseline]
+    a0u[User] --> a0l[LLM + memory] --> a0t[Streaming TTS] --> a0v[Audio-driven avatar<br/>static background]
+  end
+  subgraph A1[A1 - Open-loop direct coupling]
+    a1u[User] --> a1l[LLM, chat history as memory] -->|free-form prompt / camera JSON| a1g[LingBot-World WS]
+    a1l --> a1t[TTS + avatar close-up]
+  end
+  subgraph A2[A2 - Proposed: capability-grounded closed loop]
+    a2u[User] --> a2f[Fast responder] --> a2t[TTS + avatar]
+    a2u --> a2p[Planner] --> a2ir[Behavior IR] --> a2c[Compiler vs capability manifest] --> a2g[LingBot-World WS]
+    a2g --> a2m[Compliance monitor on displayed frames] --> a2p
+    a2mem[(Typed, scoped memory)] --> a2p
+    a2mem --> a2f
+  end
+  subgraph A3[A3 - Tightly coupled, long-term]
+    a3u[User] --> a3x[Unified model: LM + audio/behavior-conditioned<br/>world generator, trained end-to-end or adapter-tuned]
+    a3x --> a3mem[(External memory still required per H-core)]
+  end

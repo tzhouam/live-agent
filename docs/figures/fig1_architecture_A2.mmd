@@ -1,4 +1,5 @@
-%% Fig. 1 — Proposed architecture A2: capability-grounded modular controller + streaming world generator.
+%% Fig. 1 — Proposed architecture A2: capability-grounded closed-loop controller, dual-shot persona
+%% (LingBot-World world shot + external audio-driven avatar close-up).
 %% Editable Mermaid source. Render: npx -y @mermaid-js/mermaid-cli -i fig1_architecture_A2.mmd -o fig1.svg
 flowchart LR
   subgraph IN[Inputs]
@@ -19,7 +20,7 @@ flowchart LR
   end
 
   subgraph CTRL[Control layer]
-    IR[(Behavior IR<br/>time-aligned tracks:<br/>speech / camera / scene-event /<br/>character-event)]
+    IR[(Behavior IR<br/>time-aligned tracks:<br/>speech / shot / camera /<br/>scene-event / character-event)]
     MAN[[Capability manifest<br/>verified backbone controls]]
     COMP[Control compiler<br/>IR to executable controls<br/>+ reject / degrade]
     SCHED[Chunk-boundary scheduler<br/>event ids, cancellation, staleness]
@@ -28,6 +29,10 @@ flowchart LR
   subgraph GEN[vLLM-Omni server]
     WS[WS /v1/realtime/video<br/>session.start / interaction / stop]
     LB[LingBot-World 2.0 14B<br/>causal-fast, 4 DMD steps<br/>sink + rolling KV]
+  end
+
+  subgraph AV[Avatar path - external to backbone]
+    AVA[Audio-driven avatar<br/>close-up, lip-sync<br/>same persona reference]
   end
 
   subgraph VERIFY[Observation and verification]
@@ -44,7 +49,7 @@ flowchart LR
     CONS[Consolidator<br/>async, sleep-time]
   end
 
-  OUT[Muxer: fMP4 video + TTS audio<br/>A/V alignment, jitter buffer]
+  OUT[Shot switcher + muxer<br/>audio = master clock<br/>bounded look-ahead buffer]
   VIEW[Viewer / stream]
 
   U --> VAD --> TD
@@ -55,6 +60,8 @@ flowchart LR
   MEMR --> RESP
   MEMR --> PLAN
   RESP --> TTS --> OUT
+  TTS --> AVA --> OUT
+  SCHED -->|shot track| OUT
   RESP --> IR
   PLAN --> IR
   IR --> COMP
@@ -62,6 +69,7 @@ flowchart LR
   COMP --> SCHED --> WS --> LB
   LB --> WS --> OUT --> VIEW
   WS --> ACK --> SCHED
+  OUT -->|presentation timestamps| SCHED
   OUT --> MON --> SCHED
   MON --> PLAN
   TD --> EP
