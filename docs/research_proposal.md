@@ -288,11 +288,11 @@ RQ1 and RQ2 are primary; RQ3–RQ6 are secondary. We report all outcomes, includ
 
 Figure: `docs/figures/fig4_candidate_architectures.mmd`.
 
-**Shared substrate.** To avoid confounds (CP3 finding 6), A0, A1 and A2 use the *same* components:
-- LLMs;
-- ASR, TTS and avatar renderer;
-- memory service, except in E3, where memory itself is the factor;
-- **generator control substrate**:
+**Shared substrate.** To avoid confounds (CP3 finding 6):
+- **A0, A1 and A2** share the LLMs, ASR, TTS, avatar renderer and memory service. The exception is E3, where memory
+  itself is the factor.
+- **A1 and A2 only** also share the **generator control substrate**. A0 has no world generator.
+- The generator control substrate is:
   - S-cam: SE(3) camera interactions (class A);
   - S-prompt: mid-session prompts through C1 on the patched vLLM-Omni server, used only once C1 has passed its
     M1 tests.
@@ -533,7 +533,9 @@ monitor ignores the expectations of superseded items.
   1. **Server gate (C4):** the stepwise runner starts AR block $n+L+1$ only when the client acknowledges the
      **presentation start** (first displayed frame) of chunk $n$.
      - At that moment, chunk $n$ and the $L$ queued chunks $n+1..n+L$ cover $(L+1)P$ of playback.
-     - The stream therefore does not stall as long as $T + \delta \le (L+1)P$.
+     - A sustained stream needs two conditions:
+       - **Throughput:** mean $T + \delta < P$. Otherwise any finite buffer eventually empties.
+       - **Jitter tolerance:** individual $T + \delta \le (L+1)P$.
      - This needs a change in the engine or runner loop, and its feasibility is to be established in M1.
   2. **Client skip-to-latest:** drop the undisplayed backlog when an instruction arrives. It is responsive, but the
      skipped content causes a visible jump.
@@ -778,7 +780,8 @@ Judge detection delay is excluded, because the judge localizes the onset frame.
 - $Q$ **grows without bound** at $(P - T)$ per chunk: ≈0.20 s per chunk for $T = 0.549$ s at 16 fps.
 - TVC therefore increases over the session. This is the failure mode that C4 addresses.
 
-**Regime G (gated at presentation start with look-ahead $L$; stall-free if $T+\delta \le (L+1)P$).**
+**Regime G** (gated at presentation start with look-ahead $L$). It is stall-free if mean $T + \delta < P$
+(throughput) **and** every $T + \delta \le (L+1)P$ (jitter).
 - In steady state, a generation starts every $P$.
 - An event waits for the next generation start: $W \approx U(0, P)$.
 - The chunk it lands in, $n+L+1$, begins presentation $(L+1)P$ after that generation start.
@@ -799,13 +802,17 @@ Judge detection delay is excluded, because the judge localizes the onset frame.
 | **Camera TVC** | **≈1.7 s** | **≈2.4 s** | **≈3.4 s** | Column sums, **not quantiles**. Illustrative only |
 
 **M0 qualification rule.**
-- A configuration qualifies for $L$ if the **measured** $T + \delta$ stays ≤ $(L+1)P$ for ≥ 99% of chunks over
-  ≥ 3 × 40 chunks, including warm-up outliers.
+- A configuration qualifies for $L$ only if both hold over ≥ 3 × 40 chunks, including warm-up outliers:
+  - the **measured mean** $T + \delta$ is below $0.9P$ (throughput, with margin);
+  - $T + \delta \le (L+1)P$ for ≥ 99% of chunks (jitter).
 - A queue simulation driven by the measured cadence trace, with jitter and stalls, must also show a bounded backlog.
 
 **2×H200-class** ($T \approx 0.89$ s [cited]):
 - At 16 fps, $T > P = 0.75$ s, so the stream stalls.
-- At 12 fps ($P = 1.0$ s) with $L = 0$: TVC ≈ $A + U(0,1.0) + 1.0 + I$ ≈ 2.0 s median-ish. This needs $T + \delta \le 1.0$ s, which leaves little margin. With $L = 1$ it is ≈ 3.0 s.
+- At 12 fps ($P = 1.0$ s), mean $T + \delta ≈ 0.94$ s. That fails the 0.9P throughput margin, so this configuration
+  is marginal and qualifies only if measured cadence is better than reported.
+  - If it qualifies with $L = 0$: TVC ≈ $A + U(0,1.0) + 1.0 + I$ ≈ 2.0 s median-ish.
+  - With $L = 1$: ≈ 3.0 s.
 
 **1 GPU** ($T \approx 3.24$ s [cited]): no real-time world shot. Use the presenter shot plus pre-rolled world clips.
 
@@ -859,8 +866,9 @@ Each run logs:
 - Stall regime.
 - Observed prompt-interaction behavior.
 
-**Go/no-go rule.** Proceed to real-time world-shot experiments only in configurations where $T \le P$ at the chosen
-fps. Otherwise report the regime and use the fallback designs of §6.4.
+**Go/no-go rule.** Proceed to real-time world-shot experiments only in configurations that pass the §6.4
+qualification rule (throughput and jitter) at the chosen fps. Otherwise report the regime and use the fallback
+designs of §6.4.
 
 ### 7.1 E1: capability calibration (builds the manifest; RQ2)
 
@@ -931,8 +939,9 @@ Task templates are adapted from EchoChain, Full-Duplex-Bench v2 and WBench [cite
 - A2−display-alignment: context aligned to generation (RQ5).
 
 **Metrics.**
-- **Instruction-level success.** The denominator is *all* instructions, and refusals and degradations count as
-  failures.
+- **Instruction-level success.** The denominator is *all scored intents*: every instruction except intermediate
+  intents that the user superseded before their deadline. For those, the *final* intent is scored instead. Refusals
+  and degradations count as failures. The number of superseded intents is reported separately.
 - **Refusal/degradation rate.**
 - **OCR (conditional).** Among instructions that were executed, the fraction judged compliant within the deadline
   $D$ on displayed frames.
@@ -1007,9 +1016,14 @@ All are run on the memory service with a fixed LLM [cited benchmarks].
 - **Rare-event claims (CP4 finding 4).**
   - A "< 1%" leak claim needs a 95% upper bound below 1%. With zero leaks observed, that takes ≥ 300 independent
     opportunities (rule of three).
-  - We plan ≥ 360 cross-scope opportunities [target]: 20 users × 6 sessions × 3 private facts, each probed in a fresh
-    public session, with probes varied across channels. Deletion probes are planned the same way.
-  - The clustered upper bound is reported. If leaks cluster within users, the claim is reported per user.
+  - **Independence.** Opportunities from the same user are correlated, so the "< 1%" claim is made at the **user
+    level**. It uses ≥ 300 independent simulated users [target]. Each user has one private session with planted
+    facts, followed by a fresh public session. Simulated users are scripted and cheap at the memory+LLM level.
+  - This user-level claim covers the **text and speech channels**.
+  - The **generated-visual channel** needs the world generator. It is tested on a smaller subset (≈ 30 users
+    [target]). For it we report only the observed rate and a cluster-robust upper bound, and make **no** "< 1%" claim.
+  - The main 20-user × 6-session protocol still yields within-user, longitudinal leak and deletion data, reported with
+    clustered bootstrap CIs.
 
 ### 7.4 E4: long-horizon consistency and the H-core test (RQ6, H-core)
 
@@ -1049,9 +1063,12 @@ All are run on the memory service with a fixed LLM [cited benchmarks].
 - Godspeed (anthropomorphism, likeability, perceived intelligence).
 - Social presence.
 - Perceived responsiveness.
-- Task success on 5 scene-grounded and 5 talk-only tasks (RQ4).
+- **Pairwise preference** (H4a): after each pair of conditions, a forced choice ("which would you rather talk to
+  again?"), plus a strength rating.
+- Task success on 5 scene-grounded and 5 talk-only tasks.
 
-**Analysis.** Mixed models; Wilcoxon signed-rank for Likert items. We report effect sizes with CIs.
+**Analysis.** Mixed models; Wilcoxon signed-rank for Likert items. For pairwise preference: a Bradley–Terry model
+with participant random effects, plus an exact sign test for A2 vs A0+clips. We report effect sizes with CIs.
 
 **Sample size [estimate].** For H4b non-inferiority (margin 0.5 MOS, assumed SD of paired differences 0.8, one-sided
 α = 0.05, power 0.8), n ≈ 16. N = 24 therefore leaves room for drop-outs. The assumptions are re-estimated in the pilot.
@@ -1101,7 +1118,7 @@ All thresholds below are **[target]**. They are provisional until M0 and the E2 
 
 | Metric | Definition | Success criterion |
 |---|---|---|
-| Instruction-level success (primary for H1a) | All instructions in the denominator. Refusals and degradations count as failures | A2 − A1 ≥ +10 pp, with the paired CI excluding 0 |
+| Instruction-level success (primary for H1a) | Denominator = all scored intents (§7.2 outcome rules: user-superseded intermediate intents are replaced by their final intent). Refusals and degradations count as failures | A2 − A1 ≥ +10 pp, with the paired CI excluding 0 |
 | OCR (conditional) | Among executed instructions, judged compliant on displayed frames within $D$ ($D$ = 5 s camera, 8 s events) | Reported with the refusal/degradation rate. Not used alone |
 | FCR | (Completion claims contradicted by human adjudication) / (completion claims made). Always reported with claim coverage = claims / compliant instructions | A2 ≤ 5% and below A1, CI excluding 0 (H1b). Claim coverage for A2 ≥ 70% |
 | Multi-step task success | All steps compliant, in order | Reported; A2 > A1 |
@@ -1115,7 +1132,7 @@ All thresholds below are **[target]**. They are provisional until M0 and the E2 
 | Memory recall | Correct answers on planted-fact probes | Non-inferior to the best baseline (margin 5 pp) |
 | False-user-fact rate | Stored or asserted user facts not stated by the user | ≤ 2% and below baselines |
 | Post-deletion leak | Any channel reveals a deleted item | ≤ 5% (vs K-Bench-style baselines) |
-| Cross-scope leak | Private item surfaces in Mode 2, or across users | 95% upper bound < 1% over ≥ 360 opportunities; that requires 0 observed leaks (rule of three) |
+| Cross-scope leak | Private item surfaces in Mode 2, or across users | Text/speech channels: 95% upper bound < 1% at the user level over ≥ 300 independent simulated users (0 leaks observed; rule of three). Visual channel: observed rate plus a cluster-robust bound, with no threshold claim |
 | Identity consistency | Per shot: embedding similarity to the reference per 30 s window (face for the presenter; re-ID for the world shot). Thresholds are calibrated on human same/different labels. Cross-shot: human 2AFC on cut pairs | ≥ 80% of windows pass per shot; ≥ 80% cross-shot "same person" |
 | Lip-sync (presenter) | LSE-C / LSE-D (SyncNet) [cited]; A/V offset | Within ±45 ms offset; LSE comparable to the avatar model's published range |
 | Stream stability | Stalls per 10 min; seam artefacts | ≤ 1 stall / 10 min on the qualified configuration |
@@ -1251,6 +1268,5 @@ Full, verified BibTeX is in `docs/references.bib`; every arXiv entry was resolve
 
 ## 14. Review status
 
-GPT-6 Sol reviewed this proposal through Codex at all four mandatory checkpoints. The final CP4 round is recorded in
-`docs/codex_reviews.md`, together with model verification, every finding and its disposition, and any open
-disagreements.
+GPT-6 Sol reviewed this proposal through Codex at all four mandatory checkpoints, with CP4 re-run in rounds.
+`docs/codex_reviews.md` records every round, its verdict, each finding's disposition, and any open disagreements.

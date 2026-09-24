@@ -1,6 +1,6 @@
 # Live Agent — Project Specification (single source of truth)
 
-Status: **v1.0** (2026-09-25). Updated after the research phase and Codex checkpoints 1–3. v0.1 was the provisional
+Status: **v1.0** (2026-09-25). Updated after the research phase and all four Codex checkpoints (CP4 in rounds). v0.1 was the provisional
 version; see `docs/codex_reviews.md` and the git history. **Precedence:** `goal.md` (the owner's brief) sets the
 requirements. This file records our current interpretation of them and tracks
 their status. If the two disagree, raise the conflict in `docs/decision_log.md`
