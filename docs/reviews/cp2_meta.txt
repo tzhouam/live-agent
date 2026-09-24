@@ -1,0 +1,14 @@
+tag: cp2
+date_utc: 2026-09-24T17:50:02Z
+repo_head: 7cce79f97186e222524e33d70f367650d07f2fd9
+repo_dirty_files: 9
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.156.0
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/cp2_review.md - < docs/reviews/cp2_prompt.md
+exit_code: 0
+thread_id: 01a0d487-b4eb-77c1-8e8e-4a63fa5467ab
+rollout: /home/zhoutaichang/.codex/sessions/2026/09/25/rollout-2026-09-25T01-47-38-01a0d487-b4eb-77c1-8e8e-4a63fa5467ab.jsonl
+rollout_models:       5 "model":"gpt-6-sol" 
+inlined_files: docs/related_work.md docs/backbone_verification.md docs/reviews/cp2_ev_video_synthesis.md docs/reviews/cp2_ev_agents_synthesis.md docs/reviews/cp2_ev_memory_synthesis.md docs/notes/reference_agent_and_minimax_h3.md
+prompt_sha256: 3e601231b38ff05ffcc525e0611ee792e116ff54fcba929550202f5a8bdbd683

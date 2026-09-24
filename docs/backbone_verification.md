@@ -6,6 +6,29 @@
 > (2026-09-24), a read-only clone at `external/vllm-omni`. No GPU job was run, so **every latency number here is
 > upstream-reported (class B) or derived**, never measured locally.
 
+## Clarifications after Codex CP2 (2026-09-25)
+
+- **Scope of "camera-only".** This conclusion comes from reading the code, not from running it. It covers mid-session
+  `session.interaction` messages on the public stepwise WS path. Other ways to steer the camera also exist:
+  request-scoped `camera_action_script` / `action_path`, and prompt switching on the deprecated tick path (latent
+  output). The upstream benchmark sends prompt updates, which contradicts the registry, so **one real WS prompt-update
+  attempt is part of M0** before `interaction_failed` is treated as observed.
+- **Event ack ≠ visible compliance.** The `started/active/completed_event_ids` fields in chunk metadata show when a
+  control was *applied* to a chunk. They say nothing about whether the rendered content complies.
+- **The "≈0.6–1.15 s" camera figure** in §0 and §8 below is a derived *earliest chunk-delivery estimate*. It is not
+  time-to-visible-compliance, because it leaves out client playback queueing, the network and visual inertia. It also
+  assumes the upstream PR #7749 stack on 4×H200 (compiled, streaming decoder, selective FP8, KV-skip; some options
+  experimental).
+- **Reclassifications.**
+  - WS *rewind / snapshot / branch*: moved from C to "C/D, feasibility unknown". Snapshotting paged KV together with
+    the streaming-decoder and encoder state has no existing design.
+  - Class D now covers only **native** LingBot lip, face and audio conditioning. A speaking persona built from an
+    external TTS plus an audio-driven avatar is engineering (C) *outside* the backbone.
+- **Cancel vs redirect.** `session.stop` and disconnect cancel the rollout. What is missing is *redirecting* an
+  in-flight chunk while keeping the session. A new control can only take effect at the next chunk boundary.
+
+---
+
 ## Independent spot-checks (Claude, 2026-09-25)
 
 | Claim from the audit | Check | Result |
