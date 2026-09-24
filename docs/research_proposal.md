@@ -134,7 +134,8 @@ A **shot track** in the controller cuts between the two at chunk boundaries, as 
   frame. The restart has a visible seam.
 - "Walk to the lake" / "make it snow." Conditional on C1 and E1.
 
-**First demo, defined as a measured configuration.** The first demo is whatever M0 qualifies as real-time. Its
+**First demo, defined as a measured configuration.** The first demo uses a configuration that (i) passes M0
+*throughput qualification* and then (ii) passes the *stream-stability acceptance* soak test (§6.4). Its
 fallback is the presenter shot plus pre-rendered world clips; the reference agent appears to use a similar clip
 regime, but that is unverified. Live world events, sessions longer than the validated length, and restarts are
 **gated extensions**. They enter the demo only after their measurements pass.
@@ -269,7 +270,7 @@ The success thresholds are in §8. All thresholds are **[target]**.
 |---|---|---|---|
 | RQ1 | Does capability-grounded closed-loop control improve *observable* compliance over open-loop LLM control? A1 and A2 share memory, renderers and the same generator control substrate (camera, plus C1 prompts where built); only the controller differs | **H1a:** A2 has higher *instruction-level success* than A1. Refusals and degradations count as failures; conditional OCR is reported alongside. **H1b:** A2 has a lower false-completion-claim rate (FCR) than A1. **H1c:** each component (manifest, verifier) contributes: A2 > A2−verify and A2 > A2−manifest | The 95% CI of the paired difference A2−A1 in instruction-level success includes 0 or is negative. FCR does not fall. The ablations show no drop |
 | RQ2 | What determines wall-clock TVC for a chunked AR world model, and can control policy reduce it? | **H2a:** camera TVC is predicted within ±1 chunk period by the §6.4 model ($A+W+G+\delta+Q+I$, regime U or G), given measured $T$ and queue depths. **H2b:** prompt-driven events have additional visual inertia $I \ge 1$ chunk. **H2c:** bounded look-ahead (≤ 1 chunk) improves TVC deadline success and median over unpaced streaming, at a cost in stall rate that we measure | The model mispredicts the median by more than 1 chunk. Inertia is ≈ 0. Pacing improves neither deadline success nor median |
-| RQ3 | Does provenance-typed, scope-separated memory reduce false memories and leakage without hurting recall? | **H3a:** a lower false-user-fact rate than (i) full-history context and (ii) Mem0-style untyped extraction, at non-inferior recall (margin 5 pp). **H3b:** cross-scope leak rate below 1% vs baselines > 0. **H3c:** after deletion, multi-channel leak rate below 5% | The rates are not lower, or recall is inferior beyond the margin |
+| RQ3 | Does provenance-typed, scope-separated memory reduce false memories and leakage without hurting recall? | **H3a:** a lower false-user-fact rate than (i) full-history context and (ii) Mem0-style untyped extraction, at non-inferior recall (margin 5 pp). **H3b:** for the **text and speech channels**, the user-level cross-scope leak rate has a 95% upper bound below 1% (≥ 300 independent simulated users), while baselines leak (> 0). The visual channel is reported descriptively, with no threshold. **H3c:** after deletion, multi-channel leak rate below 5% | H3a: not lower, or recall inferior beyond the margin. H3b: any text/speech leak observed (the bound then exceeds 1%), or baselines do not leak either. H3c: post-deletion leak ≥ 5% |
 | RQ4 | Is a world model needed for this experience? This tests the owner's hypothesis in both directions | A0 and A2 share the same LLMs, memory service, TTS and avatar renderer; only the world shot and its controller differ. A0 cannot perform scene tasks by construction, so it is **not** compared with A2 on scene-task success. The
 comparisons are: **H4a:** in mixed sessions, users prefer A2 over **A0+clips** (A0 plus pre-rendered world clips cut
 in by the same shot track: the clip-scheduling alternative) on overall MOS and on pairwise preference. **H4b:** on
@@ -801,11 +802,22 @@ Judge detection delay is excluded, because the judge localizes the onset frame.
 | $I$ (camera) | 0.1 s | 0.1 s | 0.4 s | [estimate]; measured in E1 |
 | **Camera TVC** | **≈1.7 s** | **≈2.4 s** | **≈3.4 s** | Column sums, **not quantiles**. Illustrative only |
 
-**M0 qualification rule.**
+**Two-stage qualification.**
+
+*Stage 1 — M0 throughput qualification.* This selects *candidate* configurations.
 - A configuration qualifies for $L$ only if both hold over ≥ 3 × 40 chunks, including warm-up outliers:
   - the **measured mean** $T + \delta$ is below $0.9P$ (throughput, with margin);
   - $T + \delta \le (L+1)P$ for ≥ 99% of chunks (jitter).
 - A queue simulation driven by the measured cadence trace, with jitter and stalls, must also show a bounded backlog.
+
+A 120-chunk M0 trace cannot establish a stall rate of one per 10 minutes, because at 16 fps even 1% late chunks
+could mean about eight stalls in 10 minutes. Stage 1 therefore qualifies throughput only.
+
+*Stage 2 — stream-stability acceptance (in M1).* A candidate configuration becomes "real-time" for the demo and
+for E2/E4 only if:
+- a live **soak test** of ≥ 3 × 30 min [target] with the chosen $L$ meets the §8 stream-stability target
+  (≤ 1 stall per 10 min, with the observed rate and upper bound reported);
+- the trace-driven simulation based on the soak-test cadence agrees with that result.
 
 **2×H200-class** ($T \approx 0.89$ s [cited]):
 - At 16 fps, $T > P = 0.75$ s, so the stream stalls.
@@ -866,8 +878,8 @@ Each run logs:
 - Stall regime.
 - Observed prompt-interaction behavior.
 
-**Go/no-go rule.** Proceed to real-time world-shot experiments only in configurations that pass the §6.4
-qualification rule (throughput and jitter) at the chosen fps. Otherwise report the regime and use the fallback
+**Go/no-go rule.** Proceed to real-time world-shot experiments only in configurations that pass both stages of
+§6.4: M0 throughput qualification, then the M1 stream-stability soak test. Otherwise report the regime and use the fallback
 designs of §6.4.
 
 ### 7.1 E1: capability calibration (builds the manifest; RQ2)
@@ -1150,7 +1162,7 @@ Durations are **[estimate]**.
 | Milestone | Content | Exit criterion |
 |---|---|---|
 | **M0** (≈1 week) | Hardware and backbone characterization (§7.0); weight-use permission; environment build | Measured $T$, TTFC and regime; prompt-interaction behavior observed |
-| **M1** (≈3 weeks) | C1–C4 extensions (upstream-able where possible); avatar model bake-off (license, latency, identity); E1 calibration | Manifest v1 with CIs; judge validated (κ) |
+| **M1** (≈3 weeks) | C1–C4 extensions (upstream-able where possible); stream-stability soak test (§6.4, stage 2); avatar model bake-off (license, latency, identity); E1 calibration | Manifest v1 with CIs; judge validated (κ) |
 | **M2** (≈3 weeks) | A0, A1, A2 controllers; memory service; voice pipeline; dual-shot renderer (C5, C6) | End-to-end Mode 1 demo on a scripted task |
 | **M3** (≈3 weeks) | E2, E3, E4 | Primary RQ1/RQ2 results with CIs |
 | **M4** (≈2 weeks) | E5 pilot, E6 private livestream, write-up | Proposal claims confirmed or refuted; report |
