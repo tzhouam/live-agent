@@ -26,6 +26,7 @@ artifacts for each run are in `docs/reviews/<tag>_{instructions,prompt,review,ev
 | 4 | cp4r2 | 2026-09-24T18:12Z | 3e99d08 | gpt-6-sol | 4 resolved, 5 partial, 1 new major. Verdict: **not ready** | Addressed in e3416a1. Re-review → cp4r3 (below) |
 | 4 | cp4r3 | see `cp4r3_meta.txt` | 22c720f | gpt-6-sol | #5, #6, #7 and the substrate fix resolved. 2 major (H3b scope; M0 qualification vs stall target) + 1 minor (log wording). Verdict: **not ready** | Addressed in bacdb22. Re-review → cp4r4 (below) |
 | 4 | cp4r4 | see `cp4r4_meta.txt` | 67d8801 | gpt-6-sol | All 3 round-3 items resolved. 1 major (H3b channel operationalization) + 1 minor (table row). Verdict: **not ready** | Addressed in 55016af. Re-review → cp4r5 (below) |
+| 4 | cp4r5 | see `cp4r5_meta.txt` | df29f75 | gpt-6-sol | Round-4 items resolved. 2 minor. **Verdict: ready with minor fixes** (no blocking/major) | Both minor fixes applied in d822c32. Confirmation → cp4r6 (below) |
 
 ## Checkpoint 1 — project understanding, requirements, assumptions
 
@@ -149,3 +150,12 @@ Reviewed revision 67d8801. **Verdict: not ready.** All round-3 items were RESOLV
 |---|---|---|---|
 | 4 | H3b's "text channel" includes OCR of the displayed stream, which cannot be tested at the 300-user memory+LLM scale | **Accepted** | The statistical claim is limited to the **utterance channel** (response text + ASR of TTS audio), which can be produced at scale. On-screen OCR text and visuals are measured descriptively on ≈ 30 users |
 | 5 | The RQ4 table row spans raw line breaks | **Accepted** | Row joined onto one line |
+
+## Checkpoint 4 — round 5 (`cp4r5`)
+
+Reviewed revision df29f75. **Verdict: ready with two minor fixes; no remaining blocking or major issue.**
+
+| Item | Issue | Disposition | Resolution (d822c32) |
+|---|---|---|---|
+| 3 | The H3b falsification wording assumed exactly 300 users | **Accepted** | Falsification now depends on the exact one-sided Clopper–Pearson 95% upper bound (≥ 1%) |
+| 4 | The log lacked a round-5 entry | **Accepted** | This entry |
