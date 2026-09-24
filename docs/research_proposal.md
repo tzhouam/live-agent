@@ -2,7 +2,7 @@
 
 **Research proposal: live-agent project, Phase 1**
 
-*Draft v1.0-rc, 2026-09-25. Review status is in §14 and `docs/codex_reviews.md`.*
+*Version 1.0, 2026-09-25. Review status is in §14 and `docs/codex_reviews.md`.*
 
 **Evidence conventions.** Every quantitative statement carries one of these labels:
 - **[cited]**: from a named primary source.
