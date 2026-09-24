@@ -1,5 +1,6 @@
 %% Fig. 2 — Interaction sequence: instruction, interruption, revision, verification.
-%% Times are illustrative placeholders, not measurements. T = chunk period (12 frames).
+%% Times are illustrative placeholders, not measurements. T = chunk generation period; P = playback period (12 frames).
+%% Event ack (started_event_ids) = applied to a generated chunk, NOT visible compliance; verdicts come from the monitor on displayed frames.
 sequenceDiagram
   autonumber
   participant User
@@ -26,13 +27,14 @@ sequenceDiagram
   G-->>CC: session.interaction.queued(e17)
   Note over G: applied at next chunk boundary (0..T wait) + T generation
   G->>O: chunk k (metadata started_event_ids=[e17]) + fMP4
-  O->>V: frames of chunk k
-  V-->>CC: observed forward motion ok (pose est.)
+  O-->>CC: presentation ack (chunk k displayed at t_p) - gates generation of k+L+1 (C4)
+  O->>V: DISPLAYED frames of chunk k
+  V-->>CC: verdict e17 = complied (camera estimator, displayed frames)
   User->>ASR: "No wait, turn left instead!" (barge-in)
   ASR->>R: interrupt
   R->>O: stop TTS, ack "Turning left"
-  ASR->>CC: cancel pending events newer than current chunk
-  CC->>G: session.interaction {event_id:e18, camera target yaw -60deg, transition_chunks:1}
+  ASR->>CC: new plan_version: drop UNSENT items of older versions, SENT e17 can only be superseded
+  CC->>G: session.interaction {event_id:e18, camera target = absolute(pose_est * yaw -60deg), transition_chunks:1}
   G->>O: chunk k+1 still reflects e17 (already in flight)
   G->>O: chunk k+2 started_event_ids=[e18]
   O->>V: frames k+2

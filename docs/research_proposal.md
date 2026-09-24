@@ -110,18 +110,29 @@ The operational test is in §7.4. A system without an external layer that passes
 project, appears in two shots:
 - **Presenter shot.** A lip-synced close-up rendered by an external audio-driven avatar model from the persona
   reference image and the TTS audio.
-- **World shot.** LingBot-World renders the same persona, from the same reference image, in a scene: third-person
-  view, walking, looking around. The camera follows instructions, and scene or character events are added once the
-  prompt-interaction extension exists (§6.3).
+- **World shot.** LingBot-World renders the same persona, from the same reference image and prompt, in a scene
+  seen from a third-person view.
+  - **Committed:** viewpoint control, i.e. camera turns, moves and stops, through the verified SE(3) camera interface.
+  - **Conditional:** character locomotion ("walk toward the lake", "walk slower") and scene or character events.
+    Camera motion is not character control [local-code]. These behaviours are prompt-conditioned and depend on
+    extension C1 and on E1 calibration showing measurable success.
 
 A **shot track** in the controller cuts between the two at chunk boundaries, as a broadcast director would.
 
 **Mode 1 (primary acceptance scenario): private 1:1 session.** A user talks to the persona by voice. Typical requests:
-- "Show me the lake village again, the one from last time." This is cross-session visual memory.
-- "Walk slower, I like the calm pace." A preference that should persist.
-- "Turn left… no, the other way!" A correction and interruption.
-- "What did I tell you about my sister?" Episodic recall.
-- "Forget that." Deletion.
+- "Turn left… no, the other way!" A correction and interruption. Committed (camera).
+- "Look around slowly, I like calm views." A preference that should persist and is realised as camera speed.
+  Committed.
+- "What did I tell you about my sister?" Episodic recall. Committed.
+- "Forget that." Deletion. Committed.
+- "Show me the lake village again, the one from last time." Cross-session visual memory by restarting from a stored
+  frame. The restart has a visible seam.
+- "Walk to the lake" / "make it snow." Conditional on C1 and E1.
+
+**First demo, defined as a measured configuration.** The first demo is whatever M0 qualifies as real-time. Its
+fallback is the presenter shot plus pre-rendered world clips; the reference agent appears to use a similar clip
+regime, but that is unverified. Live world events, sessions longer than the validated length, and restarts are
+**gated extensions**. They enter the demo only after their measurements pass.
 
 **Mode 2 (second evaluation scenario): private test livestream.**
 - Chat messages come from scripted test accounts.
@@ -250,10 +261,10 @@ The success thresholds are in §8. All thresholds are **[target]**.
 
 | RQ | Question | Hypothesis | Falsified if |
 |---|---|---|---|
-| RQ1 | Does capability-grounded closed-loop control improve *observable* compliance over open-loop LLM control? | **H1a:** A2 has a higher observed compliance rate (OCR) than A1 on the task suite. **H1b:** A2 has a lower false-completion-claim rate (FCR) than A1. **H1c:** each component (manifest, verifier) contributes: A2 > A2−verify and A2 > A2−manifest | The 95% CI of the paired difference A2−A1 in OCR includes 0 or is negative. FCR does not fall. The ablations show no drop |
-| RQ2 | What determines wall-clock TVC for a chunked AR world model, and can control policy reduce it? | **H2a:** camera TVC is predicted within ±1 chunk period by $W+T+\delta+Q+I$ (§6.4) given measured $T$ and backlog $Q$. **H2b:** prompt-driven events have additional visual inertia $I \ge 1$ chunk. **H2c:** bounded look-ahead (≤ 1 chunk) reduces TVC p95 relative to unpaced streaming, at a cost in stall rate that we measure | The model mispredicts the median by more than 1 chunk. Inertia is ≈ 0. Pacing does not reduce p95 |
+| RQ1 | Does capability-grounded closed-loop control improve *observable* compliance over open-loop LLM control? A1 and A2 share memory, renderers and the same generator control substrate (camera, plus C1 prompts where built); only the controller differs | **H1a:** A2 has a higher observed compliance rate (OCR) than A1 on the task suite. **H1b:** A2 has a lower false-completion-claim rate (FCR) than A1. **H1c:** each component (manifest, verifier) contributes: A2 > A2−verify and A2 > A2−manifest | The 95% CI of the paired difference A2−A1 in OCR includes 0 or is negative. FCR does not fall. The ablations show no drop |
+| RQ2 | What determines wall-clock TVC for a chunked AR world model, and can control policy reduce it? | **H2a:** camera TVC is predicted within ±1 chunk period by the §6.4 model ($A+W+G+\delta+Q+I$, regime U or G), given measured $T$ and queue depths. **H2b:** prompt-driven events have additional visual inertia $I \ge 1$ chunk. **H2c:** bounded look-ahead (≤ 1 chunk) reduces TVC p95 relative to unpaced streaming, at a cost in stall rate that we measure | The model mispredicts the median by more than 1 chunk. Inertia is ≈ 0. Pacing does not reduce p95 |
 | RQ3 | Does provenance-typed, scope-separated memory reduce false memories and leakage without hurting recall? | **H3a:** a lower false-user-fact rate than (i) full-history context and (ii) Mem0-style untyped extraction, at non-inferior recall (margin 5 pp). **H3b:** cross-scope leak rate below 1% vs baselines > 0. **H3c:** after deletion, multi-channel leak rate below 5% | The rates are not lower, or recall is inferior beyond the margin |
-| RQ4 | Is a world model needed for this experience? This tests the owner's hypothesis in both directions | **H4a:** on scene-grounded tasks (navigation, scene events, visual recall), A2 beats A0 (no world model) on task success. **H4b:** on talk-only tasks, A0 is non-inferior to A2 on MOS | H4a: no difference. H4b rejected: A0 worse. Either outcome is informative |
+| RQ4 | Is a world model needed for this experience? This tests the owner's hypothesis in both directions | A0 and A2 share the same LLMs, memory service, TTS and avatar renderer; only the world shot and its controller differ. **H4a:** on scene-grounded tasks (viewpoint, visual recall, events where qualified), A2 beats A0 on task success. **H4b:** on talk-only tasks, A0 is non-inferior to A2 on MOS | H4a: no difference. H4b rejected: A0 worse. Either outcome is informative |
 | RQ5 | Does anchoring interaction state to *displayed* frames improve handling of corrections after interruptions? | **H5:** display-aligned context raises referent-resolution accuracy on video-referent corrections ("no, the *other* path") over generation-aligned context | No improvement (CI includes 0) |
 | RQ6 | Can the persona remain consistent across shots and over long sessions? | **H6:** persona identity similarity between the presenter and world shots, and over 30 min, stays above a threshold calibrated on the reference image (§8) | Similarity drops below the threshold in more than 20% of windows |
 
@@ -267,22 +278,43 @@ RQ1 and RQ2 are primary; RQ3–RQ6 are secondary. We report all outcomes, includ
 
 Figure: `docs/figures/fig4_candidate_architectures.mmd`.
 
+**Shared substrate.** To avoid confounds (CP3 finding 6), A0, A1 and A2 use the *same* components:
+- LLMs;
+- ASR, TTS and avatar renderer;
+- memory service, except in E3, where memory itself is the factor;
+- **generator control substrate**:
+  - S-cam: SE(3) camera interactions (class A);
+  - S-prompt: mid-session prompts through C1 on the patched vLLM-Omni server, used only once C1 has passed its
+    M1 tests.
+
+Without C1, A1 and A2 can change the prompt only by restarting the session, and both pay the same cost for it.
+
 - **A0: no world model (simple baseline).**
-  - Pipeline: LLM with memory → streaming TTS → audio-driven avatar in front of a static background.
-  - Tests whether the world model adds value at all (RQ4).
-  - Generator candidates: SoulX-FlashHead, Ditto, LivePortrait (single-GPU classes); LiveAvatar for higher quality.
-    One will be chosen in M1.
+  - Pipeline: shared LLM and memory → TTS → audio-driven avatar in front of a static background.
+  - Isolates the value of the world shot (RQ4).
+  - Avatar candidates: SoulX-FlashHead, Ditto, LivePortrait (single-GPU classes); LiveAvatar for higher quality.
+    One is chosen in M1.
 - **A1: open-loop direct coupling.**
-  - A single LLM writes free-form prompts and camera commands to LingBot-World.
-  - Memory is the chat history in context.
-  - No manifest and no verification; the same dual-shot rendering as A2.
+  - The shared LLM writes free-form camera commands (S-cam) and free-form prompts (S-prompt) straight to the generator.
+  - No IR, no manifest, no verification, no narration policy.
   - This is the "LLM connected to a video generator" baseline the brief warns against.
 - **A2: capability-grounded closed-loop modular controller (proposed).** Figure 1: `fig1_architecture_A2.mmd`.
 - **A3: tightly coupled.** Two routes:
-  - (a) fine-tune LingBot-World with audio and behavior-token conditioning (a character-centric world model);
-  - (b) adopt an end-to-end duplex audio-video model (Wan-Streamer-class).
+  - (a) fine-tune LingBot-World with audio and behavior-token conditioning. **Needs training.**
+  - (b) adopt an existing end-to-end duplex audio-video model (Wan-Streamer-class). This needs **no** training if
+    weights are released, but none were located [cited as unreleased/unverified].
 
   Under H-core, A3 still needs an external memory layer.
+
+**Feasibility alternatives for the world shot.** These are evaluated as fallbacks, not as main arms.
+
+| Alternative | What it buys | Cost / evidence |
+|---|---|---|
+| SGLang's LingBot-World 2.0 server | Mid-session prompt switching reported [cited: SGLang cookbook] | Different serving stack (8-GPU example); not the required vLLM-Omni integration. Used only if C1 fails, and justified in the decision log |
+| vLLM-Omni deprecated tick path | Prompt switching and reset exist [local-code] | Latent output only; deprecated; needs decode and transport glue |
+| Clip scheduling: pre-rendered or queued segments, reference-agent style | Robust quality, no real-time need | Large instruction latency (≈15–20 s in the one observed reference sample; single, unaligned) |
+| Avatar composited into the world shot | One unified frame | Lighting, perspective and matting artefacts; tested as an ablation |
+| A different world backbone for the world shot | May have better controls | Violates the preferred-backbone requirement unless justified. Recorded only as a contingency |
 
 ### 5.2 Comparison
 
@@ -290,19 +322,20 @@ All entries are **[estimate]** unless marked otherwise.
 
 | Criterion | A0 | A1 | A2 | A3 |
 |---|---|---|---|---|
-| Lip-sync / face quality | High (dedicated avatar) | High on presenter shot; none on world shot | Same as A1 | Unknown; (b) is low resolution: 192p–256² [cited] |
-| Scene / camera controllability | None | Camera only; prompts need E1 | Camera + calibrated events | Potentially highest; unproven |
+| Lip-sync / face quality | High (dedicated avatar) | Same avatar on presenter shot; none on world shot | Same as A1 | Unknown; (b) is low resolution: 192p–256² [cited] |
+| Scene / camera controllability | None | Camera; prompts only with C1 | Camera + calibrated events | Potentially highest; unproven |
 | Observable compliance | n/a (scene) | Unverified | Measured and repaired | Unknown |
-| Instruction-to-visual latency | Speech only | Chunk-bound; no backlog control | Chunk-bound + bounded backlog | Possibly lower (frame-wise) |
-| Memory reliability | Depends on the memory layer | Context only (weak) | Typed and scoped | Needs an external layer |
-| Engineering complexity | Low | Medium | High | Very high |
-| Compute (single user) | 1–2 GPUs | Generator 4 GPUs (if H200-class) + avatar 1 + LLM/ASR/TTS 1 | Same as A1, + monitor ≈ 1 GPU | Training cluster |
-| Training required | No | No | No (calibration only) | **Yes** |
+| Instruction-to-visual latency | Speech only | Chunk-bound; same substrate | Same substrate, plus backlog control | (b): ≈200 ms model-side claimed [cited] |
+| Memory reliability | Shared service | Shared service (in RQ1) | Shared service | Needs an external layer |
+| Engineering complexity | Low | Medium | High | (a) very high; (b) medium if weights exist |
+| Compute (single user) | 1–2 GPUs | Generator 4 GPUs (if H200-class) + avatar 1 + LLM/ASR/TTS 1 | Same as A1, + monitor ≈ 1 GPU | (a) training cluster |
+| Training required | No | No | No (calibration only) | (a) **Yes**; (b) no, if weights are released |
 | Demo feasibility (Phase 2) | High | High | Medium–high | Low |
 
-**Selection.** A2 is the proposed system. A0 and A1 are required baselines. A3 is a longer-term extension: it is
-justified only if S1 shows that affordance limits, not control, dominate compliance failures. No foundation-model
-training is required for Phase 2.
+**Selection.** A2 is the proposed system. A0 and A1 are required baselines. A3(a) is a longer-term extension: it is
+justified only if S1 shows that affordance limits, not control, dominate compliance failures. The demo needs no
+foundation-model training, provided it is limited to the committed camera/viewpoint behaviours and the visible
+host. **Reliable character behaviour may require training.** That is an open result of E1.
 
 ### 5.3 A2 components and interfaces
 
@@ -332,73 +365,121 @@ training is required for Phase 2.
 
 #### Behavior IR (intermediate representation)
 
-Each IR item is a record:
+Each IR item is a record. Fields:
 
 ```yaml
-id: ir-0193                # unique; becomes vLLM-Omni event_id when compiled
-plan_version: 12           # items from superseded plans are dropped (staleness)
+id: ir-0193                # unique; becomes the vLLM-Omni event_id when compiled
+plan_version: 12           # the planner's goal-stack version when the item was created
 track: camera              # speech | shot | camera | scene_event | character_event | memory_op
-intent: "turn_left"        # symbolic intent from a closed vocabulary + free text
-params: {yaw_deg: -60, transition_chunks: 1}
-earliest_start: t_now      # wall-clock or relative to a speech segment id
-deadline_s: 3.0            # when unobserved after this, the item counts as failed
+intent: turn               # closed vocabulary (turn, move, stop, look_at, event:<name>, say, cut_to)
+params: {...}              # track-specific; camera contract below
+t_start: {anchor: next_boundary}   # or {anchor: speech_segment, id: seg-77, offset_s: 0.0}
+deadline_s: 5.0            # measured from receipt of the instruction; after it, the item counts as not complied
 priority: user_explicit    # user_explicit > plan_step > idle_behavior
-supersedes: [ir-0191]      # latest-wins semantics for the same track
-expect:                    # observable predicate for the monitor
-  kind: camera_yaw_change
-  sign: negative
-  min_magnitude_deg: 20
+expect: {...}              # observable predicate for the monitor (below)
 fallback: [verbal_ack_failure]
 provenance: {source_utterance: utt-551, speaker: user}
 ```
 
-**Speech.** Speech items carry TTS segment ids. A *narration policy* separates two kinds of statement:
-- *Intentions* ("turning left") may be spoken immediately.
-- *Completions* ("we're at the lake") may be spoken only after the monitor confirms them.
+**Camera contract.** This follows the code and API doc: `SE3DeltaCameraHandler`, and
+`docs/serving/streaming_video_output_api.md` [local-code, documented].
+- **Frame.** LingBot/Unity camera frame: +X right, +Y up, +Z forward.
+  - `target` poses are **absolute, relative to the session-start origin**. The handler interpolates from the current
+    pose to that pose [local-code: `interaction/modality_handlers/camera.py:44,107,341-352`].
+  - `velocity` is a per-frame SE(3) delta.
+- **Units.** Translation in the model's native pose units, *not* metres; the key script moves 0.05 per latent
+  frame [local-code: `actions.py:275-339`]. Rotation as a unit quaternion `[qx,qy,qz,qw]`.
+- **`velocity` mode.** Held *until replaced* [local-code]. The API has no duration field, so a finite motion is
+  compiled as two events: a velocity event, then a zero-velocity "stop" event aimed at the boundary after the intended
+  number of chunks.
+- **`target` mode.** Interpolated over `transition_chunks`. It snaps to the target and clears when the transition ends.
+- **IR semantics are relative; the wire format is absolute.** The IR's `turn {yaw_deg: -60}` means "relative to the
+  pose at application time". The compiler keeps a **pose estimate** $\hat{x}$, integrated from the session origin and
+  every acknowledged event, and emits the absolute target $\hat{x}\cdot R_y(-60°)$ with
+  `transition_chunks = ceil(|yaw| / yaw_rate_per_chunk)`. `yaw_rate_per_chunk` comes from the manifest (E1).
+  $\hat{x}$ may drift from the handler's internal pose. The handler's committed pose is not echoed in the chunk
+  metadata, so exposing it is added to extension C3.
 
-This rule targets false completion claims (FCR, H1b).
+**Supersession.** An event already sent cannot be withdrawn from the server queue; the API has no removal. A
+newer event on the same track is sent instead. For `velocity`, the newest event holds from its application frame
+onward. Events that arrive within the same chunk map to latent frames by arrival time [local-code: `types.py:108-129`,
+per the audit]. For `target`, a new target replaces the interpolation from the current pose.
+
+**Golden example: correction and stop.** Ids are illustrative. The current pose is taken to be the identity
+(session origin), so absolute and relative targets coincide here.
+
+| t (s) | Event | IR | WS message(s) |
+|---|---|---|---|
+| 0.00 | User: "look left" | `ir-1 turn yaw −60°, deadline 5 s` | `{"type":"session.interaction","interaction":{"event_id":"ir-1","event":{"multi_modal_data":{"camera":{"mode":"target","data":{"translation":[0,0,0],"rotation":[0,-0.5,0,0.866]}}}},"transition_chunks":2}}` |
+| 0.9 | Chunk k metadata `started_event_ids:["ir-1"]` | ir-1 applied; **not yet complied** | – |
+| 1.4 | User: "no, the other way!" (barge-in) | plan_version 13; `ir-2 turn to yaw +60°` (absolute), supersedes ir-1 | same shape, rotation `[0,0.5,0,0.866]`, `transition_chunks:3`. The handler interpolates from wherever ir-1 left the pose |
+| 2.1 | Chunk k+1 still shows the ir-1 motion (in flight) | monitor: ir-1 superseded, its expectation dropped | – |
+| 2.9 | Chunk k+2 `started_event_ids:["ir-2"]`; monitor sees positive yaw on displayed frames | ir-2 complied at TVC measured from t=1.4 | – |
+| 3.5 | User: "stop" | `ir-3 stop` | `{"camera":{"mode":"velocity","data":{"translation":[0,0,0],"rotation":[0,0,0,1]}}}` |
+
+**Cancellation rule.** This single rule replaces the earlier inconsistent wording in Figure 2.
+- On a new `plan_version`, *unsent* items of older versions are dropped.
+- *Sent* items can only be superseded by newer events.
+- Their expectations are removed from the monitor.
 
 #### Capability manifest
 
 For every control $c$ the backbone might execute, the manifest records the following. Examples of controls:
-- camera velocity / target;
-- scene prompt "it starts to snow";
-- character prompt "the host waves".
+- camera turn / move / stop;
+- scene prompt "it starts to snow" (C1 only);
+- character prompt "the host waves" (C1 only).
 
 | Field | Meaning | Source |
 |---|---|---|
-| `status` | A / B / C / D (§6) | backbone_verification.md |
+| `status` | documented / code-read / executed-M0 / calibrated-E1, plus class A–D | backbone_verification.md, M0, E1 |
 | `interface` | exact WS payload template | local-code |
-| `p_success` (+CI) | fraction judged compliant within D | calibration experiment E1 |
-| `tvc_p50/p95` | time to visible compliance | E1 |
+| `p_success` (+CI) | fraction judged compliant within the deadline | E1 |
+| `tvc_quantiles` | time to visible compliance, restricted mean, censoring rate | E1 |
 | `side_effects` | identity drift, scene reset, artefacts | E1 |
 | `preconditions` | e.g. world shot active, persona visible | design |
 
 **Compiler rules:**
-- (i) reject an item if `status` ∉ {A, C-implemented};
-- (ii) if `p_success` < θ, pick a cheaper equivalent or a verbal alternative;
-- (iii) if the predicted TVC exceeds the item's deadline, tell the user it will take a moment, or degrade;
+- (i) reject any item whose `status` is below `executed-M0`;
+- (ii) if `p_success` < θ, pick an equivalent with higher success, or a verbal alternative;
+- (iii) if the predicted deadline-success probability is too low, tell the user it will take a moment, or degrade;
 - (iv) map timing onto the next chunk boundary;
-- (v) emit WS `session.interaction` messages with `event_id = IR id`.
+- (v) emit WS messages with `event_id = IR id`.
+
+Every rejection or degradation is logged. It counts **against** instruction-level success (§8).
 
 #### Compliance monitor
 
-The monitor runs on **displayed** frames, identified by client presentation timestamps.
+**Inputs.** The monitor runs only on **displayed** frames, identified by client presentation timestamps (C4).
 
-**Camera items.** Relative camera motion is estimated between frames with a lightweight geometric estimator (sparse
-flow → essential matrix) and compared with the commanded SE(3). Accuracy is validated offline against RotErr/TransErr
-[cited: he2024cameractrl].
+**Camera items.**
+- Rotation is estimated between displayed frames from robust homography/essential-matrix fits on sparse features.
+- Only the *direction* of translation is estimated. Monocular geometry does not recover scale.
+- The monitor **abstains** (`unknown`) when inlier ratio or texture is too low, or when independently moving content
+  dominates.
+- The error rate is measured offline against RotErr/TransErr-style references [cited: he2024cameractrl] and against
+  human labels.
 
-**Scene and character items.** A VLM judge answers a yes/no question on sampled frames of the chunks that follow.
-Candidates: StreamingVLM, or a Qwen-VL-class model. Its cost is bounded by StreamingVLM's reported ≈8 FPS on
-1×H100 [cited].
+**Scene and character items (C1 only).**
+- A VLM judge, from the StreamingVLM or Qwen-VL class, answers a yes/no question about K = 4 frames sampled uniformly
+  from each displayed chunk after the item was applied.
+- It may abstain.
+- The *verdict latency* (frames presented → verdict) is measured. Throughput figures such as StreamingVLM's ≈8 FPS
+  on 1×H100 [cited] do not bound verdict latency.
 
-**Identity.** Embedding similarity to the persona reference is computed per shot.
+**Identity.** Embedding similarity to the persona reference, per shot.
 
-**Verdicts.** Each item gets `complied`, `not_complied` or `unknown`, with a confidence. Verdicts update the planner
-and, over time, the manifest (online calibration, with separate held-out evaluation).
+**Verdicts and repair.**
+- Each item gets `complied`, `not_complied` or `unknown` within a *verdict deadline*: the item deadline minus the
+  predicted repair TVC.
+- An item is *repair-eligible* only if its verdict arrives before that point. We report the fraction of failures that
+  were repairable in time.
+- Verdicts feed the planner. The manifest is re-estimated only from calibration data, never from evaluation runs.
 
-**Judge validation.** The judges themselves are validated against blinded human labels (§8).
+**Narration policy.**
+- *Intentions* ("turning left") may be spoken immediately.
+- *Completions* ("we're at the lake") may be spoken only after a `complied` verdict.
+
+This targets FCR (H1b).
 
 ### 5.4 Critical path vs asynchronous work
 
@@ -429,30 +510,46 @@ and, over time, the manifest (online calibration, with separate held-out evaluat
 **Stale plans.** Every IR item carries `plan_version`. The scheduler drops superseded items at compile time. The
 monitor ignores the expectations of superseded items.
 
-**Backlog and buffering (engineering E2).**
-- The WS server does not pace generation [local-code].
-- If generation period $T$ < playback period $P = 12/\text{fps}$, the client backlog grows by $P-T$ per chunk.
-- Policy options:
-  - *bounded look-ahead*: the client acknowledges presentation; the controller keeps at most $L$ undisplayed chunks by
-    delaying `session.ping` progress, or, if needed, by a server-side gate (E1);
-  - playback-rate matching.
-- If $T > P$, the stream stalls. Mitigations: lower playback fps (for example 12 fps gives $P = 1.0$ s), a shot cut
-  to the presenter, or more GPUs.
-- M0 measures which regime applies on local hardware.
+**Backlog and buffering (engineering E2, C4).**
+- The WS server sends every chunk as soon as it is produced; there is no playback timer
+  [local-code: `serving_video_output_stream.py:148-155`].
+- `session.ping` only refreshes the stall clock (`:17,79-88,311`). It is **not** a flow-control mechanism.
+- If generation period $T$ < playback period $P = 12/\text{fps}$, the client backlog grows by $P - T$ per chunk.
+  With $T = 0.549$ s [cited upstream] and 16 fps ($P = 0.75$ s) that is ≈0.20 s per chunk [derived], so a bounded
+  backlog **requires** an effective gate.
+- Whether WebSocket/TCP backpressure from a slow reader pauses the engine is **unverified**. It is an M0 check that
+  compares generated, received, decoded and presented queue depths.
+- Candidate mechanisms, in order of preference:
+  1. **Server gate (C4):** the stepwise runner waits before starting AR block $n+L+1$ until the client acknowledges
+     presentation of chunk $n$. This needs a change in the engine or runner loop, and its feasibility is to be
+     established in M1.
+  2. **Client skip-to-latest:** drop the undisplayed backlog when an instruction arrives. It is responsive, but the
+     skipped content causes a visible jump.
+  3. **Playback-rate adaptation:** a slight speed-up (≤ 1.1×) to drain the backlog.
+- If $T > P$, the stream stalls. Mitigations: lower fps (12 fps gives $P = 1.0$ s), a cut to the presenter shot, or
+  more GPUs. M0 determines the regime.
 
 **Display-aligned state (RQ5).**
 - The context seen by the responder and planner records which chunks were *presented* (from client timestamps),
   not which were generated.
 - Corrections such as "no, the other one" are resolved against displayed content.
 
-**Audio/video synchronization.**
+**Audio/video synchronization: a shared presentation timeline.**
+- One client-side clock timestamps every presented TTS audio packet, avatar frame, world chunk and shot cut. All
+  latency metrics are computed from this timeline.
 - Audio is the master clock.
-- Presenter shot: the avatar is driven by the TTS audio. Audio playback is delayed by the avatar pipeline latency to
-  meet lip-sync tolerance. EBU R37 gives +40/−60 ms end-to-end, and ITU-R BT.1359 gives detectability at
-  +45/−125 ms [cited].
-- World shot: there are no lips to sync. Speech about an action is aligned with the chunk whose metadata shows the
-  event started. Completion statements wait for the monitor (the narration policy).
-- Shot cuts happen at chunk boundaries of the world stream.
+- **Presenter shot.** The avatar is driven by the TTS audio. Audio playback is delayed by the avatar pipeline latency
+  $d_\text{av}$, so lip-sync stays within tolerance: EBU R37 gives +40/−60 ms end-to-end, and ITU-R BT.1359 gives
+  detectability at +45/−125 ms [cited].
+  - $d_\text{av}$ is **on the critical path** for first speech.
+  - Mitigation: start each response on the currently displayed shot. If the world shot is on screen, audio can start
+    without waiting for $d_\text{av}$, and the cut to the presenter happens once avatar frames are ready.
+- **World shot.** There are no lips to sync.
+  - An event ack shows only that a chunk was *generated* with the event. Narration about an action is aligned to the
+    *presentation* time of that chunk, not to the ack.
+  - Completion statements wait for a monitor verdict (the narration policy).
+- **Cuts** happen at world-chunk presentation boundaries. The world stream keeps generating during presenter shots,
+  so the generator's cost is paid continuously.
 
 ### 5.6 Long-term memory design
 
@@ -469,45 +566,100 @@ Figure 3: `docs/figures/fig3_memory_lifecycle.mmd`.
 | Model inference caches | LingBot paged KV (sink + window), text K/V, LLM KV cache | one generator/LLM session | automatic | automatic | **any** long-term memory |
 
 **Write policy.**
-- Only user-speaker turns feed fact extraction.
-- The persona's own utterances and rendered events go to a **generated-event log** with `speaker=persona`. They are
-  *never* promoted to user facts.
+
+*Claim typing.* Fact extraction reads only user-speaker turns, and it first classifies the **claim type** of each
+statement:
+- the user's own assertion ("my sister lives in Paris");
+- a quotation of, or claim about, what the persona said ("you told me my sister lives in Paris");
+- a question;
+- a hypothetical or joke.
+
+Only own assertions become candidate facts directly.
+
+*Echo lineage.* Every candidate fact is compared, semantically, with the **generated-event log**, which holds
+everything the persona said or showed.
+- If the candidate matches earlier persona output, it is tagged `echo`. The user may be repeating a persona
+  invention, so an echo needs explicit confirmation ("Just to check — is that something you're telling me about
+  yourself?") before promotion.
+- When the persona paraphrases a genuine user fact, the paraphrase is stored in the generated-event log with
+  `derived_from` → the user's original. A later echo of it therefore resolves to the original and is not a new fact.
+
+*Other sources.*
+- The persona's own utterances and rendered events go only to the generated-event log (`speaker=persona`). They are
+  never promoted to user facts.
 - Agent inferences ("the user seems to like jazz") become *candidate beliefs*. They are used only as hedged
   suggestions until the user confirms them.
-- Viewer chat in Mode 2 is written only to the public scope. It is rate-limited and sanitized, and tagged
-  `viewer-claimed`.
+- Viewer chat in Mode 2 is written only to the public scope. It is rate-limited, sanitized and tagged `viewer-claimed`.
+
+*Probes.* Both failure cases, a user repeating a persona invention and a persona paraphrasing a user fact, are
+explicit probes in E3.
+
+**Scope tags on derived artifacts.** Every artifact carries `source_scopes`, the union of the scopes of everything it
+was derived from. This covers:
+- summaries;
+- persona utterances;
+- visual-state frames;
+- reference images;
+- cached prompts.
+
+Rules:
+- A Mode 2 process may load only artifacts whose `source_scopes` ⊆ {public, canon}.
+- The persona's utterances in a private session are **private-scoped**, so the "persona's public history" contains
+  only what it said in public.
+- A world frame captured in a private session is private. **A public world session may start only from a canon or
+  public-derived frame.**
+
+E3 includes a test that starts a fresh public session immediately after a private one.
 
 **Retrieval.**
-1. Filter by scope first, before any relevance scoring:
-   - Mode 1 may read private:user, canon and the persona's own public history;
-   - Mode 2 may read public:stream and canon, and never private.
+1. Filter on `source_scopes` first, before any relevance scoring:
+   - Mode 1 reads private:user ∪ public ∪ canon;
+   - Mode 2 reads public ∪ canon.
 2. Rank by relevance, recency and importance [cited: park2023generativeagents].
-3. Every injected memory carries its provenance tag, so the LLM can hedge.
+3. Every injected memory carries its provenance and claim-type tags, so the LLM can hedge.
+4. A session-start profile preload keeps the critical path at ≈ 0 ms. Deeper retrieval runs asynchronously with a
+   timeout.
 
 **Consolidation.** Runs asynchronously at "sleep time": session end, idle periods [cited: fang2025lightmem]. It
 summarizes episodes, merges duplicates, and records `derived_from` links.
 
-**Correction.** User-asserted facts use a bi-temporal update [cited: rasmussen2025zep]. The old value gets
-`valid_to=now` and is kept for audit. An agent-inferred belief never overrides a user-asserted fact.
+**Correction.**
+- User-asserted facts use a bi-temporal update [cited: rasmussen2025zep]: the old value gets `valid_to=now` and is kept
+  for audit.
+- The correction also **invalidates every artifact derived from the old value**, followed through `derived_from`:
+  summaries are regenerated; visual references and cached prompts are flushed.
+- An agent-inferred belief never overrides a user-asserted fact.
 
-**Deletion.** An erasure request triggers a **cascade** along `derived_from` links:
-- delete the fact and its episodic mentions;
-- regenerate affected summaries;
-- purge visual-state records that depict the item;
-- flush cached prompts and LLM KV.
-
-Each cascade is logged in a deletion ledger that records only the fact that a deletion happened, not its content.
-This addresses the finding that "deletion ≠ forgetting" [cited: yao2026executionunlearning, yu2026kbench].
+**Deletion (erasure) semantics.**
+- The episodic log is *append-only for normal operation*. Erasure is the one exception, and it **physically deletes**
+  records. There is no soft delete for erasure.
+- The erasure cascade covers:
+  - (i) the fact and every episodic record that mentions it, plus their embeddings and index entries;
+  - (ii) derived summaries, which are regenerated without the fact;
+  - (iii) visual-state frames and reference images that depict it;
+  - (iv) cached prompts and LLM KV, flushed by restarting the LLM session;
+  - (v) in-flight IR items and queued prompts that reference it, which are cancelled;
+  - (vi) private recordings of rendered media.
+- A **tombstone ledger** keeps only (hashed id, timestamp, reason code), without the content, so that the deletion can
+  be audited.
+- Backups follow a bounded-retention policy (for example ≤ 7 days [target]), and erasure is re-applied on restore.
+- Media already broadcast in Mode 2 cannot be recalled. This limitation is stated to users.
+- **Verification:** after the cascade, a cache flush and a session restart, we query every store and probe every
+  output channel (§7.3).
 
 **Conflict resolution.** The order is: user-asserted (latest valid) > system-observed > agent-inferred >
-viewer-claimed. Conflicts between user-asserted facts are raised to the user for confirmation.
+viewer-claimed. `echo` facts do not count as user-asserted until confirmed. Conflicts between user-asserted facts are
+raised to the user for confirmation.
 
 **Provenance.** Every record keeps its source utterance or frame id, speaker, session, timestamp and extraction
 model version.
 
 **Public/private separation.** There are three physically separate stores: private per user, public per stream,
-and canon. Mode 2 processes have no read credentials for private stores. Leak probes (§7.3) test this across speech,
-on-screen text and generated visuals.
+and canon.
+- Mode 2 processes have no read credentials for private stores.
+- `source_scopes` rules apply to every derived artifact, including media.
+- Leak probes (§7.3) test the separation across speech, on-screen text and generated visuals, including a fresh
+  public session started right after a private one.
 
 ### 5.7 Interaction sequence
 
@@ -526,6 +678,18 @@ Classes:
 - **D**: needs training or research.
 
 ### 6.1 What the backbone provides (A)
+
+Evidence status is kept distinct for every item: **documented** (API/recipe docs), **code-read** (inspected source)
+or **executed** (none yet). M0 includes a minimal **WS contract test** that exercises each item below once:
+- `session.start` with `image_reference`;
+- camera `target` and `velocity`;
+- `transition_chunks`;
+- the event-ack fields;
+- `session.stop`;
+- a `num_frames` that is not of the form 9+12k, which should be rejected;
+- a prompt interaction, expected to fail.
+
+Items then move to **executed**.
 
 **Model and hardware.**
 - Model: `robbyant/lingbot-world-v2-14b-causal-fast-diffusers`, pipeline `LingBotWorldCausalDMDPipeline`.
@@ -562,50 +726,68 @@ applied at the next chunk boundary. The camera handler is `SE3DeltaCameraHandler
 
 ### 6.3 Engineering extensions needed (C)
 
-| ID | Extension | Why | Size [estimate] |
+| ID | Extension | Why | Size [estimate] / what makes it hard |
 |---|---|---|---|
-| C1 | Register `PromptInteractionHandler` for LingBot. Invalidate and rebuild text K/V when the prompt changes on the stepwise path (`_ar_text_caches(..., invalidate=True)`) | Scene and character events | small–medium; upstream-able |
-| C2 | WS `session.reset` / `session.extend` (increase `total_chunks`) | Open-ended sessions; persona restart | medium |
-| C3 | Server-side monotonic timestamps in chunk metadata | TVC decomposition | small |
-| C4 | Client presentation-ack protocol and bounded look-ahead (server gate if needed) | Backlog control, display alignment | medium |
-| C5 | Restart from a stored frame (`image_reference` = last displayed frame) with seam handling | Cross-session visual continuity | small (client-side) |
-| C6 | External avatar path, shot switcher, audio master clock | Visible speaking persona | medium |
+| C1 | Mid-session prompt on the stepwise path. (i) Register a prompt handler for LingBot. (ii) At the chunk boundary, encode the new prompt (UMT5, with an LRU cache) and store it in session state. (iii) Rebuild the cross-attention text K/V on every SP/TP rank; with Ulysses, text K/V is head-sharded. (iv) Define the transition: hard switch at the boundary, or a LongLive-style KV re-cache [cited: yang2025longlive]. The stepwise path currently calls `_ar_text_caches(..., invalidate=False)` (`pipeline.py:1935,2053-2056`). The tick path shows that invalidation works *there* (`pipeline.py:1437-1463`, per the audit); that it is safe for stepwise is **unverified** | Scene and character events | medium. Tests: the visual change is judged by a VLM; camera interaction is unaffected; parity on ranks 1/2/4 |
+| C2 | WS `session.reset` / `session.extend`. Session length is fixed by `num_frames` at start, and state (sink KV, decoder) is sized then | Open-ended sessions | medium–large. Until it exists, sessions are started long enough, and rotated |
+| C3 | Server-side monotonic timestamps and the handler's committed camera pose in chunk metadata | TVC decomposition; compiler pose tracking | small |
+| C4 | Client presentation acks plus a server generation gate (bounded look-ahead $L$) | Backlog control, display alignment | medium–large. It changes the runner loop; feasibility is established in M1 |
+| C5 | Restart from a stored frame (`image_reference` = last displayed frame). The KV and decoder state are **not** preserved | Cross-session visual continuity | small to build. **There will be a visible seam**, which is measured and not hidden |
+| C6 | External avatar path, shot switcher, shared presentation timeline | Visible speaking persona | medium |
 
 ### 6.4 Latency model
 
-This model is **[derived]**. Numerical values are **[target]** or upstream-conditional.
+This model is **[derived]**. Numbers are **illustrative, not predictions**. M0 measures the joint timestamp
+distribution, and a simulation from those measurements replaces this table.
 
-For one camera instruction arriving at wall-clock $t_0$:
+For a camera instruction whose end-of-utterance is at $t_0$:
 
-$$\text{TVC} = \underbrace{A}_{\text{ASR+plan+compile}} + \underbrace{W}_{\sim U(0,T)} + \underbrace{T}_{\text{gen}} + \underbrace{\delta}_{\text{mux+net}} + \underbrace{Q}_{\text{playback backlog}} + \underbrace{I}_{\text{visual inertia}}$$
+$$\text{TVC} = A + W + G + \delta + Q + I$$
 
-We do not add the judge detection delay: it is removed through the judge's localization of the onset frame.
+| Term | Meaning |
+|---|---|
+| $A$ | ASR endpoint + IR emission + compile/send |
+| $W$ | wait until the next generation start that can include the event |
+| $G$ | generation time of that chunk |
+| $\delta$ | mux + network |
+| $Q$ | time the chunk waits at the client behind already-generated, undisplayed chunks |
+| $I$ | visual inertia: presented frames until the effect becomes judgeable |
 
-**Illustrative budget.** This assumes the upstream PR #7749 figure $T=0.549$ s is reproduced locally, 16 fps playback
-($P=0.75$ s) and look-ahead $L\le1$:
+Judge detection delay is excluded, because the judge localizes the onset frame.
 
-| Term | p50 | p95 | Basis |
+**Regime U (unpaced, $T < P$).**
+- $W \sim U(0, T)$ and $G = T$.
+- $Q$ **grows without bound** at $(P - T)$ per chunk: ≈0.20 s per chunk for $T = 0.549$ s at 16 fps.
+- TVC therefore increases over the session. This is the failure mode that C4 addresses.
+
+**Regime G (gated with look-ahead $L$, $T + \delta \le P$).**
+- Generation of chunk $n+L+1$ starts when chunk $n$ is presented.
+- An event waits for the next generation start: $W \approx U(0, P)$.
+- The chunk it lands in is presented about $L \cdot P$ after generation starts (the generation time is hidden behind
+  playback when $T + \delta \le P$).
+- So TVC ≈ $A + U(0, P) + L \cdot P + I$.
+
+**Illustrative values in regime G** (4-GPU, upstream-reproduced $T = 0.549$ s, 16 fps, $L = 1$):
+
+| Term | Median-ish | Upper-ish | Basis |
 |---|---|---|---|
-| A (endpoint + responder IR emit + compile) | 0.45 s | 0.8 s | [target]; endpointing 200–300 ms [cited: pipecat2026primer] |
-| W | 0.27 s | 0.52 s | uniform over $T$ [derived] |
-| T | 0.55 s | 0.60 s | [cited upstream; unmeasured locally] |
-| δ | 0.1 s | 0.15 s | mux ≈ 45 ms [cited PR #7648] + LAN [estimate] |
-| Q | 0.375 s | 0.75 s | half to one chunk backlog under $L\le1$ [derived] |
-| I (camera) | 0.1 s | 0.4 s | [estimate]; measured in M0/E1 |
-| **Camera TVC** | **≈1.8 s** | **≈3.2 s** | **[derived]**. Sums of p95 overstate the true p95. Illustrative only |
+| $A$ | 0.45 s | 0.8 s | [target]; endpointing 200–300 ms [cited: pipecat2026primer] |
+| $W$ | 0.375 s | 0.71 s | $U(0, 0.75)$ [derived] |
+| $L \cdot P$ | 0.75 s | 0.75 s | [derived] |
+| $I$ (camera) | 0.1 s | 0.4 s | [estimate]; measured in E1 |
+| **Camera TVC** | **≈1.7 s** | **≈2.7 s** | Column sums, **not quantiles**. Illustrative only |
 
-**Speech path (first audible response).**
-- Endpoint 250 ms + responder TTFT 300 ms + TTS first packet 150 ms + network 50 ms ≈ **0.75 s p50 [target]**.
-- p95 ≤ 1.5 s [target], following the 1.5 s cascade target of the Pipecat primer [vendor].
-- Presenter-shot lip-sync adds the avatar latency, which must be ≤ 300 ms [target] or be hidden by delaying audio.
+**2×H200-class** ($T \approx 0.89$ s [cited]):
+- At 16 fps, $T > P = 0.75$ s, so the stream stalls.
+- At 12 fps ($P = 1.0$ s): TVC ≈ $A + U(0, 1.0) + 1.0 + I$, i.e. ≈2.0 s median-ish, with the same caveats.
 
-**Regimes.**
-- **1 GPU:** $T \approx 3.24$ s > $P$ [cited]. Streaming stalls; the world shot cannot run in real time. Use a presenter
-  shot with pre-rolled world clips, or wait for more GPUs.
-- **2×H200-class:** $T \approx 0.89$ s > $P = 0.75$ s at 16 fps, but < $P = 1.0$ s at 12 fps. Real time is possible
-  at 12 fps.
+**1 GPU** ($T \approx 3.24$ s [cited]): no real-time world shot. Use the presenter shot plus pre-rolled world clips.
 
-These regimes are why M0 gates the targets.
+**Speech path (first audible response), from the shared timeline.**
+- **Starting on the world shot:** endpoint 250 ms + responder TTFT 300 ms + TTS first packet 150 ms + network 50 ms
+  ≈ **0.75 s** [target].
+- **Starting on the presenter shot:** add $d_\text{av}$. With $d_\text{av} = 0.3$ s [target], that is ≈ **1.05 s**.
+- Both are reported separately.
 
 ### 6.5 Capabilities that need new training or research (D)
 
@@ -641,9 +823,10 @@ Each run logs:
 - Under `gpu run --gpus {1,2,4} --timeout 2h --note "live-agent M0"`, serve the stepwise deploy config and run
   `benchmarks/lingbot_world/benchmark_lingbot_world_realtime.py`: 3 warm sessions × 40 chunks per configuration.
 - Record `torch.cuda.get_device_capability()` and the attention backend.
-- Send one WS `session.interaction` with `event.prompt` to settle the contradiction between the registry and the
-  benchmark code.
-- Measure the growth of the client backlog without pacing.
+- Run the WS contract test (§6.1). It includes one `session.interaction` with `event.prompt`, which settles the
+  contradiction between the registry and the benchmark code.
+- Measure generated, received, decoded and presented queue depths without pacing. Check whether transport
+  backpressure pauses the engine.
 
 **Outputs.**
 - Cadence $T$ and TTFC, as p50/p95 with bootstrap CIs.
@@ -695,7 +878,11 @@ Task templates are adapted from EchoChain, Full-Duplex-Bench v2 and WBench [cite
 - A2−display-alignment: context aligned to generation (RQ5).
 
 **Metrics.**
-- OCR: fraction of instructions judged compliant within the deadline $D$ on displayed frames.
+- **Instruction-level success.** The denominator is *all* instructions, and refusals and degradations count as
+  failures.
+- **Refusal/degradation rate.**
+- **OCR (conditional).** Among instructions that were executed, the fraction judged compliant within the deadline
+  $D$ on displayed frames.
 - Task success for multi-step tasks: all steps compliant, in order.
 - FCR: the persona claimed completion, but the judge says not complied.
 - TVC p50/p95, including censored cases.
@@ -723,6 +910,10 @@ All are run on the memory service with a fixed LLM [cited benchmarks].
 **(b) Live-persona memory protocol (new).**
 - 20 simulated users × 6 sessions each, with scripted life facts, preferences, corrections and erasure requests.
 - Persona-generated distractors: for example, the persona says "I love snow", which must not become a user fact.
+- **Echo probes:**
+  - the user repeats a persona invention as if it were about themselves;
+  - the persona paraphrases a real user fact, and the user later refers back to it.
+- **Fresh-public-session probe:** a Mode 2 session starts immediately after a private session.
 - Mode 2 sessions with 10 scripted viewers. 3 of them attempt MINJA-style poisoning and private-fact elicitation.
 - **Probes** after each session:
   - recall questions;
@@ -814,6 +1005,8 @@ are **not controlled**.
 ### 7.8 Uncertainty reporting (all experiments)
 
 - Every metric is reported with a 95% CI: bootstrap, clustered by task, user or session.
+- Compliance is always reported next to coverage: instruction-level success, refusal/degradation rate and conditional
+  OCR. This way, declining hard instructions cannot inflate the results.
 - Latency distributions are reported as p50/p95/p99 with ≥ 3 repeated runs per configuration.
 - Censored TVC is analysed with survival curves.
 - We report judge–human agreement (Cohen's κ) and judge runtime cost.
@@ -827,12 +1020,13 @@ All thresholds below are **[target]**. They are provisional until M0 and the E2 
 
 | Metric | Definition | Success criterion |
 |---|---|---|
-| OCR | Instructions judged compliant on displayed frames within deadline $D$ ($D$ = 5 s camera, 8 s events) | A2 − A1 ≥ +10 pp, with the paired CI excluding 0 (H1a) |
+| Instruction-level success (primary for H1a) | All instructions in the denominator. Refusals and degradations count as failures | A2 − A1 ≥ +10 pp, with the paired CI excluding 0 |
+| OCR (conditional) | Among executed instructions, judged compliant on displayed frames within $D$ ($D$ = 5 s camera, 8 s events) | Reported with the refusal/degradation rate. Not used alone |
 | FCR | Completion claims contradicted by the judge | A2 ≤ 5% and below A1, CI excluding 0 (H1b) |
 | Multi-step task success | All steps compliant, in order | Reported; A2 > A1 |
-| TVC (camera) | Wall-clock from instruction end-of-utterance to first judged-compliant *displayed* frame; failures censored | p50 ≤ 2.0 s, p95 ≤ 3.5 s on the M0-qualified configuration |
-| TVC (events, post-C1) | Same, for scene/character events | p50 ≤ 3.5 s, p95 ≤ 6 s; compliance rate reported separately |
-| Time to first speech | End of user utterance → first audible persona audio | p50 ≤ 0.8 s, p95 ≤ 1.5 s |
+| TVC (camera) | Wall-clock from instruction end-of-utterance to first judged-compliant *displayed* frame; failures censored | Deadline success ≥ 90% within 3.5 s. Median ≤ 2.0 s (Kaplan–Meier). An unconditional p95 is reported only if censoring ≤ 5%; otherwise the restricted mean time is reported |
+| TVC (events, post-C1) | Same, for scene/character events | Deadline success within 8 s and median reported. Targets are set after E1 |
+| Time to first speech | End of user utterance → first audible persona audio, on the shared presentation timeline | World-shot start: p50 ≤ 0.8 s, p95 ≤ 1.5 s. Presenter-shot start: p50 ≤ 1.1 s, p95 ≤ 1.8 s |
 | Barge-in stop | User speech onset → persona audio stops | p95 ≤ 250 ms |
 | Recovery after correction | Correction utterance → first compliant frame of the corrected intent | p50 ≤ TVC p50 + 1 chunk |
 | Memory recall | Correct answers on planted-fact probes | Non-inferior to the best baseline (margin 5 pp) |
@@ -868,8 +1062,13 @@ Durations are **[estimate]**.
 - Avatar: 1 GPU.
 - LLM, ASR, TTS and monitor: 1–2 GPUs.
 
-Total: about 6–7 of the 8 shared GPUs for one live session. **Availability is not guaranteed**; long experiments need
-scheduled slots (`gpu reserve --start … --end …`).
+Total: about 6–7 of the 8 shared GPUs for one live session. This is an **optimistic reservation estimate** [estimate]:
+- the world stream keeps generating during presenter shots;
+- the monitor runs concurrently;
+- the other users of the machine compete for the same GPUs.
+
+**Availability is not guaranteed.** Live sessions and E2/E4 runs book scheduled slots for the full machine
+(`gpu reserve --start … --end …`).
 
 **Models.**
 - LLMs: open-weight instruct models served locally. This keeps personal memory on premises. API models may be used

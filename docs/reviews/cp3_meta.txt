@@ -1,0 +1,14 @@
+tag: cp3
+date_utc: 2026-09-24T18:00:09Z
+repo_head: ecbb880ad65a69803044b22fd6d22613e1203354
+repo_dirty_files: 9
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.156.0
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/cp3_review.md - < docs/reviews/cp3_prompt.md
+exit_code: 0
+thread_id: 01a0d491-a5b8-7110-a256-c1246b0806c5
+rollout: /home/zhoutaichang/.codex/sessions/2026/09/25/rollout-2026-09-25T01-58-30-01a0d491-a5b8-7110-a256-c1246b0806c5.jsonl
+rollout_models:       5 "model":"gpt-6-sol" 
+inlined_files: docs/research_proposal.md docs/backbone_verification.md docs/decision_log.md docs/figures/fig1_architecture_A2.mmd docs/figures/fig2_sequence_interrupt.mmd docs/figures/fig3_memory_lifecycle.mmd docs/figures/fig4_candidate_architectures.mmd docs/reviews/cp3_ev_streaming_api.md docs/reviews/cp3_ev_realtime_design.md docs/reviews/cp3_ev_code_excerpts.md
+prompt_sha256: 523824a065fc31f1328f6f53fd289f7398037e7ca7797edcf8c49f9a77dd0258
