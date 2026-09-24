@@ -1,7 +1,7 @@
 # Live Agent — Project Specification (single source of truth)
 
-Status: **v0.2 provisional** (2026-09-25; revised after Codex checkpoint 1, see
-`docs/codex_reviews.md`). **Precedence:** `goal.md` (the owner's brief) sets the
+Status: **v1.0** (2026-09-25). Updated after the research phase and Codex checkpoints 1–3. v0.1 was the provisional
+version; see `docs/codex_reviews.md` and the git history. **Precedence:** `goal.md` (the owner's brief) sets the
 requirements. This file records our current interpretation of them and tracks
 their status. If the two disagree, raise the conflict in `docs/decision_log.md`
 for resolution; do not silently prefer either one. `CLAUDE.md`, `AGENTS.md` and
@@ -58,14 +58,27 @@ alone is insufficient for reliable, stateful agent behavior.
 | R3 | Label every number as cited / measured locally / estimate / proposed target | Confirmed (goal.md §6) |
 | R4 | Keep private user memory separate from public livestream content; never store generated or inferred events as confirmed user facts | Confirmed (goal.md §5) |
 | A1 | Hardware *inventory*: 8× NVIDIA L20X (≈140 GB each), shared and scheduled through `gpu` (canhazgpu). Inventory is not guaranteed capacity: schedulable access, memory per job, and LingBot throughput on L20X are **unverified**. Upstream validated H200/B200 only | Inventory observed 2026-09-25 (`nvidia-smi`); capacity open |
-| A2 | The reference agent's implementation ("MiniMax H3") is unverified | Assumption |
-| A3 | Speech (ASR/TTS) and lip sync probably need components outside LingBot-World | To verify (backbone note) |
-| Q1 | Does LingBot-World 2.0 accept mid-session text/prompt changes, or only camera/action signals? | Open → backbone investigation |
-| Q2 | Can a world model with camera/action control express character behavior (gestures, expressions)? | Open |
-| Q3 | Audience: the first acceptance scenario is **one private user** (1:1). Public livestream with chat is a second evaluation scenario that reuses the same agent, with separate memory scopes | Decision D-001 (provisional) |
-| Q4 | Provenance, license, and working inference path of the local "MiniMax H3" copy | Open → reference-agent note |
-| Q5 | Is a simpler pipeline (LLM + TTS + talking-head avatar, with no world model) enough for the focused demo? It must be carried as a competing baseline | Open. The evaluation must be able to favor it |
-| Q6 | Proposed "real-time" targets (time to first speech, time to first correctly conditioned visual, p50/p95) | Set in the proposal, labeled as targets |
+| A2 | The reference agent's implementation ("MiniMax H3") | **Still unverified.** Public evidence is consistent with clip-based H3 generation (24 fps, ~13 s segments) but does not prove it. H3 is an offline joint audio-video clip model (4–15 s) with no streaming mode. The reference agent is qualitative only (`docs/related_work.md` §3) |
+| A3 | Speech, audio and lip sync need components outside LingBot-World | **Confirmed (code-read):** no audio in the pipeline. Native LingBot lip, face and audio conditioning is class D. An external TTS plus audio-driven avatar is engineering (D-005) |
+| Q1 | Mid-session prompt changes in LingBot-World 2.0? | **Answered (code-read, not yet executed):** the public stepwise WS path registers only `camera` (`registry.py:25-27`). A prompt interaction → `interaction_failed`. Prompt switching exists only on the deprecated tick path (latents only). Extension C1 is needed. M0 runs one real WS test |
+| Q2 | Does camera control express character behavior? | **Answered: no.** Camera control is viewpoint only. Character actions are prompt-conditioned (paper, class B) and depend on C1 and E1 calibration (D-012) |
+| Q3 | Audience | 1:1 private user first; private test livestream second; no public broadcast this phase (D-001) |
+| Q4 | Local "MiniMax H3" copy | Incomplete: 1 of 13 DiT shards, no text encoder. MiniMax H3 Community License excludes some territories. **Not part of the proposed stack** |
+| Q5 | Is a simpler pipeline enough? | Carried as baseline A0, with the same LLM, memory and avatar as A2 (D-004, D-009). RQ4 tests this in both directions |
+| Q6 | "Real-time" targets | Defined as [target] values in proposal §8, gated by M0 measurement |
+| Q7 | Local GPU identity ("L20X": Ada/CC 8.9 per NVML vs H200-like 143,771 MiB/700 W) | **Open.** Resolved in M0 (D-008) |
+| Q8 | Permission to use the shared `/data/models` LingBot weights | **Open. Owner to confirm** |
+
+## Current direction (summary; details in `docs/research_proposal.md`)
+
+- **Demo:** a dual-shot live persona. A lip-synced avatar close-up plus a LingBot-World world shot. Committed
+  control: camera/viewpoint. Conditional: prompt-driven events.
+- **Central research claim:** capability-grounded closed-loop control (IR → calibrated capability manifest →
+  compiler → deadline-bounded monitor on displayed frames). Measured with a wall-clock time-to-visible-compliance
+  (TVC) protocol.
+- **Memory:** typed by provenance and separated by scope (private/public/canon). Deletion cascades to derived
+  artifacts.
+- **Next step (Phase 2, needs owner go-ahead):** M0, the backbone and hardware characterization.
 
 ## Requirement → deliverable checklist (from goal.md)
 
@@ -88,6 +101,7 @@ alone is insufficient for reliable, stateful agent behavior.
 | `docs/related_work.md` | Evidence-backed synthesis and comparison matrix |
 | `docs/backbone_verification.md` | Verified vLLM-Omni / LingBot-World integration surface |
 | `docs/decision_log.md` | Decisions, alternatives, evidence, assumptions, open questions |
+| `tools/codex_review.sh` | Runs a Codex review checkpoint with inlined evidence and audit metadata |
 | `docs/codex_reviews.md` | Actual Codex review records and resolutions |
 | `docs/references.bib` | Verified bibliography |
 | `docs/figures/` | Editable diagrams (Mermaid `.mmd` sources) |

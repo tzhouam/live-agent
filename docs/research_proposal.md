@@ -2,7 +2,7 @@
 
 **Research proposal: live-agent project, Phase 1**
 
-*Draft v0.9, 2026-09-25. Review status is in §14 and `docs/codex_reviews.md`.*
+*Draft v1.0-rc, 2026-09-25. Review status is in §14 and `docs/codex_reviews.md`.*
 
 **Evidence conventions.** Every quantitative statement carries one of these labels:
 - **[cited]**: from a named primary source.
@@ -51,7 +51,7 @@ controllers isolate the effect:
 We also contribute a measurement protocol for **wall-clock time-to-visible-compliance (TVC)**, and a memory
 evaluation that measures false memories and cross-scope leakage across modalities.
 
-Milestone M0 is a one-day hardware and backbone characterization. It gates every latency target, because all
+Milestone M0 is a short (≈1 week) hardware and backbone characterization. It gates every latency target, because all
 real-time evidence for this backbone comes from upstream H200 multi-GPU stacks. Our local GPUs report as
 "NVIDIA L20X" and their identity is unresolved.
 
@@ -244,11 +244,12 @@ cross-session memory and persona consistency. §3 states which parts are scienti
   The mechanisms are borrowed (§2). The contribution is the live, multimodal evaluation.
 
 **Engineering integration (necessary, not claimed as research):**
-- **E1.** A prompt-interaction path on vLLM-Omni's stepwise LingBot pipeline (registry and text K/V refresh), plus WS
-  reset and session extension, and server-side chunk timestamps.
-- **E2.** Client presentation timestamps and a bounded look-ahead playback policy.
-- **E3.** Dual-shot rendering with a shared persona reference and an audio master clock.
-- **E4.** Voice pipeline (VAD, ASR, turn-taking, streaming TTS) built from existing frameworks.
+Engineering items are labelled I1–I4 to keep them distinct from experiments E1–E6.
+- **I1.** vLLM-Omni extensions C1–C3: a prompt-interaction path on the stepwise LingBot pipeline, WS reset and session
+  extension, and server-side chunk timestamps.
+- **I2.** Client presentation timestamps and a bounded look-ahead gate (C4).
+- **I3.** Dual-shot rendering with a shared persona reference and a shared presentation timeline (C5, C6).
+- **I4.** Voice pipeline (VAD, ASR, turn-taking, streaming TTS) built from existing frameworks.
 
 **Longer-term research (not needed for the first demo):** a character-centric live world model that conditions
 LingBot-World on speech audio and behavior tokens (A3, §5.1). It requires training and is not claimed here.
@@ -261,8 +262,8 @@ The success thresholds are in §8. All thresholds are **[target]**.
 
 | RQ | Question | Hypothesis | Falsified if |
 |---|---|---|---|
-| RQ1 | Does capability-grounded closed-loop control improve *observable* compliance over open-loop LLM control? A1 and A2 share memory, renderers and the same generator control substrate (camera, plus C1 prompts where built); only the controller differs | **H1a:** A2 has a higher observed compliance rate (OCR) than A1 on the task suite. **H1b:** A2 has a lower false-completion-claim rate (FCR) than A1. **H1c:** each component (manifest, verifier) contributes: A2 > A2−verify and A2 > A2−manifest | The 95% CI of the paired difference A2−A1 in OCR includes 0 or is negative. FCR does not fall. The ablations show no drop |
-| RQ2 | What determines wall-clock TVC for a chunked AR world model, and can control policy reduce it? | **H2a:** camera TVC is predicted within ±1 chunk period by the §6.4 model ($A+W+G+\delta+Q+I$, regime U or G), given measured $T$ and queue depths. **H2b:** prompt-driven events have additional visual inertia $I \ge 1$ chunk. **H2c:** bounded look-ahead (≤ 1 chunk) reduces TVC p95 relative to unpaced streaming, at a cost in stall rate that we measure | The model mispredicts the median by more than 1 chunk. Inertia is ≈ 0. Pacing does not reduce p95 |
+| RQ1 | Does capability-grounded closed-loop control improve *observable* compliance over open-loop LLM control? A1 and A2 share memory, renderers and the same generator control substrate (camera, plus C1 prompts where built); only the controller differs | **H1a:** A2 has higher *instruction-level success* than A1. Refusals and degradations count as failures; conditional OCR is reported alongside. **H1b:** A2 has a lower false-completion-claim rate (FCR) than A1. **H1c:** each component (manifest, verifier) contributes: A2 > A2−verify and A2 > A2−manifest | The 95% CI of the paired difference A2−A1 in instruction-level success includes 0 or is negative. FCR does not fall. The ablations show no drop |
+| RQ2 | What determines wall-clock TVC for a chunked AR world model, and can control policy reduce it? | **H2a:** camera TVC is predicted within ±1 chunk period by the §6.4 model ($A+W+G+\delta+Q+I$, regime U or G), given measured $T$ and queue depths. **H2b:** prompt-driven events have additional visual inertia $I \ge 1$ chunk. **H2c:** bounded look-ahead (≤ 1 chunk) improves TVC deadline success and median over unpaced streaming, at a cost in stall rate that we measure | The model mispredicts the median by more than 1 chunk. Inertia is ≈ 0. Pacing improves neither deadline success nor median |
 | RQ3 | Does provenance-typed, scope-separated memory reduce false memories and leakage without hurting recall? | **H3a:** a lower false-user-fact rate than (i) full-history context and (ii) Mem0-style untyped extraction, at non-inferior recall (margin 5 pp). **H3b:** cross-scope leak rate below 1% vs baselines > 0. **H3c:** after deletion, multi-channel leak rate below 5% | The rates are not lower, or recall is inferior beyond the margin |
 | RQ4 | Is a world model needed for this experience? This tests the owner's hypothesis in both directions | A0 and A2 share the same LLMs, memory service, TTS and avatar renderer; only the world shot and its controller differ. **H4a:** on scene-grounded tasks (viewpoint, visual recall, events where qualified), A2 beats A0 on task success. **H4b:** on talk-only tasks, A0 is non-inferior to A2 on MOS | H4a: no difference. H4b rejected: A0 worse. Either outcome is informative |
 | RQ5 | Does anchoring interaction state to *displayed* frames improve handling of corrections after interruptions? | **H5:** display-aligned context raises referent-resolution accuracy on video-referent corrections ("no, the *other* path") over generation-aligned context | No improvement (CI includes 0) |
@@ -510,7 +511,7 @@ This targets FCR (H1b).
 **Stale plans.** Every IR item carries `plan_version`. The scheduler drops superseded items at compile time. The
 monitor ignores the expectations of superseded items.
 
-**Backlog and buffering (engineering E2, C4).**
+**Backlog and buffering (engineering I2, C4).**
 - The WS server sends every chunk as soon as it is produced; there is no playback timer
   [local-code: `serving_video_output_stream.py:148-155`].
 - `session.ping` only refreshes the stall clock (`:17,79-88,311`). It is **not** a flow-control mechanism.
@@ -845,7 +846,7 @@ fps. Otherwise report the regime and use the fallback designs of §6.4.
 
 **Scenes.** 5 scenes, each with the persona reference.
 
-**Trials.** 30 trials per control × scene, with randomized issue time within a chunk.
+**Trials.** 30 trials per control × scene, with randomized issue time within a chunk. That is ≈ 4,200 trials if all 28 controls qualify. At about 5 s of generated video each, that is ≈ 6 h of 4-GPU generation, plus judge time [estimate].
 
 **Labels.**
 - Camera: the geometric estimator.
@@ -862,8 +863,11 @@ fps. Otherwise report the regime and use the fallback designs of §6.4.
 ### 7.2 E2: instruction following, multi-step tasks and interruptions (RQ1, RQ2c, RQ5)
 
 **Task suite.** 60 scripted tasks, each spoken by a TTS-simulated user from a fixed script, for reproducibility.
-- 20 single-step instructions: camera or event.
-- 20 multi-step instructions, for example "walk to the lake, then stop and look left".
+- 20 single-step instructions.
+- 20 multi-step instructions, for example "turn toward the lake, move forward, then stop and look left".
+- The single-step and multi-step sets together are split into a **committed subset** (camera/viewpoint and shot
+  cuts: 30 tasks) and a **conditional subset** (scene and character events: 10 tasks). The conditional subset runs
+  only if C1 and E1 qualify, and it is always analysed separately.
 - 20 interaction-dynamics tasks: a mid-execution correction, a goal change, a barge-in during speech, or a referent
   correction against displayed content (RQ5).
 
@@ -885,7 +889,7 @@ Task templates are adapted from EchoChain, Full-Duplex-Bench v2 and WBench [cite
   $D$ on displayed frames.
 - Task success for multi-step tasks: all steps compliant, in order.
 - FCR: the persona claimed completion, but the judge says not complied.
-- TVC p50/p95, including censored cases.
+- TVC: deadline success, Kaplan–Meier median, and p95 only when identifiable (§8).
 - Recovery time after a correction.
 - Referent-resolution accuracy.
 
@@ -893,9 +897,9 @@ Task templates are adapted from EchoChain, Full-Duplex-Bench v2 and WBench [cite
 - Within-task paired design: each task × 5 seeds × each condition, giving 300 paired trials per condition.
 - Mixed-effects logistic regression: condition as a fixed effect; task and seed as random effects.
 - Paired bootstrap 95% CIs for differences.
-- Holm correction across the primary contrasts (A2 vs A1 on OCR and on FCR).
+- Holm correction across the primary contrasts (A2 vs A1 on instruction-level success and on FCR).
 
-**Power [estimate].** Consider a true OCR of 60% vs 75% with ≈ 20% discordant pairs. McNemar's test on 300 pairs then
+**Power [estimate].** Consider a true instruction-level success of 60% vs 75% with ≈ 20% discordant pairs. McNemar's test on 300 pairs then
 has power > 0.9 at α = 0.05. We will re-estimate after a 60-trial pilot.
 
 ### 7.3 E3: memory (RQ3)
@@ -957,7 +961,7 @@ All are run on the memory service with a fixed LLM [cited benchmarks].
   in the recipe), and session-restart seams (C5).
 
 **H-core test.**
-- A2 and a "no external layer" variant of A1 run through ≥ 3 sessions separated by restarts.
+- A2 and **A1−mem** run through ≥ 3 sessions separated by restarts. A1−mem is A1 without the memory service: dialogue history only, in context, carried across restarts only as far as the context window allows. It is the "no external layer" variant.
 - The same planted facts, corrections, deletions and visual-recall requests are used for both.
 - If an end-to-end system (A3b-class) becomes available with weights, it is run in the same protocol.
 - H-core is refuted for a system if it meets the §8 memory and compliance thresholds without an external layer.

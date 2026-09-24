@@ -13,10 +13,10 @@ sequenceDiagram
   participant V as Compliance monitor
   participant O as Muxer / Viewer
 
-  User->>ASR: "Walk toward the lake"
+  User->>ASR: "Head toward the lake" (camera move)
   ASR->>R: final transcript (endpoint)
   par fast reply
-    R->>O: TTS "Sure, heading to the lake" (first audio)
+    R->>O: TTS "Sure, heading that way" (intent only, first audio)
   and plan
     R->>P: intent(navigate, target=lake)
     P->>M: retrieve(user prefs: pace=slow) [scope=private]
