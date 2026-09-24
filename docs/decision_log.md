@@ -6,7 +6,7 @@ assumptions they depend on. IDs are stable. Statuses are *provisional*, *adopted
 
 | ID | Date | Decision | Alternatives | Evidence / rationale | Status |
 |---|---|---|---|---|---|
-| D-001 | 2026-09-25 | The first acceptance scenario is a **1:1 private user**. **Public livestream** is the second evaluation scenario, with separate memory scopes | Livestream first; both at once | CP1 finding 2. Memory and instruction-following claims are measurable only with a controlled user. Livestream adds unconsented third parties | provisional |
+| D-001 | 2026-09-25 | The first acceptance scenario is a **1:1 private user**. A **private test livestream** (scripted viewers, no public broadcast) is the second evaluation scenario, with separate memory scopes | Livestream first; both at once | CP1 finding 2. Memory and instruction-following claims are measurable only with a controlled user. Livestream adds unconsented third parties | provisional |
 | D-002 | 2026-09-25 | Codex reviews run with `-s read-only` and all evidence inline | Unsandboxed Codex (denied by the permission policy); MCP Codex (server failed to connect) | `max_user_namespaces=0` means bwrap cannot start | adopted |
 | D-003 | 2026-09-25 | Pin upstream vLLM-Omni `main` at `7b4dc76` (2026-09-24) as the inspected implementation, in a read-only clone at `external/vllm-omni` | Use one of the user's feature branches under /data/zhoutaichang | Upstream main is the public integration surface. Feature branches hold unrelated or uncommitted work | adopted |
 | D-004 | 2026-09-25 | Carry a "no world model" baseline (LLM + TTS + talking-head avatar) through the evaluation | Evaluate only the LingBot-based design | CP1 finding 4 / goal §5 ("simple baseline") | adopted |
@@ -18,6 +18,9 @@ assumptions they depend on. IDs are stable. Statuses are *provisional*, *adopted
 | D-010 | 2026-09-25 | A bounded look-ahead gate (C4) is required for real-time TVC. `session.ping` is not flow control. Fallbacks: skip-to-latest, playback-rate adaptation | Rely on the client buffer | Code-read: `serving_video_output_stream.py:148-155` sends chunks as produced; ping only refreshes the stall clock (`:17,79-88,311`). Backlog grows ≈0.2 s/chunk at T=0.549 s and 16 fps [derived] | adopted |
 | D-011 | 2026-09-25 | The IR is relative, the wire format is absolute. The compiler tracks a pose estimate and emits absolute `target` poses | Send relative targets | Code-read: `camera.py:44,107,341-352` — target poses are absolute relative to the session-start origin. The API doc's "absolute pose" wording agrees | adopted |
 | D-012 | 2026-09-25 | The first demo commits only camera/viewpoint control and a visible host. Locomotion and scene/character events are conditional on C1 and E1 | Promise "walk to the lake" | CP3 finding 5: camera ≠ character; prompts need C1 | adopted |
+| D-013 | 2026-09-25 | H-core is tested strictly only against an unwrapped end-to-end system (A3b), if weights become available. Otherwise it is tested as H-core-abl (A2 vs A1−mem, with no cross-session carry-over) | Claim that A1−mem tests "no external layer" | CP4 finding 1: A1−mem still has an external controller | adopted |
+| D-014 | 2026-09-25 | The primary E2 outcome is blinded human adjudication, independent of the online monitor. An offline evaluation judge serves the ablations. The evaluation set is locked after E1 and the pilot | Use the online monitor verdicts as the outcome | CP4 finding 2: circularity and condition-dependent judge error | adopted |
+| D-015 | 2026-09-25 | The C4 gate fires at *presentation start* of chunk n and starts block n+L+1. TVC ≈ A + U(0,P) + (L+1)P + I. L=0 and L=1 are both measured | Leave the ack edge undefined | CP4 finding 7 | adopted |
 
 ## Open questions
 

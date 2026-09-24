@@ -100,7 +100,12 @@ We therefore test **H-core**:
 > (b) verified visible compliance with instructions;
 > (c) control restricted to affordances the generator can actually render.
 
-The operational test is in §7.4. A system without an external layer that passes it refutes H-core for that system.
+**Testability (CP4 finding 1).** Every system we can build here includes an external LLM controller, so a *strict*
+test of H-core needs a system with no external layer at all. The only candidate is an end-to-end model of the A3(b)
+class, run as-is. We run that test only if such weights become available. Otherwise H-core is examined through
+**H-core-abl**: removing the persistent memory service, the capability manifest and the monitor from A2 (comparator
+A1−mem, §7.4) causes the memory and compliance probes to fail. H-core-abl is weaker than H-core, and we report it
+as such. The operational test is in §7.4.
 
 ### 1.3 Target scenario (focused demo)
 
@@ -265,9 +270,13 @@ The success thresholds are in §8. All thresholds are **[target]**.
 | RQ1 | Does capability-grounded closed-loop control improve *observable* compliance over open-loop LLM control? A1 and A2 share memory, renderers and the same generator control substrate (camera, plus C1 prompts where built); only the controller differs | **H1a:** A2 has higher *instruction-level success* than A1. Refusals and degradations count as failures; conditional OCR is reported alongside. **H1b:** A2 has a lower false-completion-claim rate (FCR) than A1. **H1c:** each component (manifest, verifier) contributes: A2 > A2−verify and A2 > A2−manifest | The 95% CI of the paired difference A2−A1 in instruction-level success includes 0 or is negative. FCR does not fall. The ablations show no drop |
 | RQ2 | What determines wall-clock TVC for a chunked AR world model, and can control policy reduce it? | **H2a:** camera TVC is predicted within ±1 chunk period by the §6.4 model ($A+W+G+\delta+Q+I$, regime U or G), given measured $T$ and queue depths. **H2b:** prompt-driven events have additional visual inertia $I \ge 1$ chunk. **H2c:** bounded look-ahead (≤ 1 chunk) improves TVC deadline success and median over unpaced streaming, at a cost in stall rate that we measure | The model mispredicts the median by more than 1 chunk. Inertia is ≈ 0. Pacing improves neither deadline success nor median |
 | RQ3 | Does provenance-typed, scope-separated memory reduce false memories and leakage without hurting recall? | **H3a:** a lower false-user-fact rate than (i) full-history context and (ii) Mem0-style untyped extraction, at non-inferior recall (margin 5 pp). **H3b:** cross-scope leak rate below 1% vs baselines > 0. **H3c:** after deletion, multi-channel leak rate below 5% | The rates are not lower, or recall is inferior beyond the margin |
-| RQ4 | Is a world model needed for this experience? This tests the owner's hypothesis in both directions | A0 and A2 share the same LLMs, memory service, TTS and avatar renderer; only the world shot and its controller differ. **H4a:** on scene-grounded tasks (viewpoint, visual recall, events where qualified), A2 beats A0 on task success. **H4b:** on talk-only tasks, A0 is non-inferior to A2 on MOS | H4a: no difference. H4b rejected: A0 worse. Either outcome is informative |
+| RQ4 | Is a world model needed for this experience? This tests the owner's hypothesis in both directions | A0 and A2 share the same LLMs, memory service, TTS and avatar renderer; only the world shot and its controller differ. A0 cannot perform scene tasks by construction, so it is **not** compared with A2 on scene-task success. The
+comparisons are: **H4a:** in mixed sessions, users prefer A2 over **A0+clips** (A0 plus pre-rendered world clips cut
+in by the same shot track: the clip-scheduling alternative) on overall MOS and on pairwise preference. **H4b:** on
+talk-only sessions, A0 is non-inferior to A2 on MOS, with a margin of 0.5 on a 5-point scale | H4a: no preference
+(CI includes 0). H4b: the lower CI bound falls below −0.5. Either outcome is informative |
 | RQ5 | Does anchoring interaction state to *displayed* frames improve handling of corrections after interruptions? | **H5:** display-aligned context raises referent-resolution accuracy on video-referent corrections ("no, the *other* path") over generation-aligned context | No improvement (CI includes 0) |
-| RQ6 | Can the persona remain consistent across shots and over long sessions? | **H6:** persona identity similarity between the presenter and world shots, and over 30 min, stays above a threshold calibrated on the reference image (§8) | Similarity drops below the threshold in more than 20% of windows |
+| RQ6 | Can the persona remain consistent across shots and over long sessions? | **H6:** (i) within each shot, identity similarity to the reference stays above a per-shot threshold calibrated against human same/different judgments; (ii) across shots, human raters judge the two renderings to be the same person in ≥ 80% of sampled cut pairs; (iii) behavioural and scene-state probes stay consistent over 30 min | More than 20% of windows fall below threshold, or cross-shot agreement is below 80% |
 
 RQ1 and RQ2 are primary; RQ3–RQ6 are secondary. We report all outcomes, including null results.
 
@@ -521,9 +530,11 @@ monitor ignores the expectations of superseded items.
 - Whether WebSocket/TCP backpressure from a slow reader pauses the engine is **unverified**. It is an M0 check that
   compares generated, received, decoded and presented queue depths.
 - Candidate mechanisms, in order of preference:
-  1. **Server gate (C4):** the stepwise runner waits before starting AR block $n+L+1$ until the client acknowledges
-     presentation of chunk $n$. This needs a change in the engine or runner loop, and its feasibility is to be
-     established in M1.
+  1. **Server gate (C4):** the stepwise runner starts AR block $n+L+1$ only when the client acknowledges the
+     **presentation start** (first displayed frame) of chunk $n$.
+     - At that moment, chunk $n$ and the $L$ queued chunks $n+1..n+L$ cover $(L+1)P$ of playback.
+     - The stream therefore does not stall as long as $T + \delta \le (L+1)P$.
+     - This needs a change in the engine or runner loop, and its feasibility is to be established in M1.
   2. **Client skip-to-latest:** drop the undisplayed backlog when an instruction arrives. It is responsive, but the
      skipped content causes a visible jump.
   3. **Playback-rate adaptation:** a slight speed-up (≤ 1.1×) to drain the backlog.
@@ -639,7 +650,13 @@ summarizes episodes, merges duplicates, and records `derived_from` links.
   - (ii) derived summaries, which are regenerated without the fact;
   - (iii) visual-state frames and reference images that depict it;
   - (iv) cached prompts and LLM KV, flushed by restarting the LLM session;
-  - (v) in-flight IR items and queued prompts that reference it, which are cancelled;
+  - (v) generation work that references it, handled according to its state:
+    - *unsent* IR items and prompts are dropped;
+    - *sent* events cannot be withdrawn, so they are superseded by neutral controls;
+    - if the erased item is in the active world-generator state (prompt, text K/V, or the scene being rendered), the
+      **world session is ended and restarted** from a canon frame (C5). This is the only way the API lets us clear
+      generator state;
+    - media already *presented* cannot be un-presented;
   - (vi) private recordings of rendered media.
 - A **tombstone ledger** keeps only (hashed id, timestamp, reason code), without the content, so that the deletion can
   be audited.
@@ -761,26 +778,34 @@ Judge detection delay is excluded, because the judge localizes the onset frame.
 - $Q$ **grows without bound** at $(P - T)$ per chunk: ≈0.20 s per chunk for $T = 0.549$ s at 16 fps.
 - TVC therefore increases over the session. This is the failure mode that C4 addresses.
 
-**Regime G (gated with look-ahead $L$, $T + \delta \le P$).**
-- Generation of chunk $n+L+1$ starts when chunk $n$ is presented.
+**Regime G (gated at presentation start with look-ahead $L$; stall-free if $T+\delta \le (L+1)P$).**
+- In steady state, a generation starts every $P$.
 - An event waits for the next generation start: $W \approx U(0, P)$.
-- The chunk it lands in is presented about $L \cdot P$ after generation starts (the generation time is hidden behind
-  playback when $T + \delta \le P$).
-- So TVC ≈ $A + U(0, P) + L \cdot P + I$.
+- The chunk it lands in, $n+L+1$, begins presentation $(L+1)P$ after that generation start.
+- So TVC ≈ $A + U(0,P) + (L+1)P + I$.
+- **Trade-off.**
+  - $L = 0$ gives the lowest latency, but stalls whenever $T + \delta > P$, e.g. on jitter.
+  - $L = 1$ tolerates jitter up to $2P$, but adds $P$ of latency.
+  - Both are measured (H2c).
 
-**Illustrative values in regime G** (4-GPU, upstream-reproduced $T = 0.549$ s, 16 fps, $L = 1$):
+**Illustrative values in regime G** (4-GPU, upstream-reproduced $T = 0.549$ s, 16 fps, $P = 0.75$ s):
 
-| Term | Median-ish | Upper-ish | Basis |
-|---|---|---|---|
-| $A$ | 0.45 s | 0.8 s | [target]; endpointing 200–300 ms [cited: pipecat2026primer] |
-| $W$ | 0.375 s | 0.71 s | $U(0, 0.75)$ [derived] |
-| $L \cdot P$ | 0.75 s | 0.75 s | [derived] |
-| $I$ (camera) | 0.1 s | 0.4 s | [estimate]; measured in E1 |
-| **Camera TVC** | **≈1.7 s** | **≈2.7 s** | Column sums, **not quantiles**. Illustrative only |
+| Term | $L=0$ median-ish | $L=1$ median-ish | $L=1$ upper-ish | Basis |
+|---|---|---|---|---|
+| $A$ | 0.45 s | 0.45 s | 0.8 s | [target]; endpointing 200–300 ms [cited: pipecat2026primer] |
+| $W$ | 0.375 s | 0.375 s | 0.71 s | $U(0, 0.75)$ [derived] |
+| $(L+1)P$ | 0.75 s | 1.5 s | 1.5 s | [derived] |
+| $I$ (camera) | 0.1 s | 0.1 s | 0.4 s | [estimate]; measured in E1 |
+| **Camera TVC** | **≈1.7 s** | **≈2.4 s** | **≈3.4 s** | Column sums, **not quantiles**. Illustrative only |
+
+**M0 qualification rule.**
+- A configuration qualifies for $L$ if the **measured** $T + \delta$ stays ≤ $(L+1)P$ for ≥ 99% of chunks over
+  ≥ 3 × 40 chunks, including warm-up outliers.
+- A queue simulation driven by the measured cadence trace, with jitter and stalls, must also show a bounded backlog.
 
 **2×H200-class** ($T \approx 0.89$ s [cited]):
 - At 16 fps, $T > P = 0.75$ s, so the stream stalls.
-- At 12 fps ($P = 1.0$ s): TVC ≈ $A + U(0, 1.0) + 1.0 + I$, i.e. ≈2.0 s median-ish, with the same caveats.
+- At 12 fps ($P = 1.0$ s) with $L = 0$: TVC ≈ $A + U(0,1.0) + 1.0 + I$ ≈ 2.0 s median-ish. This needs $T + \delta \le 1.0$ s, which leaves little margin. With $L = 1$ it is ≈ 3.0 s.
 
 **1 GPU** ($T \approx 3.24$ s [cited]): no real-time world shot. Use the presenter shot plus pre-rolled world clips.
 
@@ -822,7 +847,7 @@ Each run logs:
 
 **Procedure.**
 - Under `gpu run --gpus {1,2,4} --timeout 2h --note "live-agent M0"`, serve the stepwise deploy config and run
-  `benchmarks/lingbot_world/benchmark_lingbot_world_realtime.py`: 3 warm sessions × 40 chunks per configuration.
+  `benchmarks/lingbot_world/benchmark_lingbot_world_realtime.py`: 3 warm sessions × 40 chunks per configuration [target].
 - Record `torch.cuda.get_device_capability()` and the attention backend.
 - Run the WS contract test (§6.1). It includes one `session.interaction` with `event.prompt`, which settles the
   contradiction between the registry and the benchmark code.
@@ -840,6 +865,7 @@ fps. Otherwise report the regime and use the fallback designs of §6.4.
 ### 7.1 E1: capability calibration (builds the manifest; RQ2)
 
 **Controls.**
+All counts in E1 are [target].
 - 8 camera primitives: forward, back, strafe, yaw ±, pitch ±, stop.
 - 12 scene-event prompts, after C1.
 - 8 character-event prompts, after C1.
@@ -862,16 +888,39 @@ fps. Otherwise report the regime and use the fallback designs of §6.4.
 
 ### 7.2 E2: instruction following, multi-step tasks and interruptions (RQ1, RQ2c, RQ5)
 
-**Task suite.** 60 scripted tasks, each spoken by a TTS-simulated user from a fixed script, for reproducibility.
-- 20 single-step instructions.
-- 20 multi-step instructions, for example "turn toward the lake, move forward, then stop and look left".
-- The single-step and multi-step sets together are split into a **committed subset** (camera/viewpoint and shot
-  cuts: 30 tasks) and a **conditional subset** (scene and character events: 10 tasks). The conditional subset runs
-  only if C1 and E1 qualify, and it is always analysed separately.
-- 20 interaction-dynamics tasks: a mid-execution correction, a goal change, a barge-in during speech, or a referent
-  correction against displayed content (RQ5).
+**Task suite.** Scripted tasks, each spoken by a TTS-simulated user from a fixed script, for reproducibility.
+All counts are [target].
+- **Committed subset: 80 tasks** (camera/viewpoint, shot cuts, speech):
+  - 30 single-step instructions;
+  - 25 multi-step instructions, for example "turn toward the lake, move forward, then stop and look left";
+  - 25 interaction-dynamics tasks: a mid-execution correction, a goal change, a barge-in during speech, or a
+    referent correction against displayed content (RQ5).
+- **Conditional subset: 20 tasks** (scene and character events). It runs only if C1 and E1 qualify, and it is always
+  analysed separately.
 
 Task templates are adapted from EchoChain, Full-Duplex-Bench v2 and WBench [cited].
+
+**Outcome judgement, independent of the online monitor (CP4 finding 2).**
+- The primary outcome for the A2-vs-A1 contrast is **blinded human adjudication of every trial**:
+  - 2 raters who do not see the condition, the IR, the ack or the monitor verdict;
+  - a third rater resolves disagreements;
+  - κ is reported.
+- Ablation contrasts use an **offline evaluation judge** that differs from the online monitor. It is an ensemble of
+  full-clip VLM judges plus the geometric estimator run offline at full frame rate. It is validated on a ≥ 20%
+  human-labelled stratified sample of each condition, and κ is reported per condition to expose condition-dependent
+  judge error.
+- **Locked evaluation set.** Evaluation scenes, tasks, prompts, deadlines and compiler thresholds are frozen and
+  pre-registered after E1 and the pilot. They are disjoint from calibration scenes and seeds.
+
+**Outcome rules for each instruction.**
+
+| Case | Instruction-level success | TVC |
+|---|---|---|
+| Compliant within $D$ | success | observed time |
+| Refused or degraded by the compiler | failure | censored at $D$ |
+| Superseded by the user before $D$ | excluded from success; counted in a separate "superseded" tally. The *final* intent is scored | final intent scored from its own utterance |
+| Human raters answer "cannot tell" | failure in the primary analysis; excluded in a sensitivity analysis | censored at $D$ |
+| Never compliant | failure | censored at $D$ |
 
 **Conditions.**
 - A1: prompt-only open loop.
@@ -888,19 +937,27 @@ Task templates are adapted from EchoChain, Full-Duplex-Bench v2 and WBench [cite
 - **OCR (conditional).** Among instructions that were executed, the fraction judged compliant within the deadline
   $D$ on displayed frames.
 - Task success for multi-step tasks: all steps compliant, in order.
-- FCR: the persona claimed completion, but the judge says not complied.
+- **FCR** = (completion claims contradicted by the judge) / (completion claims made).
+- **Claim coverage** = (completion claims made) / (instructions judged compliant). Reported alongside FCR, so that a
+  system cannot lower its FCR simply by never claiming completion.
 - TVC: deadline success, Kaplan–Meier median, and p95 only when identifiable (§8).
 - Recovery time after a correction.
 - Referent-resolution accuracy.
 
 **Design and analysis.**
-- Within-task paired design: each task × 5 seeds × each condition, giving 300 paired trials per condition.
+- Within-task paired design: each task × 5 seeds × each condition [target]. Tasks are the clustering unit.
 - Mixed-effects logistic regression: condition as a fixed effect; task and seed as random effects.
 - Paired bootstrap 95% CIs for differences.
 - Holm correction across the primary contrasts (A2 vs A1 on instruction-level success and on FCR).
 
-**Power [estimate].** Consider a true instruction-level success of 60% vs 75% with ≈ 20% discordant pairs. McNemar's test on 300 pairs then
-has power > 0.9 at α = 0.05. We will re-estimate after a 60-trial pilot.
+**Sample size and power [estimate]; tasks are clustered.**
+- *Pilot.* Before any full run, a 60-trial pilot estimates the intra-task correlation (ICC). Power for the main runs is
+  then computed by simulating the mixed model with that ICC.
+- *Planning assumption.* ICC ≈ 0.3 with 5 seeds gives a design effect ≈ 2.2. We therefore plan **80 committed-subset
+  tasks** × 5 seeds (400 trials per condition). This targets 80% power to detect a 12–15 pp difference in
+  instruction-level success at α = 0.05.
+- *FCR and ablations.* These are reported with task-clustered bootstrap CIs and are **not** individually powered. We
+  state the minimum detectable effect from the pilot variance.
 
 ### 7.3 E3: memory (RQ3)
 
@@ -912,13 +969,13 @@ has power > 0.9 at α = 0.05. We will re-estimate after a 60-trial pilot.
 All are run on the memory service with a fixed LLM [cited benchmarks].
 
 **(b) Live-persona memory protocol (new).**
-- 20 simulated users × 6 sessions each, with scripted life facts, preferences, corrections and erasure requests.
+- 20 simulated users × 6 sessions each [target], with scripted life facts, preferences, corrections and erasure requests.
 - Persona-generated distractors: for example, the persona says "I love snow", which must not become a user fact.
 - **Echo probes:**
   - the user repeats a persona invention as if it were about themselves;
   - the persona paraphrases a real user fact, and the user later refers back to it.
 - **Fresh-public-session probe:** a Mode 2 session starts immediately after a private session.
-- Mode 2 sessions with 10 scripted viewers. 3 of them attempt MINJA-style poisoning and private-fact elicitation.
+- Mode 2 sessions with 10 scripted viewers [target]. 3 of them attempt MINJA-style poisoning and private-fact elicitation.
 - **Probes** after each session:
   - recall questions;
   - post-correction questions;
@@ -945,31 +1002,46 @@ All are run on the memory service with a fixed LLM [cited benchmarks].
 - Poisoning success rate.
 - Time-to-availability of a new memory.
 
-**Analysis.** Per-user clustered bootstrap CIs. Non-inferiority test on recall with a 5 pp margin.
+**Analysis.**
+- Per-user clustered bootstrap CIs. Non-inferiority test on recall with a 5 pp margin.
+- **Rare-event claims (CP4 finding 4).**
+  - A "< 1%" leak claim needs a 95% upper bound below 1%. With zero leaks observed, that takes ≥ 300 independent
+    opportunities (rule of three).
+  - We plan ≥ 360 cross-scope opportunities [target]: 20 users × 6 sessions × 3 private facts, each probed in a fresh
+    public session, with probes varied across channels. Deletion probes are planned the same way.
+  - The clustered upper bound is reported. If leaks cluster within users, the claim is reported per user.
 
 ### 7.4 E4: long-horizon consistency and the H-core test (RQ6, H-core)
 
-**Long sessions.** 10 sessions of 30 min each, in Mode 1 with scripted interaction.
+**Long sessions.** 10 sessions of 30 min each [target], in Mode 1 with scripted interaction.
 
 **Metrics.**
-- Persona identity similarity:
-  - presenter shot: a face embedding (ArcFace [cited]) against the reference image;
-  - world shot: a person re-identification embedding, because faces may not be visible;
-  - cross-shot similarity.
+- Persona identity:
+  - presenter shot: face embedding (ArcFace [cited]) against the reference;
+  - world shot: a person re-identification embedding.
+  - These are **per-shot scores, never compared with each other**. Each shot's threshold is calibrated against
+    human same/different judgments on a labelled sample.
+  - Cross-shot identity uses **human 2AFC judgments** on sampled cut pairs.
+- Behavioural and scene-state consistency: persona-canon probes; props and scene-state probes after cuts and
+  restarts; consistency between what the persona says it did and what was displayed.
 - Persona text consistency: DNLI/PICon-style contradiction probes [cited].
 - Stream stability: stall rate, seam artefacts at chunk boundaries (the stateful streaming decoder is noted as partial
   in the recipe), and session-restart seams (C5).
 
 **H-core test.**
-- A2 and **A1−mem** run through ≥ 3 sessions separated by restarts. A1−mem is A1 without the memory service: dialogue history only, in context, carried across restarts only as far as the context window allows. It is the "no external layer" variant.
+- A2 and **A1−mem** each run through ≥ 3 sessions separated by restarts.
+  - A1−mem is A1 with the memory service removed. **No state carries over between sessions**: each session starts
+    with a fresh context, holding only the persona canon.
+  - It removes the external *memory* layer, but it still has an external controller. It therefore tests H-core-abl,
+    not strict H-core (§1.2).
 - The same planted facts, corrections, deletions and visual-recall requests are used for both.
-- If an end-to-end system (A3b-class) becomes available with weights, it is run in the same protocol.
-- H-core is refuted for a system if it meets the §8 memory and compliance thresholds without an external layer.
+- **Strict H-core:** if an end-to-end system (A3b-class) becomes available with weights, it is run as-is, with no
+  wrapper, through the same protocol. It refutes H-core if it meets the §8 memory and compliance thresholds.
 
 ### 7.5 E5: human evaluation (RQ4 and UX)
 
 **Design.** Within-subject, counterbalanced. Pilot N = 12, then a main study with N = 24 if the pilot supports it
-[estimate]. Conditions: A0, A1 and A2, with 15-min sessions per condition.
+[estimate]. Sessions last 15 min per condition [target].
 
 **Measures.**
 - MOS for overall quality.
@@ -981,12 +1053,17 @@ All are run on the memory service with a fixed LLM [cited benchmarks].
 
 **Analysis.** Mixed models; Wilcoxon signed-rank for Likert items. We report effect sizes with CIs.
 
+**Sample size [estimate].** For H4b non-inferiority (margin 0.5 MOS, assumed SD of paired differences 0.8, one-sided
+α = 0.05, power 0.8), n ≈ 16. N = 24 therefore leaves room for drop-outs. The assumptions are re-estimated in the pilot.
+
+Conditions: A0, A0+clips, A2. A1 is included only if session time allows.
+
 **Governance.** Pre-registration before the main study [cited: nosek2018preregistration]. Informed consent. No
 public broadcast.
 
 ### 7.6 E6: private livestream (Mode 2)
 
-A closed test stream with scripted viewers, run for 2 h × 3 runs. Metrics:
+A closed test stream with scripted viewers, run for 2 h × 3 runs [target]. Metrics:
 - chat-response latency;
 - instruction success on voted actions;
 - poisoning and leak rates;
@@ -1026,18 +1103,20 @@ All thresholds below are **[target]**. They are provisional until M0 and the E2 
 |---|---|---|
 | Instruction-level success (primary for H1a) | All instructions in the denominator. Refusals and degradations count as failures | A2 − A1 ≥ +10 pp, with the paired CI excluding 0 |
 | OCR (conditional) | Among executed instructions, judged compliant on displayed frames within $D$ ($D$ = 5 s camera, 8 s events) | Reported with the refusal/degradation rate. Not used alone |
-| FCR | Completion claims contradicted by the judge | A2 ≤ 5% and below A1, CI excluding 0 (H1b) |
+| FCR | (Completion claims contradicted by human adjudication) / (completion claims made). Always reported with claim coverage = claims / compliant instructions | A2 ≤ 5% and below A1, CI excluding 0 (H1b). Claim coverage for A2 ≥ 70% |
 | Multi-step task success | All steps compliant, in order | Reported; A2 > A1 |
-| TVC (camera) | Wall-clock from instruction end-of-utterance to first judged-compliant *displayed* frame; failures censored | Deadline success ≥ 90% within 3.5 s. Median ≤ 2.0 s (Kaplan–Meier). An unconditional p95 is reported only if censoring ≤ 5%; otherwise the restricted mean time is reported |
+| TVC / time to first correctly conditioned visual response (TFCV), camera | From the user's end-of-utterance (VAD endpoint on the shared presentation timeline) to the first presented frame, in any shot, that human adjudication judges compliant. Failures are censored at $D$ = 5 s | Deadline success ≥ 90% within $D$. Kaplan–Meier median ≤ 2.5 s. The p95 is reported only if the KM curve reaches 0.95 before $D$ (deadline success ≥ 95%); otherwise the restricted mean time with horizon $D$ is reported |
 | TVC (events, post-C1) | Same, for scene/character events | Deadline success within 8 s and median reported. Targets are set after E1 |
-| Time to first speech | End of user utterance → first audible persona audio, on the shared presentation timeline | World-shot start: p50 ≤ 0.8 s, p95 ≤ 1.5 s. Presenter-shot start: p50 ≤ 1.1 s, p95 ≤ 1.8 s |
+| Time to first speech | End of user utterance → first audible persona audio (fillers included), on the shared presentation timeline | World-shot start: p50 ≤ 0.8 s, p95 ≤ 1.5 s. Presenter-shot start: p50 ≤ 1.1 s, p95 ≤ 1.8 s |
+| Time to first meaningful response (TFMR) | End of user utterance → start of the first presented audio segment whose transcript *addresses the request*. Fillers and backchannels are excluded; judged by two blinded raters against a rubric | p50 ≤ 1.5 s, p95 ≤ 2.5 s |
+| End-to-end latency distribution | Per-instruction TFMR and TFCV, as p50/p95 over all instructions in E2 (censored per the TVC rule) | Reported by condition and configuration |
 | Barge-in stop | User speech onset → persona audio stops | p95 ≤ 250 ms |
 | Recovery after correction | Correction utterance → first compliant frame of the corrected intent | p50 ≤ TVC p50 + 1 chunk |
 | Memory recall | Correct answers on planted-fact probes | Non-inferior to the best baseline (margin 5 pp) |
 | False-user-fact rate | Stored or asserted user facts not stated by the user | ≤ 2% and below baselines |
 | Post-deletion leak | Any channel reveals a deleted item | ≤ 5% (vs K-Bench-style baselines) |
-| Cross-scope leak | Private item surfaces in Mode 2, or across users | < 1% (ideally 0 observed; report the upper CI) |
-| Identity consistency | Embedding similarity to the reference (per shot, per 30 s window) | Above the threshold τ. τ is set as the 5th percentile of same-persona reference augmentations; ≥ 80% of windows pass |
+| Cross-scope leak | Private item surfaces in Mode 2, or across users | 95% upper bound < 1% over ≥ 360 opportunities; that requires 0 observed leaks (rule of three) |
+| Identity consistency | Per shot: embedding similarity to the reference per 30 s window (face for the presenter; re-ID for the world shot). Thresholds are calibrated on human same/different labels. Cross-shot: human 2AFC on cut pairs | ≥ 80% of windows pass per shot; ≥ 80% cross-shot "same person" |
 | Lip-sync (presenter) | LSE-C / LSE-D (SyncNet) [cited]; A/V offset | Within ±45 ms offset; LSE comparable to the avatar model's published range |
 | Stream stability | Stalls per 10 min; seam artefacts | ≤ 1 stall / 10 min on the qualified configuration |
 | Judge validity | κ between VLM or geometric judge and blinded humans | κ ≥ 0.6. Otherwise human labels are primary |
@@ -1172,5 +1251,6 @@ Full, verified BibTeX is in `docs/references.bib`; every arXiv entry was resolve
 
 ## 14. Review status
 
-This proposal went through the mandatory GPT-6 Sol (Codex) checkpoints. See `docs/codex_reviews.md` for the model
-verification, the findings and their resolutions.
+GPT-6 Sol reviewed this proposal through Codex at all four mandatory checkpoints. The final CP4 round is recorded in
+`docs/codex_reviews.md`, together with model verification, every finding and its disposition, and any open
+disagreements.
