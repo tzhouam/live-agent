@@ -1,0 +1,75 @@
+%% Fig. 1 — Proposed architecture A2: capability-grounded modular controller + streaming world generator.
+%% Editable Mermaid source. Render: npx -y @mermaid-js/mermaid-cli -i fig1_architecture_A2.mmd -o fig1.svg
+flowchart LR
+  subgraph IN[Inputs]
+    U[User mic / text<br/>1:1 session]
+    C[Livestream chat<br/>public, untrusted]
+  end
+
+  subgraph FAST[Fast path - critical]
+    VAD[VAD + streaming ASR<br/>barge-in detector]
+    TD[Turn and interrupt manager]
+    RESP[Responder LLM<br/>streaming, short horizon]
+    TTS[Streaming TTS]
+  end
+
+  subgraph SLOW[Deliberative path - async]
+    PLAN[Planner LLM<br/>goal stack, multi-step plans]
+    MEMR[Memory retrieval<br/>scoped, provenance-typed]
+  end
+
+  subgraph CTRL[Control layer]
+    IR[(Behavior IR<br/>time-aligned tracks:<br/>speech / camera / scene-event /<br/>character-event)]
+    MAN[[Capability manifest<br/>verified backbone controls]]
+    COMP[Control compiler<br/>IR to executable controls<br/>+ reject / degrade]
+    SCHED[Chunk-boundary scheduler<br/>event ids, cancellation, staleness]
+  end
+
+  subgraph GEN[vLLM-Omni server]
+    WS[WS /v1/realtime/video<br/>session.start / interaction / stop]
+    LB[LingBot-World 2.0 14B<br/>causal-fast, 4 DMD steps<br/>sink + rolling KV]
+  end
+
+  subgraph VERIFY[Observation and verification]
+    ACK[Event ack from chunk metadata<br/>started / active / completed ids]
+    MON[Compliance monitor<br/>pose estimator + VLM judge<br/>identity embedding]
+  end
+
+  subgraph MEM[Memory service]
+    WM[Working context<br/>per session]
+    EP[(Episodic log<br/>append-only, timestamped)]
+    SEM[(Semantic profile<br/>user-asserted facts only)]
+    GENV[(Agent-generated events<br/>quarantined, never user facts)]
+    VIS[(Visual state records<br/>ref frames, persona look,<br/>world seeds)]
+    CONS[Consolidator<br/>async, sleep-time]
+  end
+
+  OUT[Muxer: fMP4 video + TTS audio<br/>A/V alignment, jitter buffer]
+  VIEW[Viewer / stream]
+
+  U --> VAD --> TD
+  C --> TD
+  TD -->|interrupt| SCHED
+  TD --> RESP
+  TD --> PLAN
+  MEMR --> RESP
+  MEMR --> PLAN
+  RESP --> TTS --> OUT
+  RESP --> IR
+  PLAN --> IR
+  IR --> COMP
+  MAN --> COMP
+  COMP --> SCHED --> WS --> LB
+  LB --> WS --> OUT --> VIEW
+  WS --> ACK --> SCHED
+  OUT --> MON --> SCHED
+  MON --> PLAN
+  TD --> EP
+  RESP --> GENV
+  MON --> VIS
+  EP --> CONS --> SEM
+  CONS --> VIS
+  SEM --> MEMR
+  EP --> MEMR
+  VIS --> MEMR
+  WM --- RESP

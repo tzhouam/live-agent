@@ -1,0 +1,40 @@
+%% Fig. 2 — Interaction sequence: instruction, interruption, revision, verification.
+%% Times are illustrative placeholders, not measurements. T = chunk period (12 frames).
+sequenceDiagram
+  autonumber
+  participant User
+  participant ASR as VAD/ASR + Turn mgr
+  participant R as Responder LLM
+  participant P as Planner LLM
+  participant M as Memory
+  participant CC as Compiler + Scheduler
+  participant G as vLLM-Omni LingBot (WS)
+  participant V as Compliance monitor
+  participant O as Muxer / Viewer
+
+  User->>ASR: "Walk toward the lake"
+  ASR->>R: final transcript (endpoint)
+  par fast reply
+    R->>O: TTS "Sure, heading to the lake" (first audio)
+  and plan
+    R->>P: intent(navigate, target=lake)
+    P->>M: retrieve(user prefs: pace=slow) [scope=private]
+    M-->>P: fact(pace=slow, provenance=user-asserted, t=session 2)
+    P->>CC: IR: camera.velocity(z=+0.03) from t0, event e17
+  end
+  CC->>G: session.interaction {event_id:e17, camera velocity}
+  G-->>CC: session.interaction.queued(e17)
+  Note over G: applied at next chunk boundary (0..T wait) + T generation
+  G->>O: chunk k (metadata started_event_ids=[e17]) + fMP4
+  O->>V: frames of chunk k
+  V-->>CC: observed forward motion ok (pose est.)
+  User->>ASR: "No wait, turn left instead!" (barge-in)
+  ASR->>R: interrupt
+  R->>O: stop TTS, ack "Turning left"
+  ASR->>CC: cancel pending events newer than current chunk
+  CC->>G: session.interaction {event_id:e18, camera target yaw -60deg, transition_chunks:1}
+  G->>O: chunk k+1 still reflects e17 (already in flight)
+  G->>O: chunk k+2 started_event_ids=[e18]
+  O->>V: frames k+2
+  V-->>CC: yaw change observed? if not within 2 chunks -> re-issue / tell user
+  CC->>M: episodic event (instruction revised, outcome=complied@k+2) [provenance=system-observed]
