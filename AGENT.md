@@ -7,4 +7,5 @@ This file exists for tools that read `AGENT.md`. It carries no separate rules.
 - Claude Code rules: [`CLAUDE.md`](CLAUDE.md)
 - Original brief: [`goal.md`](goal.md)
 
-If these files disagree, `docs/PROJECT.md` wins. Fix the others to match it.
+`goal.md` sets the requirements, and `docs/PROJECT.md` records their current interpretation.
+If any of these files disagree, log the conflict in `docs/decision_log.md` and fix it. Do not silently pick one.

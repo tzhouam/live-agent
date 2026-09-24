@@ -1,7 +1,7 @@
 # CLAUDE.md — live-agent
 
 Project: research and demo a real-time, personalized live agent (live generated
-video + speech, instruction following, reasoning, long-term memory).
+video, plus speech where supported; instruction following, reasoning, long-term memory).
 
 **The project specification lives in [`docs/PROJECT.md`](docs/PROJECT.md).** It covers
 purpose, scope, capabilities, requirements, research standards, deliverables and

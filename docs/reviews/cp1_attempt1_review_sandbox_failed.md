@@ -1,0 +1,13 @@
+I could not complete a revision-specific review. The local sandbox failed before every file read with `bwrap: Creating new namespace failed: No space left on device`; the requested files were not available through the read-only repository interface. The findings below are **provisional**, based only on your message and the AGENTS.md text you supplied. I cannot establish whether `docs/PROJECT.md` faithfully captures `goal.md` or whether the five instruction files are consistent.
+
+1. **Blocking — Checkpoint 1 lacks source verification.** Restore read access or provide the files at `ef3a0f3`, then compare each requirement in `goal.md` against `docs/PROJECT.md`. Do not treat this review as approval of the spec or instruction structure.
+
+2. **Major — The working hypothesis risks selecting an architecture before testing the demo need.** The presence of LingBot World code in vLLM-Omni establishes an implementation to inspect, not that it fits the intended interaction. State competing approaches and the evidence that would rule each in or out before architecture work.
+
+3. **Major — The demo needs an explicit acceptance scenario.** Fix the audience, operator and persona, input and output modalities, speech and interruption behavior, content boundaries, and session length. Define “real-time” with measurable first response, steady playback, and recovery targets; otherwise the literature review cannot rank approaches against a common goal.
+
+4. **Major — Model and hardware feasibility remain unverified.** Folder names in the local “MiniMax H3” copy do not establish usable audio, video, or camera-conditioned inference. Likewise, a shared, scheduled eight-GPU pool is not a guaranteed demo allocation. Record model provenance, license, working inference path, measured memory and latency, and the GPU reservation needed for the chosen scenario.
+
+5. **Major — Review audit records need to support reproduction.** For each Codex review, retain the exact repo and upstream SHAs, dirty-worktree status, prompt, CLI version, requested model, rollout’s reported model, command and exit status, full output, and the author’s disposition of every finding. A statement that the CLI model was “verified” is insufficient on its own.
+
+6. **Minor — A single spec with thin pointers is a sound structure if authority is unambiguous.** Once file access works, check that `CLAUDE.md`, `AGENTS.md`, and `AGENT.md` all point to the same spec, distinguish contributor and reviewer duties consistently, and contain no competing requirements.

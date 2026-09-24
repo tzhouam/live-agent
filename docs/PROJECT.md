@@ -1,9 +1,11 @@
 # Live Agent — Project Specification (single source of truth)
 
-Status: **v0.1 provisional** (2026-09-25). Written before research and review, and
-updated after each Codex checkpoint (see `docs/codex_reviews.md`). `CLAUDE.md`,
-`AGENTS.md` and `AGENT.md` point here and must not restate this spec in their own words.
-The original brief is `goal.md`.
+Status: **v0.2 provisional** (2026-09-25; revised after Codex checkpoint 1, see
+`docs/codex_reviews.md`). **Precedence:** `goal.md` (the owner's brief) sets the
+requirements. This file records our current interpretation of them and tracks
+their status. If the two disagree, raise the conflict in `docs/decision_log.md`
+for resolution; do not silently prefer either one. `CLAUDE.md`, `AGENTS.md` and
+`AGENT.md` point here and must not restate the spec.
 
 ## Purpose
 
@@ -55,12 +57,28 @@ alone is insufficient for reliable, stateful agent behavior.
 | R2 | Mandatory GPT-6 Sol review through Codex at 4 checkpoints, with an auditable log | Confirmed (goal.md §7) |
 | R3 | Label every number as cited / measured locally / estimate / proposed target | Confirmed (goal.md §6) |
 | R4 | Keep private user memory separate from public livestream content; never store generated or inferred events as confirmed user facts | Confirmed (goal.md §5) |
-| A1 | Local hardware is 8× NVIDIA L20X (≈140 GB each), scheduled through `gpu` (canhazgpu) | Observed 2026-09-25 (`nvidia-smi`) |
+| A1 | Hardware *inventory*: 8× NVIDIA L20X (≈140 GB each), shared and scheduled through `gpu` (canhazgpu). Inventory is not guaranteed capacity: schedulable access, memory per job, and LingBot throughput on L20X are **unverified**. Upstream validated H200/B200 only | Inventory observed 2026-09-25 (`nvidia-smi`); capacity open |
 | A2 | The reference agent's implementation ("MiniMax H3") is unverified | Assumption |
 | A3 | Speech (ASR/TTS) and lip sync probably need components outside LingBot-World | To verify (backbone note) |
 | Q1 | Does LingBot-World 2.0 accept mid-session text/prompt changes, or only camera/action signals? | Open → backbone investigation |
 | Q2 | Can a world model with camera/action control express character behavior (gestures, expressions)? | Open |
-| Q3 | Is the demo audience one private user, a public chat, or both? | Assumed both, as separate modes |
+| Q3 | Audience: the first acceptance scenario is **one private user** (1:1). Public livestream with chat is a second evaluation scenario that reuses the same agent, with separate memory scopes | Decision D-001 (provisional) |
+| Q4 | Provenance, license, and working inference path of the local "MiniMax H3" copy | Open → reference-agent note |
+| Q5 | Is a simpler pipeline (LLM + TTS + talking-head avatar, with no world model) enough for the focused demo? It must be carried as a competing baseline | Open. The evaluation must be able to favor it |
+| Q6 | Proposed "real-time" targets (time to first speech, time to first correctly conditioned visual, p50/p95) | Set in the proposal, labeled as targets |
+
+## Requirement → deliverable checklist (from goal.md)
+
+| goal.md § | Requirement | Where addressed |
+|---|---|---|
+| §1 | Research question, hypothesis tested rather than asserted, focused demo scenario, preferred backbone not silently replaced, reference agent treated as qualitative | proposal §1–2, decision_log |
+| §2 | Instruction files kept consistent. Provisional understanding recorded first, then updated | this file, CLAUDE/AGENTS/AGENT.md |
+| §3 | Six research areas. Matrix fields: approach, capabilities, memory, control interface, latency/hardware, availability, limitations, relevance, date/URL. Synthesis of solved, open, reusable, and contribution | related_work.md |
+| §4 | Backbone integration surface. Each capability classed as available / reported / needs engineering / needs research, with the smallest resolving experiment | backbone_verification.md, proposal §6 |
+| §5 | ≥3 candidate architectures. IR/interfaces/state/feedback, critical path, interruption, latency budget, memory taxonomy and lifecycle, private/public separation, feasibility, diagrams | proposal §5, figures/ |
+| §6 | Ten proposal sections. Contribution separated from engineering. Evaluation with baselines, ablations, controls, sample sizes, uncertainty. Every number labeled | research_proposal.md |
+| §7 | GPT-6 Sol review at 4 checkpoints, logged and re-reviewed | codex_reviews.md, docs/reviews/ |
+| §8 | Final consistency check and closing summary | end of phase |
 
 ## Deliverables (Phase 1)
 
@@ -97,8 +115,16 @@ alone is insufficient for reliable, stateful agent behavior.
 - Checkpoints: (1) understanding/requirements/assumptions; (2) literature and
   research gap; (3) architectures, integration, memory, latency; (4) experiments
   and final proposal.
-- For each checkpoint, log the date, model, reviewed git revision, issues,
-  resolutions, and remaining disagreements in `docs/codex_reviews.md`. Raw
-  reviewer output goes in `docs/reviews/`. Re-review material changes.
+- The Codex shell sandbox cannot start on this host (user namespaces are
+  disabled), and running unsandboxed is not permitted. Reviews therefore run
+  through `tools/codex_review.sh <tag> <instructions> <files...>`, which puts
+  every piece of evidence (files and code excerpts) inline in the prompt.
+- For each checkpoint, record in `docs/reviews/<tag>_*`: the exact prompt and
+  evidence bundle (with sha256), the reviewer output, the event stream, and
+  metadata (repo HEAD and dirty state, vLLM-Omni commit, CLI version, requested
+  model, model reported by the rollout, thread ID, exit code).
+  `docs/codex_reviews.md` summarizes every finding with its disposition
+  (accepted / partially accepted / rejected with evidence / open) and the
+  revision that resolved it. Re-review material changes.
 - If Codex is unavailable, record the exact blocker and mark the review
   **pending**. Never simulate or substitute a reviewer.
