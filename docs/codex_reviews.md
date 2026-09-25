@@ -290,3 +290,14 @@ Model gpt-6-sol (rollout verified). zh7 #1 RESOLVED; zh7 #2 PARTIALLY: the prima
 - Withdrawn chains are excluded from the denominator and reported.
 - Capacity-skipped chains stay in the denominator as failures.
 - Updated consistently in RQ1 (§4), §7.2 (definition, rule table, metrics) and §8.
+
+### zh9: round 9 (v2.7, commit 34e3637)
+
+Model gpt-6-sol (rollout verified). zh8 is PARTIALLY resolved: "all chains" vs "withdrawn excluded" still conflicted.
+No other blocking or major issue. **Verdict: not ready.**
+**Resolution (v2.8, grep-verified).**
+- An **effective intent chain** is defined once: a chain whose final intent was not withdrawn, including
+  capacity-skipped chains.
+- It is the primary denominator in §4, §7.2 and §8, and each chain is scored once.
+- Withdrawn chains are reported separately.
+- The capacity-skip rate is also over effective chains.

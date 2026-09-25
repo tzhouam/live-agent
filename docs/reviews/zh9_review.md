@@ -1,0 +1,3 @@
+1. **Major — zh8 PARTIALLY RESOLVED.** §7.2 now distinguishes user revisions from capacity skips and counts skipped chains as failures. But it says both “the primary denominator is all intent chains” and “withdrawn chains are excluded”; its “each chain is scored once” also conflicts with that exclusion. §4 and §8 repeat the unqualified wording. Define the denominator in all three sections as **intent chains with a final, nonwithdrawn intent**, scored once, including capacity-skipped chains as failures. State separately whether the capacity-skip rate includes withdrawn chains in its denominator.
+
+The whole-document pass found **no other blocking or major issue** in the inlined material. **Verdict: not ready** until the primary outcome’s denominator is consistent.

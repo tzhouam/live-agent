@@ -1,0 +1,4 @@
+You are GPT-6 Sol, the INDEPENDENT REVIEWER for the "live-agent" project (AGENTS.md rules: read-only; numbered findings tagged blocking/major/minor). ROUND 9 (zh9) of the review of the owner-directed Chinese rewrite (TaoMate-H3 base + Google agentic suite, D-017). The review log (inlined) records that rounds zh3 and zh5 reviewed text where the author's edits had failed to apply; this round reviews v2.5 v2.7 after your zh8 finding.
+1. State RESOLVED / PARTIALLY / NOT RESOLVED for your zh8 finding (primary success-rate denominator: user revisions vs capacity skips), checking §4, §7.2, §8 text.
+2. Do a final whole-document pass for any remaining BLOCKING or MAJOR issue. Do not re-raise resolved items unless the text regressed.
+3. Verdict: ready / ready with minor fixes (list them exactly) / not ready. Be concise.
