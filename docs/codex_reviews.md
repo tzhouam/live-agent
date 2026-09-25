@@ -261,3 +261,11 @@ Model gpt-6-sol (rollout verified). It correctly reported zh4 #1–#4 NOT RESOLV
 - v2.4 version labels.
 
 Three residual "M0 measures end-to-end" references were also fixed (§1.1 table, §6.4 heading, §9.3 risk row).
+
+### zh6: round 6 (verified v2.4, commit ee7c7d5)
+
+Model gpt-6-sol (rollout verified). zh4 #1–#4 were all **RESOLVED**. One new major finding: the near-real-time fallback
+promises E2 measurements, but E2 was gated on passing real-time requalification. **Verdict: not ready.**
+**Resolution (v2.5, verified by grep):** if the end-of-M2 gate fails, E2/E5 still run under the near-real-time service
+rule and are labelled "near-real-time". The RQ1/RQ2/RQ4/RQ5 contrasts stay valid (shared substrate). Latency results
+are reported as measured, and no §8 real-time target is claimed. §1.2 and §6.4 are consistent.
