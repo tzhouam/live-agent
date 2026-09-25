@@ -396,3 +396,11 @@ Both verdicts: **not ready**. Every finding was accepted; none were rejected. Fi
   - impl2 #16, impl1 #19: the claims were reworded (generator-path diagnostic rather than M1 qualification; short-run throughput only).
 
 See `docs/implementation.md` "Known deviations".
+
+### impl1b + impl2b: round 2 (commit fc23372): **NOT RUN (reviewer authentication failure)**
+
+Both calls to `tools/codex_review.sh` (2026-09-26) failed before producing a review. The error was `401 Unauthorized:
+Incorrect API key provided`, after 5 reconnects (see `docs/reviews/impl1b_events.jsonl`). No review text exists, and
+none is simulated here. The meta files' `rollout_models` line (gpt-6-sol) is from these threads' own rollouts: the
+session was created with the requested model, but every model request was rejected, so it is not evidence of a review. Next step: the owner re-authenticates Codex (`codex login`), then round 2 is
+re-run with the same prompts (`docs/reviews/impl{1,2}b_prompt.md`).
