@@ -26,6 +26,7 @@ class SimClient:
     presented: list[tuple[int, int, float, float]] = field(default_factory=list)
     stalls: list[Stall] = field(default_factory=list)
     dropped: list[tuple[int, int]] = field(default_factory=list)
+    recorder: object | None = None  # optional Recorder of the presented stream
 
     def __post_init__(self) -> None:
         self._q: asyncio.Queue[tuple[Chunk, BlockScript]] = asyncio.Queue()
@@ -53,9 +54,73 @@ class SimClient:
             t1 = now()
             self._last_end = t1
             self.presented.append((ch.request_index, ch.chunk_index, t0, t1))
+            if self.recorder is not None:
+                self.recorder.write(ch)
             if self.orchestrator is not None:
                 self.orchestrator.on_presented(ch.request_index, ch.chunk_index, t0, t1)
 
     def close(self) -> None:
         if self._task:
             self._task.cancel()
+        if self.recorder is not None:
+            self.recorder.close()
+
+
+class Recorder:
+    """Writes the *presented* stream (what a viewer saw) to MP4: raw frames are piped to ffmpeg,
+    audio is buffered and muxed on close. Needs an ffmpeg with libx264 (``/usr/bin/ffmpeg`` here)."""
+
+    def __init__(self, path, ffmpeg: str = "/usr/bin/ffmpeg") -> None:
+        from pathlib import Path
+
+        self.path = Path(path)
+        self.ffmpeg = ffmpeg
+        self._proc = None
+        self._audio: list = []
+        self._sr = 32000
+
+    def write(self, chunk: Chunk) -> None:
+        import subprocess
+
+        import numpy as np
+
+        if chunk.video is None:
+            return
+        v = np.ascontiguousarray(chunk.video, dtype=np.uint8)
+        if self._proc is None:
+            _, h, w, _ = v.shape
+            self._tmp = self.path.with_suffix(".video.mp4")
+            self._proc = subprocess.Popen(
+                [self.ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                 "-s", f"{w}x{h}", "-r", str(chunk.fps), "-i", "-", "-c:v", "libx264", "-pix_fmt",
+                 "yuv420p", "-preset", "veryfast", str(self._tmp)], stdin=subprocess.PIPE)
+        self._proc.stdin.write(v.tobytes())
+        if chunk.audio is not None:
+            self._audio.append(np.asarray(chunk.audio, dtype=np.float32))
+            self._sr = chunk.sample_rate
+
+    def close(self) -> None:
+        import subprocess
+        import wave
+
+        import numpy as np
+
+        if self._proc is None:
+            return
+        self._proc.stdin.close()
+        self._proc.wait()
+        if not self._audio:
+            self._tmp.replace(self.path)
+            return
+        a = np.concatenate(self._audio)
+        a = a if a.ndim == 2 else a[:, None]
+        wav = self.path.with_suffix(".wav")
+        with wave.open(str(wav), "wb") as w:
+            w.setnchannels(a.shape[1])
+            w.setsampwidth(2)
+            w.setframerate(self._sr)
+            w.writeframes((np.clip(a, -1, 1) * 32767).astype(np.int16).tobytes())
+        subprocess.run([self.ffmpeg, "-y", "-loglevel", "error", "-i", str(self._tmp), "-i", str(wav),
+                        "-c:v", "copy", "-c:a", "aac", "-shortest", str(self.path)], check=True)
+        self._tmp.unlink()
+        wav.unlink()

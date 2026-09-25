@@ -35,6 +35,7 @@ from fastapi.responses import HTMLResponse
 
 from live_agent.capability import CapabilityManifest, Status
 from live_agent.director.director import Director, DirectorMode
+from live_agent.generator.base import SessionView
 from live_agent.ledger import StateLedger
 from live_agent.orchestrator import CorrectionMode, Orchestrator, OrchestratorConfig
 from live_agent.timeline import EventLog, LockScheduler, SchedulerConfig
@@ -107,6 +108,22 @@ def build_app(args: argparse.Namespace) -> FastAPI:
     cfg_dir = Path(args.config)
     canon = json.loads((cfg_dir / "canon.json").read_text(encoding="utf-8"))
 
+    app.state.shared_gen = None
+    app.state.session_lock = asyncio.Lock()
+
+    @app.on_event("startup")
+    async def _startup() -> None:
+        # Heavy generators are started once and shared (reset per session); the mock is per session.
+        if args.generator != "mock":
+            gen = make_generator(args)
+            await gen.start()
+            app.state.shared_gen = gen
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        if app.state.shared_gen is not None:
+            await app.state.shared_gen.close()
+
     @app.get("/")
     async def index() -> HTMLResponse:
         return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
@@ -129,8 +146,17 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         director = Director(llm, manifest, ledger, persona_name=canon["display_name"],
                             persona_bio=canon["persona_bio"],
                             mode=DirectorMode(args.director_mode))
-        generator = make_generator(args)
-        sched = LockScheduler(SchedulerConfig(lambda_prior_s=args.lambda_prior))
+        if app.state.shared_gen is not None:
+            if app.state.session_lock.locked():
+                await ws.send_text(json.dumps({"type": "error", "error": "generator busy (one live session at a time)"}))
+                await ws.close()
+                return
+            await app.state.session_lock.acquire()
+            generator = SessionView(app.state.shared_gen)
+        else:
+            generator = make_generator(args)
+        sched = LockScheduler(SchedulerConfig(request_s=generator.info.request_seconds,
+                                              lambda_prior_s=args.lambda_prior))
         judge = speech = corrector = None
         if args.vlm_url:
             from live_agent.qc.judge import VLMJudge
@@ -189,6 +215,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             pass
         finally:
             await orch.stop()
+            if app.state.shared_gen is not None:
+                app.state.session_lock.release()
 
     return app
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +104,8 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
 
 async def run_task(task: Task, condition: str, seed: int, *, factory, speed: float, out_dir: Path) -> Path:
     cfg = CONDITIONS[condition]
-    orch, client = factory(cfg, seed)
+    # Per-(task, seed) RNG stream, identical across conditions (paired design), different across tasks.
+    orch, client = factory(cfg, zlib.crc32(f"{task.task_id}/{seed}".encode()))
     client.orchestrator = orch
     t0 = now()
     user_events: list[dict] = []
@@ -160,6 +162,36 @@ def mock_factory(config_dir: Path, *, speed: float, llm, p_default: float = 0.7)
     return factory
 
 
+def live_factory(config_dir: Path, *, backend, llm, vlm, record_dir: Path | None = None,
+                 allow_uncalibrated: bool = False):
+    """Real stack: shared generator backend (e.g. TaoMate-H3; one session at a time through
+    SessionView), LLM responder, VLM judge, LLM forward corrector. Real time (speed 1)."""
+    from live_agent.generator.base import SessionView
+    from live_agent.qc.judge import ForwardCorrector, VLMJudge
+    from live_agent.sim import Recorder
+
+    canon = json.loads((config_dir / "canon.json").read_text(encoding="utf-8"))
+    counter = iter(range(10**9))
+
+    def factory(cfg: dict, seed: int):
+        manifest = CapabilityManifest.load(config_dir / "capabilities.json")
+        if allow_uncalibrated:
+            manifest.min_status = Status.DOCUMENTED  # pre-E1 qualification runs only; never for E2 results
+        ledger = StateLedger.from_config(config_dir / "canon.json")
+        director = Director(llm, manifest, ledger, persona_name=canon["display_name"],
+                            persona_bio=canon["persona_bio"], mode=cfg["mode"])
+        gen = SessionView(backend)
+        sched = LockScheduler(SchedulerConfig(request_s=backend.info.request_seconds))
+        rec = Recorder(record_dir / f"session-{next(counter):03d}.mp4") if record_dir else None
+        client = SimClient(speed=1.0, recorder=rec)
+        orch = Orchestrator(gen, director, sched, client, judge=VLMJudge(vlm), corrector=ForwardCorrector(llm),
+                            log=EventLog(), cfg=OrchestratorConfig(correction_mode=cfg["correction"],
+                                                                   qc_enabled=cfg["qc"], seed=seed))
+        return orch, client
+
+    return factory
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--suite", default="eval/tasks/e2_committed.jsonl")
@@ -172,19 +204,47 @@ def main() -> None:
     p.add_argument("--llm-url", default="http://127.0.0.1:8101/v1")
     p.add_argument("--llm-model", default="qwen3-8b")
     p.add_argument("--p-default", type=float, default=0.7, help="mock judge success probability")
-    args = p.parse_args()
+    p.add_argument("--generator", default="mock", choices=["mock", "taomate_h3"])
+    p.add_argument("--vlm-url", default="http://127.0.0.1:8102/v1")
+    p.add_argument("--vlm-model", default="qwen3-vl-8b")
+    p.add_argument("--allow-uncalibrated", action="store_true",
+                   help="live stack: accept 'documented' capabilities (M1 qualification before E1)")
+    p.add_argument("--record", action="store_true", help="save the presented stream as MP4 (live stack)")
+    args, rest = p.parse_known_args()
+    args.extra = rest
+    asyncio.run(_main(args))
+
+
+async def _main(args) -> None:
     from live_agent.llm import OpenAICompatLLM
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     tasks = [t for t in load_suite(args.suite) if not args.tasks or t.task_id in args.tasks]
-    factory = mock_factory(Path(args.config), speed=args.speed, llm=OpenAICompatLLM(args.llm_url, args.llm_model),
-                           p_default=args.p_default)
-    for cond in args.conditions:
-        for seed in args.seeds:
-            for t in tasks:
-                path = asyncio.run(run_task(t, cond, seed, factory=factory, speed=args.speed, out_dir=out))
-                print(path)
+    llm = OpenAICompatLLM(args.llm_url, args.llm_model)
+    backend = None
+    if args.generator == "mock":
+        speed = args.speed
+        factory = mock_factory(Path(args.config), speed=speed, llm=llm, p_default=args.p_default)
+    else:
+        from live_agent.generator.taomate_h3 import TaoMateH3Generator
+
+        speed = 1.0
+        backend = TaoMateH3Generator.from_args(args)
+        await backend.start()
+        factory = live_factory(Path(args.config), backend=backend, llm=llm,
+                               vlm=OpenAICompatLLM(args.vlm_url, args.vlm_model),
+                               record_dir=out if args.record else None,
+                               allow_uncalibrated=args.allow_uncalibrated)
+    try:
+        for cond in args.conditions:
+            for seed in args.seeds:
+                for t in tasks:
+                    path = await run_task(t, cond, seed, factory=factory, speed=speed, out_dir=out)
+                    print(path, flush=True)
+    finally:
+        if backend is not None:
+            await backend.close()
 
 
 if __name__ == "__main__":

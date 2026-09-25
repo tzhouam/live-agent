@@ -122,6 +122,39 @@ class TaoMateH3Generator(Generator):
         self._clock_offset = time.monotonic() - time.time()
         self._futures: dict[str, asyncio.Future] = {}
 
+    @classmethod
+    def add_args(cls, p) -> None:
+        p.add_argument("--taomate-student-devices", default=None,
+                       help="comma list; default: split CUDA_VISIBLE_DEVICES (see split_devices)")
+        p.add_argument("--taomate-teacher-devices", default=None)
+        p.add_argument("--taomate-colocate-teacher", action="store_true")
+        p.add_argument("--taomate-model-root", default=str(DEFAULT_MODEL_ROOT))
+        p.add_argument("--taomate-adapter-dir", default=str(DEFAULT_ADAPTER))
+        p.add_argument("--taomate-python", default=str(DEFAULT_PYTHON))
+        p.add_argument("--taomate-width", type=int, default=480)
+        p.add_argument("--taomate-height", type=int, default=864)
+        p.add_argument("--taomate-seed", type=int, default=8301)
+        p.add_argument("--taomate-no-warmup", action="store_true")
+
+    @classmethod
+    def from_args(cls, args) -> "TaoMateH3Generator":
+        """Build from the unparsed ``--taomate-*`` options a CLI left in ``args.extra``."""
+        import argparse
+
+        p = argparse.ArgumentParser(add_help=False)
+        cls.add_args(p)
+        o, _ = p.parse_known_args(getattr(args, "extra", []) or [])
+        warmup = None
+        if not o.taomate_no_warmup:
+            warmup = ("integrated_multimodal_description: [Shot 1] A person sits quietly at a desk, "
+                      "reading a book in soft daylight.\n\noverall_soundscape: Quiet room tone.\n\n"
+                      "non_diegetic_music: N/A")
+        return cls(student_devices=o.taomate_student_devices, teacher_devices=o.taomate_teacher_devices,
+                   colocate_teacher=o.taomate_colocate_teacher, model_root=Path(o.taomate_model_root),
+                   adapter_dir=Path(o.taomate_adapter_dir), python=Path(o.taomate_python),
+                   width=o.taomate_width, height=o.taomate_height, seed=o.taomate_seed,
+                   warmup_prompt=warmup)
+
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()

@@ -92,3 +92,49 @@ class Generator(abc.ABC):
     @property
     def next_request_index(self) -> int:
         raise NotImplementedError
+
+
+class SessionView(Generator):
+    """One live session on a long-lived shared generator (TaoMate-H3 workers take ~130 s to start).
+
+    ``start`` resets the backend (fresh KV/sink/teacher tail) and numbers this session's requests
+    from 0; ``close`` resets again instead of shutting the workers down. Chunks and timings of
+    earlier sessions are dropped. Only one view may be active at a time (the caller serialises).
+    """
+
+    def __init__(self, backend: Generator) -> None:
+        self.backend = backend
+        self.info = backend.info
+        self._offset = 0
+
+    async def start(self) -> None:
+        await self.backend.reset()
+        self._offset = self.backend.next_request_index
+
+    async def submit(self, request_index: int, prompt: str) -> None:
+        await self.backend.submit(request_index + self._offset, prompt)
+
+    async def chunks(self) -> AsyncIterator[Chunk]:
+        from dataclasses import replace
+
+        async for ch in self.backend.chunks():
+            if ch.request_index < self._offset:
+                continue  # stale chunk from an earlier session
+            yield replace(ch, request_index=ch.request_index - self._offset)
+
+    async def reset(self) -> None:
+        await self.backend.reset()  # indices stay monotonic within the session
+
+    async def close(self) -> None:
+        await self.backend.reset()
+
+    @property
+    def timings(self) -> list[RequestTiming]:
+        from dataclasses import replace
+
+        return [replace(t, request_index=t.request_index - self._offset)
+                for t in self.backend.timings if t.request_index >= self._offset]
+
+    @property
+    def next_request_index(self) -> int:
+        return self.backend.next_request_index - self._offset
