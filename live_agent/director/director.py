@@ -59,22 +59,29 @@ class DirectorEvents:
 
 
 RESPONDER_SYSTEM = """你是直播数字人「{name}」的应答大脑。人设：{bio}
-你只能让人设做下列动作（intent 名）：{intents}。其他动作一律不能承诺去做，要礼貌地改为口头回应。
+人设能做的动作只有这些 intent：{intents}。
+输出一个 JSON 对象（不要输出任何其他文字），字段：
+- "relation": "new"（用户提出新的要求）| "revision"（用户改口、纠正尚未完成的要求）| "withdrawal"（用户取消尚未完成的要求）| "chat"（闲聊、提问、陈述）
+- "target_chain": relation 为 revision/withdrawal 时，被修改的链 id（从下面的未完成链中选）；否则 null
+- "kind": "action"（要求做一个动作）| "multistep"（按顺序做多个动作）| "content"（讲解、唱歌、回答知识问题）| "memory"（要求记住或忘记某事）| "chat"
+- "steps": [{{"intent": ..., "line": ...}}]，按顺序执行
+- "memory_note": 用户陈述了关于**他自己**的事实时，用第三人称写成一句（如「用户的妹妹住在杭州」）；否则 null
+- "forget_term": 用户要求忘记某事时，写出关键词；否则 null
 规则：
-1. 只输出一个 JSON 对象，不要输出其他文字。
-2. 字段：
-   "relation": "new" | "revision" | "withdrawal" | "chat"   —— 相对于尚未完成的指令链
-   "target_chain": 被修改或撤回的链 id（relation 为 revision/withdrawal 时必填，否则为 null）
-   "kind": "action" | "content" | "multistep" | "memory" | "chat"
-   "steps": [ {{"intent": 动作 intent 名或 "", "line": 这一步要说的话}} , ... ]   按顺序执行
-   "memory_note": 如果用户陈述了关于自己的事实，写成一句话；否则 null
-   "forget_term": 用户要求忘记某件事时，写出要忘记的关键词（例如「妹妹」）；否则 null
-3. 每一步的 line 不超过 {chars} 个汉字；长回答拆成多步（intent 可为 ""）。
-4. 只说意图（例如「好，我喝口茶」），绝不说某个动作已经完成（例如「我喝完了」）。
-5. 用户要求忘记某事时，kind 用 "memory"，steps 里口头确认即可。
+1. 只有当用户**明确要求人设做动作**时（kind 为 action 或 multistep），steps 里才写动作 intent；其他情况 intent 一律写 ""。
+2. 用户要求的动作不在上面的列表里时，intent 写 ""，并在 line 里礼貌说明做不到。
+3. 每个 line 不超过 {chars} 个汉字；长回答拆成多个 step。
+4. 只说意图（「好，我喝口茶」），不说已经完成（不说「我喝完了」）。
+5. 称呼用户用「你」。绝不把用户说的关于他自己的事说成是人设自己的事。
+示例：
+用户：喝口茶吧 → {{"relation":"new","target_chain":null,"kind":"action","steps":[{{"intent":"drink_tea","line":"好，我喝口茶。"}}],"memory_note":null,"forget_term":null}}
+用户：你能飞起来吗 → {{"relation":"chat","target_chain":null,"kind":"chat","steps":[{{"intent":"","line":"我可飞不起来，不过可以给你讲讲飞行的原理。"}}],"memory_note":null,"forget_term":null}}
+用户：我妹妹住在杭州 → {{"relation":"chat","target_chain":null,"kind":"chat","steps":[{{"intent":"","line":"原来你妹妹住在杭州，那里很美。"}}],"memory_note":"用户的妹妹住在杭州","forget_term":null}}
+用户：忘掉我妹妹的事 → {{"relation":"chat","target_chain":null,"kind":"memory","steps":[{{"intent":"","line":"好的，关于你妹妹的事我已经忘掉了。"}}],"memory_note":null,"forget_term":"妹妹"}}
+用户（有未完成链 chain-1：翻书）：不对，先挥挥手 → {{"relation":"revision","target_chain":"chain-1","kind":"action","steps":[{{"intent":"wave","line":"好，先挥挥手。"}}],"memory_note":null,"forget_term":null}}
 当前未完成的指令链：{open_chains}
 人设当前状态：{state}
-相关记忆（带来源标签）：{memories}"""
+相关记忆（带来源标签，只作参考）：{memories}"""
 
 
 class Director:
@@ -124,6 +131,15 @@ class Director:
         relation = d.get("relation", "new")
         kind = TaskKind(d.get("kind", "chat")) if d.get("kind") in TaskKind._value2member_map_ else TaskKind.CHAT
         steps = [s for s in d.get("steps", []) if isinstance(s, dict)]
+        # Enforce the contract in code, not only in the prompt: actions only for action/multistep
+        # chains and only from the manifest; lines must not be empty punctuation.
+        allowed = {c.intent for c in self.manifest.caps.values()}
+        for st in steps:
+            if kind not in (TaskKind.ACTION, TaskKind.MULTISTEP) or st.get("intent") not in allowed:
+                if kind in (TaskKind.ACTION, TaskKind.MULTISTEP) and st.get("intent"):
+                    st["unsupported_intent"] = st["intent"]  # keep: the compiler will refuse it
+                    continue
+                st["intent"] = ""
         target = self.chains.get(d.get("target_chain") or "")
         if d.get("memory_note"):
             self.memory_notes.append((utt.uid, d["memory_note"]))
@@ -275,7 +291,7 @@ def _split_line(line: str, n: int = CHARS_PER_REQUEST) -> list[str]:
             cur = piece
     if cur:
         out.append(cur)
-    return out
+    return [x for x in out if re.search(r"[\w\u4e00-\u9fff]", x)]
 
 
 _COMPLETION = re.compile(r"(完了|好了|做完|喝完|已经|done|finished)")
