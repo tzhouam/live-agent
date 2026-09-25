@@ -281,6 +281,144 @@
    "side_effects": [],
    "check_question": "人物是否在安静地看书？",
    "degrade_to": ""
+  },
+  {
+   "cap_id": "cap-16-frown",
+   "intent": "frown",
+   "phrase": "she frowns slightly, knitting her brows as if puzzled, then relaxes",
+   "aliases": [
+    "皱眉",
+    "皱皱眉",
+    "frown"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否皱眉？",
+   "degrade_to": "嗯……"
+  },
+  {
+   "cap_id": "cap-17-sit_down",
+   "intent": "sit_down",
+   "phrase": "she sits back down on the chair and settles her robe",
+   "aliases": [
+    "坐下",
+    "坐回去",
+    "sit down"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否坐下？",
+   "degrade_to": "好，我坐下。"
+  },
+  {
+   "cap_id": "cap-18-wave_left",
+   "intent": "wave_left",
+   "phrase": "she raises her LEFT hand and waves gently toward the lens",
+   "aliases": [
+    "左手挥",
+    "用左手",
+    "left hand"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否用左手朝镜头挥手？",
+   "degrade_to": "好，换左手。"
+  },
+  {
+   "cap_id": "cap-19-write_brush",
+   "intent": "write_brush",
+   "phrase": "she picks up the brush, dips it in ink and writes one large character on the rice paper",
+   "aliases": [
+    "写字",
+    "提笔",
+    "写个字",
+    "write"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否拿起毛笔在纸上写字？",
+   "degrade_to": "我来写个字。"
+  },
+  {
+   "cap_id": "cap-20-show_writing",
+   "intent": "show_writing",
+   "phrase": "she lifts the sheet of rice paper and shows the written character to the lens",
+   "aliases": [
+    "展示",
+    "给我看看",
+    "show"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否把写好字的纸举起给镜头看？",
+   "degrade_to": "你看，写好了。"
+  },
+  {
+   "cap_id": "cap-21-pick_up_fan",
+   "intent": "pick_up_fan",
+   "phrase": "she picks up the round silk fan from the desk",
+   "aliases": [
+    "拿扇",
+    "拿起扇子",
+    "pick up the fan"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否拿起团扇？",
+   "degrade_to": "我拿起扇子。"
+  },
+  {
+   "cap_id": "cap-22-fan_self",
+   "intent": "fan_self",
+   "phrase": "she gently fans herself with the round silk fan",
+   "aliases": [
+    "扇扇子",
+    "摇扇",
+    "扇一扇",
+    "fan"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否用团扇轻轻扇风？",
+   "degrade_to": "有点热，扇一扇。"
+  },
+  {
+   "cap_id": "cap-23-put_down_fan",
+   "intent": "put_down_fan",
+   "phrase": "she places the round silk fan back on the desk",
+   "aliases": [
+    "放下扇子",
+    "放下扇",
+    "put down the fan"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否把团扇放回桌上？",
+   "degrade_to": "好，放下扇子。"
   }
  ]
 }
