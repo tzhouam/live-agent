@@ -1,0 +1,14 @@
+tag: zh1
+date_utc: 2026-09-25T15:09:26Z
+repo_head: 63734a8ec2a02f9744452bc4c0f18f3477b0cc91
+repo_dirty_files: 6
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.156.0
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/zh1_review.md - < docs/reviews/zh1_prompt.md
+exit_code: 0
+thread_id: 01a0d918-aefb-7ff0-9191-363e37ad660c
+rollout: /home/zhoutaichang/.codex/sessions/2026/09/25/rollout-2026-09-25T23-04-28-01a0d918-aefb-7ff0-9191-363e37ad660c.jsonl
+rollout_models:       5 "model":"gpt-6-sol" 
+inlined_files: docs/research_proposal_zh.md docs/notes/taomate_deep_dive.md docs/notes/google_longform_agentic_suite.md docs/decision_log.md docs/reviews/zh1_ev_taomate_code.md
+prompt_sha256: 64c491d0429d003554e4b3b7185c84e19e19245f7cd8d61598018f83b664abd3
