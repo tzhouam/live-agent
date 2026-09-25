@@ -68,6 +68,7 @@ RESPONDER_SYSTEM = """你是直播数字人「{name}」的应答大脑。人设�
    "kind": "action" | "content" | "multistep" | "memory" | "chat"
    "steps": [ {{"intent": 动作 intent 名或 "", "line": 这一步要说的话}} , ... ]   按顺序执行
    "memory_note": 如果用户陈述了关于自己的事实，写成一句话；否则 null
+   "forget_term": 用户要求忘记某件事时，写出要忘记的关键词（例如「妹妹」）；否则 null
 3. 每一步的 line 不超过 {chars} 个汉字；长回答拆成多步（intent 可为 ""）。
 4. 只说意图（例如「好，我喝口茶」），绝不说某个动作已经完成（例如「我喝完了」）。
 5. 用户要求忘记某事时，kind 用 "memory"，steps 里口头确认即可。

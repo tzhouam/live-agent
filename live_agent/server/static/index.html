@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Agent</title>
+<style>
+  :root { --bg:#f6f3ec; --ink:#1c1b19; --muted:#6b665c; --accent:#a33a24; --line:#d9d2c2; --card:#fffdf8; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:"Noto Sans SC",system-ui,sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px; display:flex; flex-direction:column; gap:16px; }
+  header { display:flex; justify-content:space-between; align-items:baseline; border-bottom:1px solid var(--ink); padding-bottom:8px; }
+  h1 { font-family:"Noto Serif SC",serif; font-size:24px; margin:0; }
+  .status { font-size:13px; color:var(--muted); }
+  canvas { width:100%; aspect-ratio: 864 / 480; background:#111; border-radius:8px; display:block; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  button { font:inherit; padding:10px 16px; border-radius:8px; border:1px solid var(--ink); background:var(--card); cursor:pointer; min-height:44px; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  input[type=text] { flex:1; min-width:200px; font:inherit; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); min-height:44px; }
+  .caption { min-height:24px; font-size:16px; }
+  .log { font-family: ui-monospace, monospace; font-size:12px; color:var(--muted); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px; height:140px; overflow:auto; white-space:pre-wrap; }
+  label { font-size:14px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Live Agent · 书房里的汉服读书人</h1>
+    <span class="status" id="status">未连接</span>
+  </header>
+  <canvas id="screen" width="864" height="480" aria-label="数字人画面"></canvas>
+  <div class="caption" id="caption" aria-live="polite"></div>
+  <div class="row">
+    <label>模式
+      <select id="mode"><option value="private">一对一私聊</option><option value="public">测试直播</option></select>
+    </label>
+    <label>用户 ID <input type="text" id="uid" value="user-1" style="flex:0;width:120px"></label>
+    <button class="primary" id="connect">连接</button>
+  </div>
+  <div class="row">
+    <button id="talk" disabled aria-label="按住说话">按住说话</button>
+    <input type="text" id="text" placeholder="或输入文字，回车发送" disabled aria-label="文字输入">
+    <button id="send" disabled>发送</button>
+  </div>
+  <div class="log" id="log" aria-label="事件日志"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const canvas = $("screen"), g = canvas.getContext("2d");
+let ws = null, audioCtx = null, playhead = 0, queue = [], pending = null, recorder = null, epoch = 0;
+
+function logLine(s) { const el = $("log"); el.textContent += s + "\n"; el.scrollTop = el.scrollHeight; }
+function setStatus(s) { $("status").textContent = s; }
+
+$("connect").onclick = () => {
+  audioCtx = new AudioContext();
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => {
+    ws.send(JSON.stringify({type: "hello", mode: $("mode").value, user_id: $("uid").value}));
+    setStatus("已连接"); ["talk","text","send"].forEach(id => $(id).disabled = false); $("connect").disabled = true;
+    setInterval(() => ws.readyState === 1 && ws.send(JSON.stringify({type: "ping", t: performance.now()})), 5000);
+  };
+  ws.onclose = () => { setStatus("连接已关闭"); };
+  ws.onmessage = onMessage;
+  requestAnimationFrame(render);
+};
+
+async function onMessage(ev) {
+  if (typeof ev.data === "string") {
+    const m = JSON.parse(ev.data);
+    if (m.type === "chunk") { pending = {meta: m, frames: [], pcm: null, epoch}; }
+    else if (m.type === "stop") { stopAll(); logLine("[stop] 打断：清空待播内容"); }
+    else if (m.type === "transcript") { logLine("[你] " + m.text); }
+    else if (m.type === "status") { setStatus(`会话 ${m.session} · ${m.mode} · ${m.generator}`); }
+    else if (m.type === "pong") { logLine(`[rtt] ${(performance.now() - m.t).toFixed(0)} ms`); }
+    return;
+  }
+  if (!pending) return;
+  if (pending.frames.length < pending.meta.n_frames) {
+    pending.frames.push(createImageBitmap(new Blob([ev.data], {type: "image/jpeg"})));
+  } else {
+    pending.pcm = new Int16Array(ev.data);
+    const c = pending; pending = null;
+    c.frames = await Promise.all(c.frames);
+    if (c.epoch === epoch) schedule(c);
+  }
+}
+
+function schedule(c) {
+  const m = c.meta, sr = m.sample_rate;
+  const buf = audioCtx.createBuffer(1, Math.max(1, c.pcm.length), sr);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < c.pcm.length; i++) ch[i] = c.pcm[i] / 32768;
+  const start = Math.max(audioCtx.currentTime + 0.05, playhead);
+  const dur = m.n_frames / m.fps;
+  const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(audioCtx.destination); src.start(start);
+  playhead = start + dur;
+  queue.push({...c, start, end: start + dur, src, startedSent: false, endedSent: false});
+}
+
+function stopAll() {
+  epoch += 1; pending = null;
+  for (const q of queue) { try { q.src.stop(); } catch (e) {} }
+  queue = []; playhead = audioCtx ? audioCtx.currentTime : 0;
+}
+
+function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+function render() {
+  if (audioCtx) {
+    const t = audioCtx.currentTime;
+    for (const q of queue) {
+      if (!q.startedSent && t >= q.start) { q.startedSent = true; send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk}); if (q.meta.transcript) $("caption").textContent = q.meta.transcript; }
+      if (q.startedSent && t < q.end) {
+        const idx = Math.min(q.frames.length - 1, Math.floor((t - q.start) * q.meta.fps));
+        g.drawImage(q.frames[idx], 0, 0, canvas.width, canvas.height);
+      }
+      if (!q.endedSent && t >= q.end) { q.endedSent = true; send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk}); }
+    }
+    queue = queue.filter(q => !q.endedSent);
+  }
+  requestAnimationFrame(render);
+}
+
+$("talk").onpointerdown = async () => {
+  send({type: "speech_start"}); stopAll();
+  const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+  recorder = new MediaRecorder(stream, {mimeType: "audio/webm;codecs=opus"});
+  const parts = [];
+  recorder.ondataavailable = (e) => parts.push(e.data);
+  recorder.onstop = async () => { stream.getTracks().forEach(t => t.stop()); ws.send(await new Blob(parts).arrayBuffer()); };
+  recorder.start(); $("talk").textContent = "松开结束";
+};
+$("talk").onpointerup = () => { if (recorder && recorder.state === "recording") recorder.stop(); $("talk").textContent = "按住说话"; };
+function sendText() { const v = $("text").value.trim(); if (!v) return; send({type: "speech_start"}); stopAll(); send({type: "text", text: v}); logLine("[你] " + v); $("text").value = ""; }
+$("send").onclick = sendText;
+$("text").onkeydown = (e) => { if (e.key === "Enter") sendText(); };
+</script>
+</body>
+</html>

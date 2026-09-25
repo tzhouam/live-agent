@@ -251,16 +251,19 @@ class Orchestrator:
     async def on_speech_start(self, t: float | None = None) -> None:
         """Barge-in: stop playback now; stop planning ahead; mark unshown generated content."""
         t = now() if t is None else t
+        await self._drop_unpresented()
+        self.log.emit(EventType.PLAYBACK_STOP, now(), t_speech_onset=t, dropped=sorted(self.dropped))
+        self.director.on_barge_in()
+        self._maybe_finish()
+
+    async def _drop_unpresented(self) -> None:
+        """Stop playback and discard everything locked but not (fully) presented."""
         await self.transport.stop_playback()
-        # Everything locked so far and not yet (fully) presented is discarded.
         for k in range(self.next_lock):
             n = len(self.chunks.get(k, [])) or 4
             if len(self.presented.get(k, ())) < n:
                 self.dropped.add(k)
                 self.director.ledger.mark_generated_not_presented(k)
-        self.log.emit(EventType.PLAYBACK_STOP, now(), t_speech_onset=t, dropped=sorted(self.dropped))
-        self.director.on_barge_in()
-        self._maybe_finish()
 
     async def on_user_utterance(self, utt: Utterance) -> dict[str, Any]:
         self.log.emit(EventType.UTTERANCE_END, utt.t_end, uid=utt.uid, speaker=utt.speaker, text=utt.text)
@@ -268,9 +271,26 @@ class Orchestrator:
         if self.memory:
             self.memory.on_user_utterance(utt)
         decision = await self.director.on_user_utterance(utt, memories)
+        term = (decision or {}).get("forget_term")
+        if term and self.memory is not None and hasattr(self.memory, "forget"):
+            await self._erase(term)
         self.log.emit(EventType.UTTERANCE_END, now(), uid=utt.uid, decision=decision,
                       chains={c.chain_id: c.status.value for c in self.director.chains.values()})
         return decision
+
+    async def _erase(self, term: str) -> None:
+        """Erasure (proposal §12): memory cascade + drop unsent scripts + restart generator state."""
+        report = self.memory.forget(term)
+        # Unsent plan segments that mention the term are dropped.
+        self.director.queue = type(self.director.queue)(
+            s for s in self.director.queue if term not in (s.line or ""))
+        # The generator's KV / teacher tail may hold the erased content: restart from canon.
+        await self._drop_unpresented()
+        self.director.ledger.generated_not_presented.clear()  # erased content must not be bridged to
+        await self.gen.reset()
+        self._maybe_finish()
+        self.log.emit(EventType.PLAYBACK_STOP, now(), erasure=True, deleted=len(report.deleted_ids),
+                      kinds=report.kinds, generator_reset=True)
 
     def open_chains(self) -> list[str]:
         return [c.chain_id for c in self.director.chains.values() if c.status == ChainStatus.OPEN]
