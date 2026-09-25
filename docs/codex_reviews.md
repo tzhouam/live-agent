@@ -349,3 +349,50 @@ issue. **Verdict: ready.**
 - Remaining disagreements: none.
 - Limitation: the reviewer saw only inlined material. Key TaoMate-H3 code claims were independently spot-checked by
   Claude (FA3-only, teacher-audio overwrite, sink + 2 recent KV, prompt format).
+
+## Phase 2: implementation reviews
+
+### impl1 + impl2: round 1 (commit 8a2e5c4)
+
+Model gpt-6-sol, verified in both rollouts. The review was split across two checkpoints:
+- **impl1:** control path and generator adapter, 19 findings.
+- **impl2:** evaluation harness and memory, 16 findings.
+
+Both verdicts: **not ready**. Every finding was accepted; none were rejected. Fixed in commit fc23372 (145 tests pass):
+- **Control path:**
+  - QC runs once per request, only after all chunks have been presented; acks for dropped requests are ignored.
+  - Verdicts and retries are bound to revision and step.
+  - Multistep steps are released only after the previous step is verified.
+  - Erasure quiesces locking, purges controller state, prompts and the log file, and requires acknowledgements from every purge target.
+  - Barge-in is immediate in both clients.
+  - Λ excludes the KV-dependency wait.
+  - The repair cost C covers everything from E to a lockable correction, and the repair takes the reserved earliest correctable request.
+  - A pre-generation script audit runs, and ASR is non-blocking.
+  - Completion wording is guarded in code.
+  - Claims are timed at the audio onset.
+  - The WebSocket receive loop no longer blocks on the LLM or ASR.
+  - Admission control produces capacity skips.
+  - E2 gating requires calibrated capabilities, and unsupported actions produce logged refusals.
+  - A1 is now "the LLM writes the prompt".
+  - SessionView filters by epoch.
+  - Loop tasks are supervised and startup cleanup is guarded.
+  - Client audio-output timestamps are mapped to the server clock.
+- **Evaluation and memory:**
+  - Primary scoring and reporting use adjudicated verdicts only; judge scoring is available only as a labelled diagnostic.
+  - Adjudication uses a two-rater reconciled merge with an arbiter, frozen criteria, the key kept outside the batch, and range checks.
+  - Content onsets must be adjudicated.
+  - Revision-bound verdicts and skips.
+  - FCR covers every audible claim.
+  - Observation windows are checked.
+  - Holm families are fixed, and FCR and coverage get task-clustered CIs.
+  - Memory write scope comes from the session, and lineage is required for procedures and persona lines.
+  - Consolidation excludes stale records.
+  - Confirmation needs a user turn.
+  - Erasure fails closed.
+- **Accepted as documented limits, not code:**
+  - impl1 #14: no online checks for content and memory chains, and no drift detector, so the A2 pilot claim is restricted to action chains.
+  - impl1 #8: pre-play ASR is not implemented.
+  - impl1 #17 and #18: JPEG + PCM transport instead of fMP4, and the clock mapping is unmeasured.
+  - impl2 #16, impl1 #19: the claims were reworded (generator-path diagnostic rather than M1 qualification; short-run throughput only).
+
+See `docs/implementation.md` "Known deviations".
