@@ -1,0 +1,286 @@
+{
+ "min_status": "executed",
+ "min_p": 0.6,
+ "capabilities": [
+  {
+   "cap_id": "cap-00-drink_tea",
+   "intent": "drink_tea",
+   "phrase": "she lifts the teacup with both hands, takes one small sip, and sets it back down",
+   "aliases": [
+    "喝茶",
+    "喝口茶",
+    "喝一口茶",
+    "drink tea",
+    "sip"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否举起茶杯喝了一口茶？",
+   "degrade_to": "好，我喝口茶。"
+  },
+  {
+   "cap_id": "cap-01-turn_page",
+   "intent": "turn_page",
+   "phrase": "she turns one page of the open book on the desk with her right hand",
+   "aliases": [
+    "翻页",
+    "翻一页",
+    "翻书",
+    "turn the page",
+    "turn a page"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否用手翻了一页书？",
+   "degrade_to": "好，我翻到下一页。"
+  },
+  {
+   "cap_id": "cap-02-wave",
+   "intent": "wave",
+   "phrase": "she raises her right hand and waves gently toward the lens",
+   "aliases": [
+    "挥手",
+    "挥挥手",
+    "招手",
+    "wave"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否朝镜头挥手？",
+   "degrade_to": "你好呀！"
+  },
+  {
+   "cap_id": "cap-03-nod",
+   "intent": "nod",
+   "phrase": "she nods slowly twice while looking into the lens",
+   "aliases": [
+    "点头",
+    "点点头",
+    "nod"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否点了头？",
+   "degrade_to": "嗯，是的。"
+  },
+  {
+   "cap_id": "cap-04-shake_head",
+   "intent": "shake_head",
+   "phrase": "she shakes her head gently from side to side",
+   "aliases": [
+    "摇头",
+    "摇摇头",
+    "shake your head"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否摇了头？",
+   "degrade_to": "不是这样的。"
+  },
+  {
+   "cap_id": "cap-05-smile",
+   "intent": "smile",
+   "phrase": "she smiles warmly at the lens",
+   "aliases": [
+    "笑",
+    "笑一个",
+    "微笑",
+    "smile"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否在微笑？",
+   "degrade_to": "（微笑）"
+  },
+  {
+   "cap_id": "cap-06-put_down_book",
+   "intent": "put_down_book",
+   "phrase": "she closes the book and places it on the desk",
+   "aliases": [
+    "放下书",
+    "合上书",
+    "close the book",
+    "put down the book"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否合上书并放在桌上？",
+   "degrade_to": "好，先把书放下。"
+  },
+  {
+   "cap_id": "cap-07-pick_up_book",
+   "intent": "pick_up_book",
+   "phrase": "she picks up the book from the desk and holds it open in both hands",
+   "aliases": [
+    "拿起书",
+    "拿书",
+    "pick up the book"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否把书拿起来翻开？",
+   "degrade_to": "我把书拿起来。"
+  },
+  {
+   "cap_id": "cap-08-look_window",
+   "intent": "look_window",
+   "phrase": "she turns her head to look out of the window at the lotus pond, then looks back at the lens",
+   "aliases": [
+    "看窗外",
+    "看看窗外",
+    "look out the window"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否转头看向窗外？",
+   "degrade_to": "窗外的荷花开得正好。"
+  },
+  {
+   "cap_id": "cap-09-pour_tea",
+   "intent": "pour_tea",
+   "phrase": "she lifts the teapot and pours tea into the cup, then puts the teapot down",
+   "aliases": [
+    "倒茶",
+    "倒杯茶",
+    "pour tea"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否拿起茶壶倒茶？",
+   "degrade_to": "我给自己倒杯茶。"
+  },
+  {
+   "cap_id": "cap-10-eat_pastry",
+   "intent": "eat_pastry",
+   "phrase": "she picks up one pastry from the plate and takes a small bite",
+   "aliases": [
+    "吃点心",
+    "吃一口点心",
+    "吃龙须酥",
+    "eat a pastry"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否拿起点心咬了一口？",
+   "degrade_to": "嗯，味道不错。"
+  },
+  {
+   "cap_id": "cap-11-stand_up",
+   "intent": "stand_up",
+   "phrase": "she stands up from the chair, straightening her robe",
+   "aliases": [
+    "站起来",
+    "起身",
+    "stand up"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否站了起来？",
+   "degrade_to": "好，我站起来。"
+  },
+  {
+   "cap_id": "cap-12-bow",
+   "intent": "bow",
+   "phrase": "she places her hands together and bows slightly toward the lens",
+   "aliases": [
+    "行礼",
+    "鞠躬",
+    "作揖",
+    "bow"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否拱手行礼或鞠躬？",
+   "degrade_to": "有礼了。"
+  },
+  {
+   "cap_id": "cap-13-think",
+   "intent": "think",
+   "phrase": "she rests her chin on her hand and looks thoughtful for a moment",
+   "aliases": [
+    "想一想",
+    "思考",
+    "think"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否托腮做思考状？",
+   "degrade_to": "让我想一想。"
+  },
+  {
+   "cap_id": "cap-14-listen",
+   "intent": "listen",
+   "phrase": "she looks attentively into the lens and nods slightly as if listening",
+   "aliases": [
+    "听",
+    "listening"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否专注地看着镜头倾听？",
+   "degrade_to": ""
+  },
+  {
+   "cap_id": "cap-15-idle_read",
+   "intent": "idle_read",
+   "phrase": "she reads the open book quietly with small natural movements",
+   "aliases": [
+    "读书",
+    "看书",
+    "read"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否在安静地看书？",
+   "degrade_to": ""
+  }
+ ]
+}
