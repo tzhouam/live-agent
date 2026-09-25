@@ -1,0 +1,5 @@
+1. **zh7 #1 — RESOLVED.** §4 limits the fixed 5-second cadence model to configurations that pass real-time qualification. For the turn-based fallback, it specifies a queueing model; §1.2 and §7.2 provide the waiting-time measurements needed to test it.
+
+2. **zh7 #2 — PARTIALLY RESOLVED (major).** §1.2 distinguishes capacity skips from user changes, and §7.2 counts capacity skips as failures. But §7.2 says the denominator is **all user instructions** while also saying a user-withdrawn or revised instruction is scored by its **final intent**. That leaves the primary success-rate denominator ambiguous: a revised instruction could be counted twice or omitted. Specify that user-led revisions are combined into one final intent, while every system capacity skip remains a separate failure.
+
+**Whole-document pass:** No other blocking or major issue found in the inlined text. **Verdict: not ready** until the outcome denominator is made unambiguous.

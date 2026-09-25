@@ -278,3 +278,15 @@ Model gpt-6-sol (rollout verified). zh6 finding **RESOLVED**. Two new majors, wi
 |---|---|---|---|---|
 | 1 | major | RQ3's H3a assumes a fixed 5 s cadence that the turn-based fallback lacks | **Accepted** | H3a applies only when qualified. Fallback runs test a separate queueing model (A + admission wait + full request time + I) on measured queue timestamps |
 | 2 | major | Capacity-driven skips hidden by final-intent scoring | **Accepted** | "Capacity skip" is separated from "user supersession". Capacity skips count as failures over all user instructions, and the skip rate is reported per condition |
+
+### zh8: round 8 (v2.6, commit a91c9ee)
+
+Model gpt-6-sol (rollout verified). zh7 #1 RESOLVED; zh7 #2 PARTIALLY: the primary denominator was ambiguous between
+"all user instructions" and "final intent". No other blocking or major issue. **Verdict: not ready.**
+**Resolution (v2.7, grep-verified).**
+- The scoring unit is now the **intent chain**. User revisions and withdrawals merge into one chain, scored once on
+  its final intent.
+- The primary denominator is the number of intent chains.
+- Withdrawn chains are excluded from the denominator and reported.
+- Capacity-skipped chains stay in the denominator as failures.
+- Updated consistently in RQ1 (§4), §7.2 (definition, rule table, metrics) and §8.
