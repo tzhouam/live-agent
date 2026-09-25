@@ -263,7 +263,7 @@ def live_factory(config_dir: Path, *, backend, llm, vlm, record_dir: Path | None
         sched = LockScheduler(SchedulerConfig(request_s=backend.info.request_seconds))
         rec = Recorder(record_dir / f"session-{next(counter):03d}.mp4") if record_dir else None
         client = SimClient(speed=1.0, recorder=rec)
-        orch = Orchestrator(gen, director, sched, client, judge=VLMJudge(vlm), corrector=ForwardCorrector(llm),
+        orch = Orchestrator(gen, director, sched, client, judge=VLMJudge(vlm, k=8, contrast=True), corrector=ForwardCorrector(llm),
                             log=EventLog(), cfg=OrchestratorConfig(correction_mode=cfg["correction"],
                                                                    qc_enabled=cfg["qc"], seed=seed))
         return orch, client

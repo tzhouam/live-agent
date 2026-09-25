@@ -27,6 +27,7 @@ verified. Every number is labelled *measured locally*, *cited*, *estimate* or *t
 | `live_agent/generator/base.py` `SessionView` | — | One live session on a long-lived shared generator: reset per session, local request numbering, stale chunks dropped (D-022) |
 | `live_agent/sim.py` `Recorder` | — | MP4 of the *presented* stream (background-thread encoding), used for adjudication and E1 clips |
 | `live_agent/eval/adjudicate.py` | §14, D-014 | Blinded human adjudication: shuffled items, random ids and media names, key kept apart; labels merged back as `source: adjudicated` verdicts with video→session time mapping (D-024) |
+| `scripts/e1_rejudge.py`, `scripts/e1_validate.py` | §14.2 | Offline re-judging of saved E1 clips (judge v1/v2); blinded stratified human-validation page and judge-vs-human agreement (accuracy, κ, FP/FN) |
 | `scripts/e1_calibrate.py` | §14.2 | E1: idle → action → idle per trial; VLM judge; Wilson CI; clips for the 20% human sample. A judge-only pass marks capabilities `executed`, and only human-validated labels make them `calibrated` |
 | `scripts/serve_models.sh` | — | vLLM servers for Qwen3-8B (8101), Qwen3-VL-8B (8102), Qwen3-ASR-1.7B (8103) on one GPU (isolated venv `.venvs/serve`, vLLM 0.28.0 + torch cu129) |
 
@@ -124,8 +125,9 @@ python3 -m pytest
 
 ## Not yet verified
 
-- **E1:** a judge-only pilot (5 trials per capability) is the next step. Validated calibration needs the 20%
-  human sample.
+- **E1:** a judge-only pilot ran (24 × 5 trials on TaoMate-H3, `docs/e1_pilot.md`). It showed the VLM judge failing
+  in both directions, so every capability stays `executed`. Next: two raters label the stratified sample
+  (`scripts/e1_validate.py`), then full E1 runs with the validated judge.
 - **Primary outcome:** nothing has been adjudicated yet. The tool exists; annotators are needed.
 - 30-min soak, 768p/1080p, 60 s+ sessions on the TaoMate path, and the browser playback path on a remote
   client (σ, jitter) are not yet measured. The M1 run used the simulated client on the server host.

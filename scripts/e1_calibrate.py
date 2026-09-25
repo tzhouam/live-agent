@@ -61,7 +61,7 @@ async def run(args) -> None:
         from live_agent.qc.judge import VLMJudge
 
         gen = TaoMateH3Generator.from_args(args)
-        judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model), k=args.k)
+        judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model), k=args.k, contrast=True)
     await gen.start()
     caps = [c for c in manifest.caps.values() if not args.only or c.intent in args.only]
     trials_path = out / "trials.jsonl"
@@ -110,7 +110,7 @@ def main() -> None:
     p.add_argument("--generator", default="mock", choices=["mock", "taomate_h3"])
     p.add_argument("--trials", type=int, default=30)
     p.add_argument("--only", nargs="*", default=None)
-    p.add_argument("--k", type=int, default=4)
+    p.add_argument("--k", type=int, default=8)
     p.add_argument("--vlm-url", default="http://127.0.0.1:8102/v1")
     p.add_argument("--vlm-model", default="qwen3-vl-8b")
     p.add_argument("--save-clips", action="store_true")

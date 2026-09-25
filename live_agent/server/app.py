@@ -184,7 +184,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             if args.vlm_url:
                 from live_agent.qc.judge import VLMJudge
 
-                judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model))
+                judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model), k=8, contrast=True)
             asr = None
             if args.asr_url:
                 from live_agent.asr import OpenAIASR

@@ -25,6 +25,16 @@ JUDGE_PROMPT = """你是严格的视频质检员。下面是直播画面中按�
 问题：{question}
 只根据画面回答，只输出 JSON：{{"answer": "yes" | "no" | "unsure", "confidence": 0到1之间的小数, "reason": "一句话"}}"""
 
+# Contrast mode (after E1 pilot): a state question ("is she seated?") is satisfied without any
+# action, and 4 sparse frames miss late or brief actions. The judge sees the clip's first frame as
+# the "before" state plus dense frames through the last one, and must decide whether the action
+# *happened in this clip*.
+JUDGE_PROMPT_CONTRAST = """你是严格的视频质检员。下面是一段约 5 秒直播视频中按时间顺序抽取的 {k} 帧：第 1 帧是这段开始时的画面，最后一帧是结尾。
+要检查的动作：{question}
+判断标准：只有当这个动作**在这段视频里实际发生了**（能看到动作过程或前后状态的变化）才回答 yes。
+如果人物从头到尾只是保持原来的状态（例如一直坐着、一直在看书），即使最终状态符合描述，也回答 no。动作只要在任何一帧出现就算发生，哪怕在最后一帧。
+只输出 JSON：{{"answer": "yes" | "no" | "unsure", "confidence": 0到1之间的小数, "reason": "一句话"}}"""
+
 
 def sample_frames(chunks: Sequence[Chunk], k: int = 4) -> list[np.ndarray]:
     frames = [f for c in chunks if c.video is not None for f in c.video]
@@ -39,13 +49,15 @@ class VLMJudge:
     vlm: ChatLLM
     k: int = 4
     min_confidence: float = 0.6
+    contrast: bool = False  # True: dense frames incl. start/end + "did it happen in this clip" prompt
 
     async def judge(self, q: CheckQuestion, chunks: Sequence[Chunk], request_index: int,
                     t_evidence: float) -> Verdict:
         frames = sample_frames(chunks, self.k)
         if not frames:
             return Verdict(q.qid, request_index, VerdictLabel.UNKNOWN, 0.0, "no frames", t_evidence, now())
-        content = [{"type": "text", "text": JUDGE_PROMPT.format(k=len(frames), question=q.text)}]
+        prompt = JUDGE_PROMPT_CONTRAST if self.contrast else JUDGE_PROMPT
+        content = [{"type": "text", "text": prompt.format(k=len(frames), question=q.text)}]
         content += [{"type": "image_url", "image_url": {"url": frame_to_data_url(f)}} for f in frames]
         try:
             d = parse_json(await self.vlm.chat([{"role": "user", "content": content}], max_tokens=128,
