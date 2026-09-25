@@ -235,6 +235,8 @@ were correct, because the text had not changed. New findings:
 
 ### zh4: round 4 (v2.3)
 
+> **Correction (added after zh5).** The "Resolution (v2.4)" column below was logged before the edits were verified. The v2.4 edit script aborted on a mismatch in the §8 TVC row: that row still held v2.1 text, because v2.3 had never updated it. The chained shell command committed and ran zh5 anyway, so **zh5 reviewed unchanged text** and correctly reported NOT RESOLVED. **Process fix:** edits are now all-or-nothing scripts, run and grep-verified as a separate step, and logging and review happen only after verification. The resolutions were then applied for real and verified; see zh5 below.
+
 Model gpt-6-sol (rollout verified). zh3 items: all RESOLVED except zh2 #5 and zh3 #3 (PARTIALLY). No new blocking
 issue. **Verdict: not ready.**
 
@@ -244,3 +246,18 @@ issue. **Verdict: not ready.**
 | 2 | major | §8 conditions on "M0-measured Λ", which M0 cannot measure; co-residency cannot be measured on the sequential released path | **Accepted** | Condition moved to M1. Co-residency is measured with a dedicated harness after T2, in M1 |
 | 3 | major | No requalification after M2 adds the speech chain, controller, VLM and memory | **Accepted** | Three-step qualification: M0 profiling → M1 generator + playback → end-of-M2 whole-system soak. Only then "real-time live agent", and E2/E5 start. §1.2 and §9.1 updated |
 | 4 | minor | RQ3 wording in §8; unlabelled counts; version labels | **Accepted** | Cross-backbone vs within-LTX made explicit; counts labelled 【目标】; title and §12 now v2.3 |
+
+### zh5: round 5 (reviewed unchanged v2.3 text; see the correction above)
+
+Model gpt-6-sol (rollout verified). It correctly reported zh4 #1–#4 NOT RESOLVED and raised no new issues.
+**Verdict: not ready.** Resolution: the v2.4 edits were applied with an all-or-nothing script and verified by grep:
+- the RQ4 arm-5/7 wording;
+- the §8 TVC row: M1 condition, cross-backbone wording, TFMR, and a spoken-audio ASR check;
+- the M0 co-residency sentence moved to M1;
+- the three-step qualification, with whole-system requalification at the end of M2;
+- the §1.2 first-demo gate;
+- the M2 row;
+- 【目标】 labels;
+- v2.4 version labels.
+
+Three residual "M0 measures end-to-end" references were also fixed (§1.1 table, §6.4 heading, §9.3 risk row).
