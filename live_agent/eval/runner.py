@@ -71,9 +71,13 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
             if ev.chunk_index == 0:
                 presented_start[k] = ts(ev.t)
         elif ev.type == EventType.VERDICT and d.get("kind") == "action":
+            step = orch.scripts[k].provenance.get("step") if k in orch.scripts else None
             for cid in script_chains.get(k, []):
-                out.append({"type": "verdict", "source": "judge", "label": d["label"], "chain_id": cid,
-                            "request": k, "chunk": 0, "t_evidence": ts(d["t_evidence"]), "qid": d.get("qid")})
+                v = {"type": "verdict", "source": "judge", "label": d["label"], "chain_id": cid,
+                     "request": k, "chunk": 0, "t_evidence": ts(d["t_evidence"]), "qid": d.get("qid")}
+                if step is not None:  # multistep: the director's step index (action steps only)
+                    v["step"] = step
+                out.append(v)
         elif ev.type == EventType.COMPLETION_CLAIM:
             gt = dchain_to_gt.get(d.get("chain_id", ""))
             if gt:
@@ -119,6 +123,9 @@ async def run_task(task: Task, condition: str, seed: int, *, factory, speed: flo
 
     user = SimulatedUser(task, send, clock=now, sleep=lambda dt: asyncio.sleep(dt / speed),
                          session_id=f"{condition}-{task.task_id}-s{seed}", on_event=user_events.append)
+    path = out_dir / f"{condition}-{task.task_id}-s{seed}.jsonl"
+    if getattr(client, "recorder", None) is not None:
+        client.recorder.path = path.with_suffix(".mp4")  # adjudication looks for <log>.mp4
     client.start()
     await orch.start()
     try:
@@ -128,7 +135,6 @@ async def run_task(task: Task, condition: str, seed: int, *, factory, speed: flo
     finally:
         await orch.stop()
         client.close()
-    path = out_dir / f"{condition}-{task.task_id}-s{seed}.jsonl"
     with SessionLogWriter(path, session_id=f"{condition}-{task.task_id}-s{seed}", condition=condition,
                           task_id=task.task_id, seed=seed, mode="simulation",
                           backbone=orch.gen.info.name) as w:

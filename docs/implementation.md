@@ -23,7 +23,11 @@ verified. Every number is labelled *measured locally*, *cited*, *estimate* or *t
 | `live_agent/server/app.py`, `static/index.html` | — | FastAPI WebSocket server and browser client. JPEG frames + PCM16 per chunk; the client's AudioContext is the master clock; chunk start/end acks are stamped with server time |
 | `live_agent/asr.py` | — | Qwen3-ASR client (vLLM transcription API) and audio decoding |
 | `live_agent/eval/` | §7, §14, §15 | Evaluation: SCHEMA.md log format, scoring (intent chains, D table, outcome rules), stats (Wilson, Clopper–Pearson, KM, clustered bootstrap, Holm, κ, power), 30-task suite, simulated user, runner, report |
-| `configs/persona_hanfu/` | §3 | Persona canon and initial capability manifest (16 actions, all `documented` until executed) |
+| `configs/persona_hanfu/` | §3 | Persona canon and capability manifest (24 actions covering the E2 suite; `documented` until E1 executes them) |
+| `live_agent/generator/base.py` `SessionView` | — | One live session on a long-lived shared generator: reset per session, local request numbering, stale chunks dropped (D-022) |
+| `live_agent/sim.py` `Recorder` | — | MP4 of the *presented* stream (background-thread encoding), used for adjudication and E1 clips |
+| `live_agent/eval/adjudicate.py` | §14, D-014 | Blinded human adjudication: shuffled items, random ids and media names, key kept apart; labels merged back as `source: adjudicated` verdicts with video→session time mapping (D-024) |
+| `scripts/e1_calibrate.py` | §14.2 | E1: idle → action → idle per trial; VLM judge; Wilson CI; clips for the 20% human sample. A judge-only pass marks capabilities `executed`, and only human-validated labels make them `calibrated` |
 | `scripts/serve_models.sh` | — | vLLM servers for Qwen3-8B (8101), Qwen3-VL-8B (8102), Qwen3-ASR-1.7B (8103) on one GPU (isolated venv `.venvs/serve`, vLLM 0.28.0 + torch cu129) |
 
 ## Running
@@ -34,11 +38,24 @@ gpu run --gpus 1 --timeout 6h --note "live-agent helper models" -- scripts/serve
 
 # server with the mock generator (no video GPU needed)
 python3 -m live_agent.server.app --generator mock --dev-allow-uncalibrated --port 8200
+# server with TaoMate-H3 (student on 4 GPUs, teacher on 2; started once, shared across sessions)
+gpu run --gpus 6 --timeout 4h --note "live-agent server" -- python3 -m live_agent.server.app --generator taomate_h3
 # open http://127.0.0.1:8200 (tunnel the port if remote)
 
 # E2 simulation on the mock stack (real LLM responder, mock judge)
-python3 -m live_agent.eval.runner --conditions A1 A2 --seeds 0 --out .cache/e2
-python3 -m live_agent.eval.report .cache/e2/*.jsonl --compare A2:A1 -o .cache/e2/report.md
+python3 -m live_agent.eval.runner --conditions A1 A2 --seeds 0 --speed 4 --out .cache/e2
+# E2 / M1 on the real stack (TaoMate-H3 + LLM responder + VLM judge), recording what was presented
+gpu run --gpus 6 --timeout 1h --note "live-agent M1" -- env PYTHONPATH=. python3 -m live_agent.eval.runner \
+    --generator taomate_h3 --conditions A2 A1 --out .cache/m1 --record [--allow-uncalibrated]
+python3 -m live_agent.eval.report .cache/m1/*.jsonl --compare A2:A1 -o .cache/m1/report.md
+
+# blinded adjudication of the primary outcome
+python3 -m live_agent.eval.adjudicate prepare .cache/m1/*.jsonl -o .cache/adj/batch1
+python3 -m live_agent.eval.adjudicate merge .cache/adj/batch1 labels-batch1.json --annotator <id>
+
+# E1 calibration
+gpu run --gpus 6 --timeout 4h --note "live-agent E1" -- env PYTHONPATH=. python3 scripts/e1_calibrate.py \
+    --generator taomate_h3 --trials 30 --save-clips --out .cache/e1
 
 # tests (CPU)
 python3 -m pytest
@@ -62,12 +79,35 @@ python3 -m pytest
 - **Deadlock classes found and fixed by tests:** barge-in or erasure dropping requests that the backlog guard
   was waiting on.
 
+- **M0 (measured locally):** the TaoMate-H3 streaming adapter is real time at 480x864 on 4+2 GPUs. See
+  `docs/m0_measurements.md` and D-021.
+- **M1 qualification run (measured locally, 2026-09-26; `.cache/m1`, 12 sessions = 6 tasks × A2/A1, seed 0,
+  real TaoMate-H3 + Qwen3-8B responder + Qwen3-VL-8B judge, pre-E1 manifest with `--allow-uncalibrated`):**
+  - 29–52 chunks per session, **0 playback gaps > 50 ms** in all 12 sessions (after moving the recorder off
+    the event loop; the first attempt showed ~0.1 s gaps per chunk caused by the synchronous recorder).
+  - A2: every completion claim came after a judge `complied` verdict (0/5 contradicted by the judge). One
+    forward repair (M01 step 1) succeeded on the retry, 2 requests after the failure.
+  - Judge-sourced chain outcomes: A2 4/6 success (A01, A03, D01, D04), C01 "never" because content rubric
+    verdicts come only from adjudication, M01 "never" because of a converter bug (verdicts lacked `step`;
+    fixed afterwards, with a test). A1 has no online judge by design, so it scores 0 under judge-only
+    scoring. **This is not an A2-vs-A1 result:** the primary outcome is blinded adjudication (D-014), n is
+    tiny, and the manifest is not yet calibrated.
+  - On-topic speech onset (TFMR) median ≈ 4.2 s in both conditions. The judge-sourced TVC for A2 actions
+    uses the start of the verified request as the compliance time (the online judge gives no first
+    compliant frame), so it is a lower bound.
+  - Spot check (manual, one session): in A2-E2-A01 the persona reaches for the teacup and lifts it toward her
+    mouth in the verified request.
+- **E2 dry run (simulation):** 54 sessions (A1/A2/A2-repeat × 6 tasks × 3 seeds, mock generator and judge,
+  real LLM). The pipeline scores end to end. The repair offset j−k is always 2 with 5 s requests (the
+  failure is known only after the full request is presented, and request k+1 is already locked), so most
+  repaired chains finish after the 15 s action deadline. This is a structural property to report.
+
 ## Not yet verified
 
-- The TaoMate-H3 real-time path (T1–T3) on GPUs: see `docs/m0_measurements.md`.
-- **Capability manifest:** every action is `documented`. The server refuses them unless
-  `--dev-allow-uncalibrated` is set, until E1 calibration marks them `executed` or `calibrated`.
-- **Human adjudication tooling** for the primary outcome (§14): the schema supports `source: adjudicated`,
-  but no labelling UI exists yet.
-- Any result: none of the simulation outputs are experimental results; the mock judge's success
-  probability is an input, not a measurement.
+- **E1:** a judge-only pilot (5 trials per capability) is the next step. Validated calibration needs the 20%
+  human sample.
+- **Primary outcome:** nothing has been adjudicated yet. The tool exists; annotators are needed.
+- 30-min soak, 768p/1080p, 60 s+ sessions on the TaoMate path, and the browser playback path on a remote
+  client (σ, jitter) are not yet measured. The M1 run used the simulated client on the server host.
+- None of the simulation outputs are experimental results. The mock judge's success probability is an
+  input, not a measurement.

@@ -80,6 +80,24 @@ class Recorder:
         self._sr = 32000
 
     def write(self, chunk: Chunk) -> None:
+        """Non-blocking: frames are encoded on a background thread (the caller is the playback loop)."""
+        import queue
+        import threading
+
+        if not hasattr(self, "_q"):
+            self._q = queue.Queue()
+            self._thread = threading.Thread(target=self._drain, daemon=True)
+            self._thread.start()
+        self._q.put(chunk)
+
+    def _drain(self) -> None:
+        while True:
+            chunk = self._q.get()
+            if chunk is None:
+                return
+            self._write(chunk)
+
+    def _write(self, chunk: Chunk) -> None:
         import subprocess
 
         import numpy as np
@@ -105,6 +123,9 @@ class Recorder:
 
         import numpy as np
 
+        if hasattr(self, "_q"):
+            self._q.put(None)
+            self._thread.join()
         if self._proc is None:
             return
         self._proc.stdin.close()

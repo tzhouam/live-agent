@@ -45,6 +45,8 @@ class Capability:
             return False
         if self.status == Status.CALIBRATED and (self.p_success or 0.0) < min_p:
             return False
+        if self.p_success is not None and self.p_success < min_p:  # measured (e.g. judge-only E1) below threshold
+            return False
         return True
 
 
@@ -119,9 +121,12 @@ class CapabilityManifest:
         return CompileResult(Decision.REFUSE, cap, f"status={cap.status.value} p={cap.p_success}")
 
     def update_from_calibration(self, cap_id: str, *, successes: int, trials: int,
-                                ci: tuple[float, float], tvc_median_s: float | None) -> None:
+                                ci: tuple[float, float], tvc_median_s: float | None,
+                                validated: bool = False) -> None:
+        """Record an E1 estimate. Only human-validated labels (judge agreement checked on the 20%
+        sample) make a capability ``calibrated``; a judge-only pass marks it ``executed``."""
         c = self.caps[cap_id]
-        c.status = Status.CALIBRATED
+        c.status = Status.CALIBRATED if validated else Status.EXECUTED
         c.p_success = successes / trials if trials else 0.0
         c.p_ci = ci
         c.tvc_median_s = tvc_median_s

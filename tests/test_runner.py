@@ -44,3 +44,15 @@ def test_open_loop_has_no_judge_verdicts(tmp_path):
     path = asyncio.run(run_task(tasks["E2-A01"], "A1", 0, factory=factory, speed=20.0, out_dir=tmp_path))
     session = load_session(path)
     assert not session.of_type("verdict")  # A1 is scored only by independent (human) adjudication
+
+
+def test_multistep_verdicts_carry_step(tmp_path):
+    def ms(messages):
+        return json.dumps({"relation": "new", "kind": "multistep",
+                           "steps": [{"intent": "drink_tea", "line": "好。"}, {"intent": "turn_page", "line": "翻页。"}]})
+
+    tasks = {t.task_id: t for t in load_suite(ROOT / "eval/tasks/e2_committed.jsonl")}
+    factory = mock_factory(ROOT / "configs/persona_hanfu", speed=20.0, llm=ScriptedLLM(ms), p_default=1.0)
+    path = asyncio.run(run_task(tasks["E2-M01"], "A2", 0, factory=factory, speed=20.0, out_dir=tmp_path))
+    steps = [v.get("step") for v in load_session(path).of_type("verdict")]
+    assert steps[:2] == [0, 1], steps

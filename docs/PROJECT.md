@@ -23,9 +23,11 @@ alone is insufficient for reliable, stateful agent behavior.
 
 ## Current phase and scope
 
-- **Phase 1 (current): research and proposal only.** Deliverables are listed
-  below. No foundation-model training, paid deployments, public broadcasts, or
-  unrelated repository changes.
+- **Phase 1 (complete): research and proposal.** Deliverables are listed below.
+- **Phase 2 (current, owner-authorised 2026-09-26, D-019): implementation** of the A2 system in
+  `live_agent/`, the TaoMate-H3 runtime integration, serving and the evaluation harness. Status and how
+  to run it: `docs/implementation.md`; generator measurements: `docs/m0_measurements.md`. Still no
+  foundation-model training, paid deployments, public broadcasts, or unrelated repository changes.
 - Initial use cases: **personalized 1:1 interaction** and **livestreaming**.
   We target one focused demo scenario (defined in the proposal), not a
   general-purpose assistant.
@@ -82,7 +84,8 @@ alone is insufficient for reliable, stateful agent behavior.
   lock → teacher → student → presentation timeline, with just-in-time prompt locking.
 - **Memory:** typed by provenance and separated by scope (private/public/canon). Deletion cascades to derived
   artifacts.
-- **Next step (Phase 2, needs owner go-ahead):** M0, the backbone and hardware characterization.
+- **Phase 2 status:** M0 done (TaoMate-H3 real time at 480p on 4 local Hopper GPUs, D-021). The next
+  gates are M1 qualification, E1 calibration (needs human labels) and the E2 pilot (needs blinded adjudication).
 
 ## Requirement → deliverable checklist (from goal.md)
 
