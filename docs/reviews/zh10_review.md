@@ -1,0 +1,5 @@
+1. **[minor] zh9 finding — RESOLVED.** §4, §7.2 and §8 all use the same denominator: effective intent chains, counted once each. Withdrawn chains are excluded and reported separately; capacity-skipped chains remain in the denominator as failures.
+
+2. **[major] Forward-correction timing starts before the required evidence has been shown.** §5.4 starts the correction clock at \(V_k+c\Delta\), the start of block \(c\). A question about an action in that block may require later frames, which the user has not yet seen. This can overstate whether a correction can reach request \(k+1\), affecting RQ2 and the §8 target. Start the clock at the presentation time of the last frame needed for the check; for a full-block check, use the block’s end. Recalculate the earliest eligible request from that time.
+
+**Verdict: not ready.** No other blocking or major issue emerged from the inlined document.

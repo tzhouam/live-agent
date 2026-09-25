@@ -301,3 +301,12 @@ No other blocking or major issue. **Verdict: not ready.**
 - It is the primary denominator in §4, §7.2 and §8, and each chain is scored once.
 - Withdrawn chains are reported separately.
 - The capacity-skip rate is also over effective chains.
+
+### zh10: round 10 (v2.8, commit b39d18a)
+
+Model gpt-6-sol (rollout verified). zh9 **RESOLVED**. New major finding: the correction clock started at the block's
+first frame, before the evidence had been shown. **Verdict: not ready.**
+**Resolution (v2.9, grep-verified).** An evidence-complete time E is defined: E = V_k + (c+1)Δ for a full-block check,
+or the time the last required frame is shown. The correction enters the first request with P_j ≥ E + C. The k+1
+condition is (c+1)Δ + C ≤ R − Λ − σ. Worked example [derived]: with Λ + σ = 3.5 s, only block 0 with C ≤ 0.1 s can
+reach k+1, so k+2 is the usual case.
