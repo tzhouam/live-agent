@@ -48,6 +48,7 @@ class LockScheduler:
         self.presented_start: dict[int, float] = {}  # V_k
         self.locks: dict[int, float] = {}  # P_k
         self.durations: dict[int, float] = {}  # playback duration of request k (sum of its chunks)
+        self.restart: int = 0  # first request after the latest interruption (timeline restarts here)
 
     # ------------------------------------------------------------ observations
     def observe_timing(self, t: RequestTiming) -> None:
@@ -59,6 +60,11 @@ class LockScheduler:
 
     def on_presented(self, k: int, t: float) -> None:
         self.presented_start.setdefault(k, t)
+
+    def interrupt(self, next_k: int) -> None:
+        """Barge-in / erasure: everything before ``next_k`` was dropped or already shown; the
+        timeline restarts at ``next_k``, which is locked immediately (like request 0)."""
+        self.restart = next_k
 
     def on_duration(self, k: int, seconds: float) -> None:
         """Playback length of request k (e.g. 124 frames for the first request, 119 later)."""
@@ -105,7 +111,8 @@ class LockScheduler:
         """V_k if known, else extrapolated from the latest known presentation start."""
         if k in self.presented_start:
             return self.presented_start[k]
-        known = [i for i in self.presented_start if i < k]
+        floor = self.restart if k >= self.restart else 0
+        known = [i for i in self.presented_start if floor <= i < k]
         if not known:
             return None
         j = max(known)
@@ -118,7 +125,7 @@ class LockScheduler:
         not started presenting, so V_{k_next-1} is unknown). The caller waits and asks again;
         locking early would commit content far ahead of playback and delay every instruction.
         """
-        if k_next == 0:
+        if k_next == 0 or k_next == self.restart:
             return now()
         v_prev = self.expected_presentation(k_next - 1)
         if v_prev is None:

@@ -131,6 +131,7 @@ class Director:
         self.listening = False
         self.memory_notes: list[tuple[str, str]] = []  # (utterance id, note)
         self.erased_terms: set[str] = set()
+        self.interrupted: dict[str, Segment] = {}  # open chain -> its cut (dropped, unverified) segment
 
     @property
     def closed(self) -> bool:
@@ -225,6 +226,7 @@ class Director:
                                 steps=[s.get("intent", "") for s in steps])
             self.chains[chain.chain_id] = chain
         self._admit(chain.chain_id)
+        self.interrupted.pop(chain.chain_id, None)  # its own (revised) plan follows
         if refusal:
             chain.status = ChainStatus.REFUSED
             self.events.refusals.append((chain.chain_id, refusal))
@@ -244,11 +246,37 @@ class Director:
 
     def _unexecuted(self, chain_id: str) -> bool:
         return any(s.chain_id == chain_id and not s.is_completion_remark for s in self.queue) or \
-            bool(self.held.get(chain_id))
+            bool(self.held.get(chain_id)) or chain_id in self.interrupted
+
+    def on_interrupted(self, scripts: list[BlockScript]) -> None:
+        """Requests carrying an open chain's step were dropped before being fully presented:
+        that step was never shown, so the chain counts as unexecuted again."""
+        for sc in scripts:
+            for cid in sc.chain_ids:
+                c = self.chains.get(cid)
+                if c is None or c.status != ChainStatus.OPEN or sc.provenance.get("completion_remark"):
+                    continue
+                if sc.provenance.get("revision") != len(c.revisions):
+                    continue
+                self.interrupted.setdefault(cid, Segment(
+                    chain_id=cid, plan_version=self.plan_version, intent=sc.provenance.get("intent") or "",
+                    step=sc.provenance.get("step"), revision=len(c.revisions)))
+
+    def _resume_interrupted(self) -> None:
+        """No newer instruction displaced them: re-queue the cut step (no correction: it was not
+        judged, only not shown)."""
+        for cid, seg in list(self.interrupted.items()):
+            c = self.chains.get(cid)
+            if c is not None and c.status == ChainStatus.OPEN and seg.intent and \
+                    not any(s.chain_id == cid for s in self.queue):
+                seg.plan_version = self.plan_version
+                self.queue.append(seg)
+        self.interrupted.clear()
 
     def _drop_chain_segments(self, chain_id: str) -> None:
         self.queue = deque(s for s in self.queue if s.chain_id != chain_id)
         self.held.pop(chain_id, None)
+        self.interrupted.pop(chain_id, None)
 
     def _enqueue_chat(self, steps: list[dict]) -> None:
         """Chat / explanation lines go first; they do not displace instructions."""
@@ -256,6 +284,7 @@ class Director:
                 for s in steps for line in _split_line(s.get("line", ""))]
         for seg in reversed(segs):
             self.queue.appendleft(seg)
+        self._resume_interrupted()
 
     def _segments_for_step(self, chain: IntentChain, i: int, s: dict, n_steps: int) -> list[Segment]:
         out = []

@@ -36,6 +36,14 @@ class OpenAICompatLLM:
 
         self._client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key, timeout=self.timeout_s)
 
+    async def warmup(self) -> None:
+        """The SDK imports its resource/type modules lazily on the first request (~1 s from the
+        network filesystem here, measured locally), blocking the event loop: do it at start-up."""
+        try:
+            await self.chat([{"role": "user", "content": "hi"}], max_tokens=1)
+        except Exception:  # noqa: BLE001 - a server that is down is reported by the first real call
+            pass
+
     async def chat(self, messages, *, max_tokens=512, temperature=0.3, json_mode=False) -> str:
         extra: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": self.enable_thinking}}
         kwargs: dict[str, Any] = {}

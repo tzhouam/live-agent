@@ -71,6 +71,8 @@ class OrchestratorConfig:
     qc_enabled: bool = True
     max_requests: int | None = None  # stop after N requests (tests / batch runs)
     text_encode_s: float = 0.06  # part of the correction chain C [measured locally, M0 teacher text encode]
+    restart_decision_wait_s: float = 1.5  # after an interruption, wait this long for an in-flight decision
+    loop_lag_log_s: float = 0.2  # log event-loop stalls longer than this (diagnostic)
     seed: int = 0
 
 
@@ -128,6 +130,8 @@ class Orchestrator:
         self.dropped: set[int] = set()  # requests discarded by a barge-in / erasure (never fully shown)
         self.error: BaseException | None = None
         self.last_presented_end: float | None = None
+        self._decisions = 0  # completed responder decisions
+        self._decisions_at_interrupt = 0
 
     @property
     def n_chunks(self) -> int:
@@ -137,20 +141,56 @@ class Orchestrator:
     async def start(self) -> None:
         await self.gen.start()
         self._tasks = [asyncio.create_task(self._guarded(self._lock_loop(), "lock_loop")),
-                       asyncio.create_task(self._guarded(self._chunk_loop(), "chunk_loop"))]
+                       asyncio.create_task(self._guarded(self._chunk_loop(), "chunk_loop")),
+                       asyncio.create_task(self._guarded(self._lag_monitor(), "lag_monitor", fatal=False))]
 
-    async def _guarded(self, coro, name: str) -> None:
+    async def _lag_monitor(self) -> None:
+        """Diagnostic: an event-loop stall delays acks, barge-in and locks; log the long ones.
+        A watchdog thread records the loop thread's stack while it is stalled (where=stack)."""
+        import sys
+        import threading
+        import traceback
+
+        beat = [now()]
+        loop_thread = threading.get_ident()
+        stacks: list[str] = []
+
+        def watchdog() -> None:
+            import time as _t
+
+            while not self._stop.is_set():
+                _t.sleep(0.1)
+                if now() - beat[0] > 0.5 and not stacks:
+                    frame = sys._current_frames().get(loop_thread)
+                    if frame is not None:
+                        stacks.append("".join(traceback.format_stack(frame)[-8:]))
+
+        threading.Thread(target=watchdog, daemon=True).start()
+        while not self._stop.is_set():
+            beat[0] = now()
+            if stacks:
+                self.log.emit(EventType.ERROR, now(), where="event_loop_stack", error=stacks.pop(), fatal=False)
+            t = now()
+            await asyncio.sleep(0.05)
+            lag = now() - t - 0.05
+            if lag > self.cfg.loop_lag_log_s:
+                self.log.emit(EventType.ERROR, now(), where="event_loop", error=f"loop stalled {lag:.3f} s",
+                              fatal=False, lag_s=lag)
+
+    async def _guarded(self, coro, name: str, fatal: bool = True) -> None:
         try:
             await coro
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - a failed loop must end the session visibly
-            self.error = e
-            self.log.emit(EventType.ERROR, now(), where=name, error=f"{type(e).__name__}: {e}")
-            self._stop.set()
+            self.log.emit(EventType.ERROR, now(), where=name, error=f"{type(e).__name__}: {e}", fatal=fatal)
+            if fatal:
+                self.error = e
+                self._stop.set()
 
     def _spawn(self, coro, name: str) -> None:
-        t = asyncio.create_task(self._guarded(coro, name))
+        """Auxiliary work (QC of one request): a failure is logged, the session continues."""
+        t = asyncio.create_task(self._guarded(coro, name, fatal=False))
         self._aux.add(t)
         t.add_done_callback(self._aux.discard)
 
@@ -186,6 +226,13 @@ class Orchestrator:
             while k >= 2 and not self._resolved(k - 2) and not self._stop.is_set():
                 await asyncio.sleep(0.01)
             await self._ready.wait()  # erasure in progress
+            if k == self.sched.restart and k > 0:
+                # After an interruption nothing is playing: a short wait for the in-flight decision
+                # avoids spending the first 5-s request on a filler (listen) segment.
+                t_wait = now() + self.cfg.restart_decision_wait_s
+                while self._decisions == self._decisions_at_interrupt and now() < t_wait \
+                        and not self._stop.is_set():
+                    await asyncio.sleep(0.01)
             if self._stop.is_set():
                 return
             script = self.director.next_script(k)
@@ -401,14 +448,26 @@ class Orchestrator:
 
     async def _drop_unpresented(self) -> None:
         """Stop playback and discard everything locked but not (fully) presented."""
+        cut = []
         for k in range(self.next_lock):
-            if len(self.presented.get(k, ())) < self.n_chunks:
+            if len(self.presented.get(k, ())) < self.n_chunks and k not in self.dropped:
+                if k in self.scripts:
+                    cut.append(self.scripts[k])
                 self.dropped.add(k)
                 self._claims.pop(k, None)  # a claim that is never heard is not a claim
                 self.director.ledger.mark_generated_not_presented(k)
+        self.director.on_interrupted(cut)
         await self.transport.stop_playback()
+        self.sched.interrupt(self.next_lock)
+        self._decisions_at_interrupt = self._decisions
 
     async def on_user_utterance(self, utt: Utterance) -> dict[str, Any]:
+        try:
+            return await self._on_user_utterance(utt)
+        finally:
+            self._decisions += 1
+
+    async def _on_user_utterance(self, utt: Utterance) -> dict[str, Any]:
         self.log.emit(EventType.UTTERANCE_END, utt.t_end, uid=utt.uid, speaker=utt.speaker, text=utt.text)
         # A forget request must not recall the very fact it asks to erase into the responder.
         memories = None

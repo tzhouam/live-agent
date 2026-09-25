@@ -301,6 +301,7 @@ async def _main(args) -> None:
     out.mkdir(parents=True, exist_ok=True)
     tasks = [t for t in load_suite(args.suite) if not args.tasks or t.task_id in args.tasks]
     llm = OpenAICompatLLM(args.llm_url, args.llm_model)
+    await llm.warmup()
     backend = None
     if args.generator == "mock":
         speed = args.speed

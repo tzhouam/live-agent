@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import random
 import re
 from collections.abc import Callable, Sequence
@@ -58,7 +60,8 @@ class VLMJudge:
             return Verdict(q.qid, request_index, VerdictLabel.UNKNOWN, 0.0, "no frames", t_evidence, now())
         prompt = JUDGE_PROMPT_CONTRAST if self.contrast else JUDGE_PROMPT
         content = [{"type": "text", "text": prompt.format(k=len(frames), question=q.text)}]
-        content += [{"type": "image_url", "image_url": {"url": frame_to_data_url(f)}} for f in frames]
+        urls = await asyncio.to_thread(lambda: [frame_to_data_url(f) for f in frames])  # JPEG+base64 off the loop
+        content += [{"type": "image_url", "image_url": {"url": u}} for u in urls]
         try:
             d = parse_json(await self.vlm.chat([{"role": "user", "content": content}], max_tokens=128,
                                                temperature=0.0, json_mode=True))
@@ -101,7 +104,10 @@ class SpeechCheck:
         if not audio:
             return Verdict(q.qid, request_index, VerdictLabel.UNKNOWN, 0.0, "no audio", t_evidence, now())
         sr = chunks[0].sample_rate
-        text = self.asr(np.concatenate(audio, axis=0), sr)
+        try:
+            text = self.asr(np.concatenate(audio, axis=0), sr)
+        except Exception as e:  # abstain: a failed check is not evidence either way
+            return Verdict(q.qid, request_index, VerdictLabel.UNKNOWN, 0.0, f"asr error: {e}", t_evidence, now())
         cer = char_error_rate(script_line, text)
         label = VerdictLabel.COMPLIED if cer <= self.max_cer else VerdictLabel.NOT_COMPLIED
         return Verdict(q.qid, request_index, label, 1.0 - min(cer, 1.0), f"asr={text!r} cer={cer:.2f}",

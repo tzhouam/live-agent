@@ -101,7 +101,7 @@ function schedule(c) {
   const ch = buf.getChannelData(0);
   for (let i = 0; i < c.pcm.length; i++) ch[i] = c.pcm[i] / 32768;
   const start = Math.max(audioCtx.currentTime + 0.05, playhead);
-  const dur = m.n_frames / m.fps;
+  const dur = m.duration || m.n_frames / m.fps;
   const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(audioCtx.destination); src.start(start);
   playhead = start + dur;
   queue.push({...c, start, end: start + dur, src, startedSent: false, endedSent: false});
@@ -128,7 +128,7 @@ function render() {
     for (const q of queue) {
       if (!q.startedSent && t >= q.start) { q.startedSent = true; send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.start)}); if (q.meta.transcript) $("caption").textContent = q.meta.transcript; }
       if (q.startedSent && t < q.end) {
-        const idx = Math.min(q.frames.length - 1, Math.floor((t - q.start) * q.meta.fps));
+        const idx = Math.min(q.frames.length - 1, Math.floor((t - q.start) / (q.end - q.start) * q.frames.length));
         g.drawImage(q.frames[idx], 0, 0, canvas.width, canvas.height);
       }
       if (!q.endedSent && t >= q.end) { q.endedSent = true; send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.end)}); }

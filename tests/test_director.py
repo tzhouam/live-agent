@@ -146,3 +146,36 @@ def test_lambda_excludes_kv_wait():
     sch.observe_timing(RequestTiming(0, t_lock=-5.0, t_first_chunk=-3.5, t_done=3.0))
     sch.observe_timing(RequestTiming(1, t_lock=0.0, t_first_chunk=4.5, t_done=8.0))
     assert abs(max(sch.effective_leads()) - 1.5) < 1e-9  # not 4.5
+
+
+def test_timeline_restarts_after_interruption():
+    from live_agent.types import now
+
+    sch = LockScheduler(SchedulerConfig())
+    sch.on_presented(0, now() - 1.0)
+    sch.on_presented(1, now())  # requests 2, 3 locked, then dropped by a barge-in
+    sch.interrupt(4)
+    assert sch.lock_time(4) <= now()  # the replacement locks immediately
+    assert sch.lock_time(5) is None  # then waits for V_4, not for the dropped requests
+
+
+def test_cut_step_is_capacity_skipped_by_newer_instruction_or_resumed_after_chat():
+    wave = {"relation": "new", "kind": "action", "steps": [{"intent": "wave", "line": "好。"}]}
+    chat = {"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "嗯？"}]}
+    # newer instruction -> skip
+    d = make(replies=[TEA, wave])
+    say(d, "喝口茶", "u1")
+    s = d.next_script(0)
+    d.on_interrupted([s])
+    say(d, "挥挥手", "u2", 1.0)
+    tea = next(iter(d.chains.values()))
+    assert tea.status == ChainStatus.CAPACITY_SKIPPED
+    # chat -> the cut step is re-queued
+    d = make(replies=[TEA, chat])
+    say(d, "喝口茶", "u1")
+    s = d.next_script(0)
+    d.on_interrupted([s])
+    say(d, "嗯", "u2", 1.0)
+    d.next_script(1)  # chat line first
+    again = d.next_script(2)
+    assert again.chain_ids == s.chain_ids and "teacup" in again.action

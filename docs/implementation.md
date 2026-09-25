@@ -102,6 +102,28 @@ python3 -m pytest
     compliant frame), so it is a lower bound.
   - Spot check (manual, one session): in A2-E2-A01 the persona reaches for the teacup and lifts it toward her
     mouth in the verified request.
+- **Server path with TaoMate-H3 (measured locally, 2026-09-26; `scripts/server_check.sh`):** FastAPI/WebSocket server,
+  generator started once, and a headless client (`scripts/ws_client_check.py`) that plays chunks, acks with a
+  mapped client clock and types two instructions with barge-in. 60 s session, loopback network:
+  - Instruction → on-topic speech onset: **2.2 s and 3.6 s**, measured as the audio-energy onset of the presented
+    request. Before two fixes it was 10.8 s and 9.3 s:
+    - after a barge-in, the timeline restarts, so the next request locks immediately instead of waiting for the
+      dropped requests' slots;
+    - the restart request waits up to 1.5 s for the in-flight responder decision instead of spending 5 s on a
+      "listen" filler.
+  - The action verdict arrives 7.7–8.2 s after the instruction (the full request is presented first, then the judge
+    runs). The completion remark was heard 12.6 s after the instruction, after the verdict. A failed action got a
+    forward correction in its reserved request. The speech check (ASR) returned CER 0.00 on most lines.
+  - No playback gaps except the two barge-ins (the persona freezes until new content arrives: 2.6–3.5 s; the
+    proposal's reaction-clip visual acknowledgement is not implemented).
+  - Bugs found on this path and fixed:
+    - ASR rejected 32 kHz WAV, so audio is now resampled to 16 kHz.
+    - One failed check ended the session; failed checks now abstain.
+    - The chunk header lacked the media duration.
+    - The openai SDK's lazy imports stalled the event loop ~1.1 s on the first LLM call (found with a stack-sampling
+      watchdog); the client is now warmed up at start-up. Ping RTT went from 1.0–1.8 s to 45–52 ms.
+    - The judge's frame encoding moved off the event loop.
+    - A chain whose request was cut by barge-in now counts as unexecuted (capacity skip, or resumed).
 - **E2 dry run (simulation):** 54 sessions (A1/A2/A2-repeat × 6 tasks × 3 seeds, mock generator and judge,
   real LLM). The pipeline scores end to end. The repair offset j−k is always 2 with 5 s requests (the
   failure is known only after the full request is presented, and request k+1 is already locked), so most

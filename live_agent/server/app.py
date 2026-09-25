@@ -92,6 +92,7 @@ class WSTransport:
             await self.ws.send_text(json.dumps({
                 "type": "chunk", "request": chunk.request_index, "chunk": chunk.chunk_index,
                 "n_frames": len(jpegs), "fps": chunk.fps, "sample_rate": chunk.sample_rate,
+                "duration": chunk.duration_s,  # media duration (may differ from len(jpegs) / fps)
                 "width": int(w), "height": int(h), "transcript": script.transcript}))
             for j in jpegs:
                 if epoch != self._epoch:
@@ -135,6 +136,9 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        from live_agent.llm import OpenAICompatLLM
+
+        await OpenAICompatLLM(args.llm_url, args.llm_model).warmup()  # SDK lazy imports, off the session path
         # Heavy generators are started once and shared (reset per session); the mock is per session.
         if args.generator != "mock":
             gen = make_generator(args)

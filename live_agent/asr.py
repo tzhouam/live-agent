@@ -8,11 +8,27 @@ import wave
 import numpy as np
 
 
-def to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
-    """float32 [S] or [S, C] in [-1, 1] -> 16-bit mono WAV bytes."""
+ASR_RATE = 16000  # Qwen3-ASR native rate; the vLLM endpoint rejects 32 kHz WAV (measured locally)
+
+
+def resample(a: np.ndarray, sr: int, target: int = ASR_RATE) -> np.ndarray:
+    if sr == target or len(a) == 0:
+        return a
+    from math import gcd
+
+    from scipy.signal import resample_poly
+
+    g = gcd(sr, target)
+    return resample_poly(a, target // g, sr // g).astype(np.float32)
+
+
+def to_wav_bytes(audio: np.ndarray, sample_rate: int, target_rate: int | None = ASR_RATE) -> bytes:
+    """float32 [S] or [S, C] in [-1, 1] -> 16-bit mono WAV bytes (resampled to ``target_rate``)."""
     a = np.asarray(audio, dtype=np.float32)
     if a.ndim == 2:
         a = a.mean(axis=1)
+    if target_rate is not None:
+        a, sample_rate = resample(a, sample_rate, target_rate), target_rate
     pcm = (np.clip(a, -1.0, 1.0) * 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
