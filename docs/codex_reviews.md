@@ -336,3 +336,16 @@ required only an on-topic *start*. **Verdict: not ready.**
    song recognizably sung with the specified lyrics/theme.
 
 Onset success is reported separately and is not part of the primary outcome.
+
+### zh13: round 13 (v2.11, commit f481809): **final verdict "ready"**
+
+Model gpt-6-sol (rollout verified). zh12 **RESOLVED**. The whole-document pass found no remaining blocking or major
+issue. **Verdict: ready.**
+
+**Summary of the zh review series.**
+- 13 rounds on the owner-directed rewrite. Every finding was accepted; none were rejected.
+- Two process incidents: in zh3 and zh5, edits silently failed to apply before review. Both are recorded above, and
+  the process was fixed (all-or-nothing edit scripts, grep verification before logging or review).
+- Remaining disagreements: none.
+- Limitation: the reviewer saw only inlined material. Key TaoMate-H3 code claims were independently spot-checked by
+  Claude (FA3-only, teacher-audio overwrite, sink + 2 recent KV, prompt format).

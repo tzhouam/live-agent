@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a0d946-5637-7c31-9a9a-93132d46340a"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"1. **Major (zh12): RESOLVED.** §7.2 requires both an on-topic start within 15 seconds and a completed response within the preregistered duration, judged against a preregistered rubric. Onset alone is reported separately. §4 defines the primary success rate by reference to §7.2, and §8 applies that rate to the stated success standard.\n\nThe whole-document pass found no remaining **blocking** or **major** issue. **Verdict: ready.**"}}
+{"type":"turn.completed","usage":{"input_tokens":44555,"cached_input_tokens":11776,"cache_write_input_tokens":0,"output_tokens":1663,"reasoning_output_tokens":1552}}

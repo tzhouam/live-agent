@@ -1,0 +1,3 @@
+1. **Major (zh12): RESOLVED.** §7.2 requires both an on-topic start within 15 seconds and a completed response within the preregistered duration, judged against a preregistered rubric. Onset alone is reported separately. §4 defines the primary success rate by reference to §7.2, and §8 applies that rate to the stated success standard.
+
+The whole-document pass found no remaining **blocking** or **major** issue. **Verdict: ready.**

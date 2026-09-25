@@ -69,13 +69,17 @@ alone is insufficient for reliable, stateful agent behavior.
 | Q7 | Local GPU identity ("L20X": Ada/CC 8.9 per NVML vs H200-like 143,771 MiB/700 W) | **Open.** Resolved in M0 (D-008) |
 | Q8 | Permission to use the shared `/data/models` LingBot weights | **Open. Owner to confirm** |
 
-## Current direction (summary; details in `docs/research_proposal.md`)
+## Current direction (summary; current proposal: `docs/research_proposal_zh.md` v2.11, owner-directed per D-017; `docs/research_proposal.md` v1.0 is the previous LingBot-based version)
 
-- **Demo:** a dual-shot live persona. A lip-synced avatar close-up plus a LingBot-World world shot. Committed
-  control: camera/viewpoint. Conditional: prompt-driven events.
-- **Central research claim:** capability-grounded closed-loop control (IR → calibrated capability manifest →
-  compiler → deadline-bounded monitor on displayed frames). Measured with a wall-clock time-to-visible-compliance
-  (TVC) protocol.
+- **Base generator (D-017):** TaoMate-H3 (MiniMax H3 + 3-step streaming LoRA). The persona speaks with generated
+  audio and video in 5 s requests. LingBot-World is optional (world shot / comparison). TaoMate-LTX is a
+  system-level comparison.
+- **Architecture:** an online version of Google's long-form agentic suite: layered director, state ledger,
+  calibrated capability manifest, deadline-bounded VLM checks with forward-only corrections, and a frozen
+  cross-session style bandit.
+- **Central research claim:** online agentic director vs open-loop prompting (instruction-level success over
+  effective intent chains, false-completion claims). Measured with a wall-clock TVC protocol on a single
+  lock → teacher → student → presentation timeline, with just-in-time prompt locking.
 - **Memory:** typed by provenance and separated by scope (private/public/canon). Deletion cascades to derived
   artifacts.
 - **Next step (Phase 2, needs owner go-ahead):** M0, the backbone and hardware characterization.
