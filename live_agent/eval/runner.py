@@ -149,7 +149,7 @@ def mock_factory(config_dir: Path, *, speed: float, llm, p_default: float = 0.7)
                             persona_bio=canon["persona_bio"], mode=cfg["mode"])
         gen = MockGenerator(teacher_s=1.0, chunk_s=0.5, speed=speed, seed=seed)
         sched = LockScheduler(SchedulerConfig(request_s=5.0 / speed, sigma_s=0.5 / speed, delta_s=0.01,
-                                              lambda_prior_s=3.0 / speed))
+                                              lambda_prior_s=3.0 / speed, time_scale=1.0 / speed))
         client = SimClient(speed=speed)
         orch = Orchestrator(gen, director, sched, client, judge=MockJudge(p_default=p_default, seed=seed),
                             corrector=ForwardCorrector(None), log=EventLog(),

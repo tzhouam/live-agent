@@ -47,7 +47,7 @@ def build(p_default=1.0, p_by_phrase=None, boost=0.3, mode=DirectorMode.CLOSED_L
                         persona_bio=canon["persona_bio"], mode=mode)
     gen = MockGenerator(teacher_s=1.0, chunk_s=0.5, speed=SPEED)
     sched = LockScheduler(SchedulerConfig(request_s=5.0 / SPEED, sigma_s=0.5 / SPEED, delta_s=0.01,
-                                          lambda_prior_s=3.0 / SPEED))
+                                          lambda_prior_s=3.0 / SPEED, time_scale=1.0 / SPEED))
     client = SimClient(speed=SPEED)
     orch = Orchestrator(gen, director, sched, client,
                         judge=MockJudge(p_default=p_default, p_by_phrase=p_by_phrase or {}, correction_boost=boost),
@@ -124,14 +124,18 @@ def test_unsupported_action_is_refused():
 def test_jit_locks_follow_presentation():
     orch, client = build(max_requests=8)
     asyncio.run(run(orch, client, []))
-    locks = {e.request_index: e.t for e in events(orch, EventType.LOCK)}
+    lock_ev = {e.request_index: e for e in events(orch, EventType.LOCK) if "lambda_est" in e.data}
     R = orch.sched.cfg.request_s
-    for k in range(3, 8):
+    checked = 0
+    for k in range(1, 8):
         v_prev = orch.sched.presented_start.get(k - 1)
-        if v_prev is None or k not in locks:
+        if v_prev is None or k not in lock_ev:
             continue
-        # lock happens no earlier than V_{k-1} + R - Lambda - sigma (minus scheduling slack)
-        assert locks[k] >= v_prev + R - orch.sched.lambda_estimate() - orch.sched.cfg.sigma_s - 0.05
+        ev = lock_ev[k]
+        # JIT: never lock before V_{k-1} + R - Lambda - sigma (Lambda = estimate in force at the lock)
+        assert ev.t >= v_prev + R - ev.data["lambda_est"] - orch.sched.cfg.sigma_s - 0.01
+        checked += 1
+    assert checked >= 5
     assert not client.stalls or max(s.t_end - s.t_start for s in client.stalls) < R
 
 

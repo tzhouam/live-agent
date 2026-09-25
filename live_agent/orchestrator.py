@@ -116,9 +116,12 @@ class Orchestrator:
             k = self.next_lock
             if self.cfg.max_requests is not None and k >= self.cfg.max_requests:
                 return
-            delay = self.sched.lock_time(k) - now()
-            if delay > 0:
-                await asyncio.sleep(delay)
+            # Re-evaluate while waiting: V_{k-1} becomes known (or better extrapolated) meanwhile.
+            while not self._stop.is_set():
+                tl = self.sched.lock_time(k)
+                if tl is not None and tl <= now():
+                    break
+                await asyncio.sleep(0.01 if tl is None else min(0.05, tl - now()))
             # Never run more than two requests ahead of presentation (bounded backlog).
             while k >= 2 and not self._resolved(k - 2) and not self._stop.is_set():
                 await asyncio.sleep(0.01)
@@ -130,6 +133,7 @@ class Orchestrator:
             self.sched.on_lock(k, t)
             self.next_lock = k + 1
             self.log.emit(EventType.LOCK, t, request_index=k, plan_version=script.plan_version,
+                          lambda_est=self.sched.lambda_estimate(), planned_lock=tl,
                           action=script.action, transcript=script.transcript,
                           chain_ids=script.chain_ids, corrections=script.corrections,
                           capability_ids=script.capability_ids, prompt=prompt,
@@ -162,6 +166,8 @@ class Orchestrator:
             self.log.emit(EventType.CHUNK_READY, ch.t_ready, request_index=ch.request_index,
                           chunk_index=ch.chunk_index, n_frames=ch.n_frames)
             if ch.chunk_index == 3:
+                self.sched.on_duration(ch.request_index,
+                                       sum(c.duration_s for c in self.chunks[ch.request_index]))
                 for tm in self.gen.timings:
                     if tm.request_index == ch.request_index:
                         self.sched.observe_timing(tm)

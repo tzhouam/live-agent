@@ -38,6 +38,7 @@ class SchedulerConfig:
     lambda_quantile: float = 0.9
     min_observations: int = 3
     mode: LockMode = LockMode.JIT
+    time_scale: float = 1.0  # simulation: wall seconds per content second (1/speed)
 
 
 class LockScheduler:
@@ -46,6 +47,7 @@ class LockScheduler:
         self._timings: list[RequestTiming] = []
         self.presented_start: dict[int, float] = {}  # V_k
         self.locks: dict[int, float] = {}  # P_k
+        self.durations: dict[int, float] = {}  # playback duration of request k (sum of its chunks)
 
     # ------------------------------------------------------------ observations
     def observe_timing(self, t: RequestTiming) -> None:
@@ -57,6 +59,10 @@ class LockScheduler:
 
     def on_presented(self, k: int, t: float) -> None:
         self.presented_start.setdefault(k, t)
+
+    def on_duration(self, k: int, seconds: float) -> None:
+        """Playback length of request k (e.g. 124 frames for the first request, 119 later)."""
+        self.durations[k] = seconds * self.cfg.time_scale
 
     # ------------------------------------------------------------ estimates
     def lambda_estimate(self) -> float:
@@ -85,17 +91,20 @@ class LockScheduler:
         if not known:
             return None
         j = max(known)
-        return self.presented_start[j] + (k - j) * self.cfg.request_s
+        return self.presented_start[j] + sum(self.durations.get(i, self.cfg.request_s) for i in range(j, k))
 
-    def lock_time(self, k_next: int) -> float:
-        """Wall-clock time at which request ``k_next`` should be locked."""
+    def lock_time(self, k_next: int) -> float | None:
+        """Wall-clock time at which request ``k_next`` should be locked.
+
+        Returns None while the time is not yet determined (start-up: request k_next-1 has
+        not started presenting, so V_{k_next-1} is unknown). The caller waits and asks again;
+        locking early would commit content far ahead of playback and delay every instruction.
+        """
         if k_next == 0:
             return now()
         v_prev = self.expected_presentation(k_next - 1)
         if v_prev is None:
-            # Start-up: nothing presented yet -- lock as soon as the previous lock + Lambda
-            # would leave the pipeline idle; i.e. immediately after the previous lock.
-            return self.locks.get(k_next - 1, now())
+            return None
         if self.cfg.mode == LockMode.EARLY:
             return v_prev
         return v_prev + self.cfg.request_s - self.lambda_estimate() - self.cfg.sigma_s
