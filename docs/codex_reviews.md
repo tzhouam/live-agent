@@ -324,3 +324,15 @@ multi-step and changing-intent tasks. There is 1 minor finding: E assumes equal 
   - Correction: 15 s, restarted at the revising utterance.
 - Near-real-time mode uses the same D.
 - The E formula is marked illustrative; the analysis uses measured last-frame presentation timestamps.
+
+### zh12: round 12 (v2.10, commit 9a9fbbf)
+
+Model gpt-6-sol (rollout verified). zh11 #1 and #2 **RESOLVED**. There is 1 major finding: content-task success
+required only an on-topic *start*. **Verdict: not ready.**
+**Resolution (v2.11, grep-verified).** A content task succeeds only if **both** hold:
+1. an on-topic spoken reply starts within 15 s;
+2. the full reply finishes within 15 s plus a preregistered duration (Q&A ≤ 10 s, explanation ≤ 30 s, song ≤ 30 s)
+   and satisfies a preregistered rubric: Q&A correct; explanation covers k specified points with no factual error;
+   song recognizably sung with the specified lyrics/theme.
+
+Onset success is reported separately and is not part of the primary outcome.

@@ -1,0 +1,5 @@
+1. **zh11 #1 — RESOLVED.** §7.2 sets a common clock origin at the VAD endpoint of the opening or latest revising utterance and specifies deadlines for actions, content, multistep tasks, and corrections. §4 and §8 use that deadline based success definition.
+2. **zh11 #2 — RESOLVED.** §5.4 defines \(E\) as the measured presentation time of the last required frame; the equal length block formula is explicitly illustrative.
+3. **MAJOR — Content task success remains underspecified.** §7.2 gives content tasks 15 seconds to *start* an on-topic reply, while judging the full reply’s correctness separately. Yet §4 and §8 pool them into “instruction-level success.” As written, a reply that starts on topic but never delivers the requested explanation or song could pass the primary outcome. Preregister what full content must satisfy and when it must finish, or narrow the primary outcome’s name and report substantive content success separately.
+
+**Verdict: not ready** until finding 3 is resolved. This is a text review of the inlined material; the shell limitation prevented independent repository checks.
