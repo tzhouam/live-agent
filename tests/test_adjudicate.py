@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 from pathlib import Path
 
 import pytest
 
-from live_agent.eval.adjudicate import merge, prepare, presented_segments, session_to_video, video_to_session
+from live_agent.eval.adjudicate import (
+    default_key_path,
+    merge,
+    prepare,
+    presented_segments,
+    session_to_video,
+    video_to_session,
+)
 from live_agent.eval.runner import mock_factory, run_task
 from live_agent.eval.schema import load_session
 from live_agent.eval.scoring import score_session
@@ -47,14 +53,21 @@ def test_adjudication_roundtrip(tmp_path):
     log = asyncio.run(run_task(task, "A2", 0, factory=factory, speed=20.0, out_dir=tmp_path))
     assert log.with_suffix(".mp4").exists()
     before = score_session(load_session(log))
-    assert before.chains[0].outcome.value != "success"  # the mock judge (p=0) never saw compliance
+    assert before.chains[0].outcome.value == "unadjudicated"  # primary: judge verdicts never count
     batch = tmp_path / "batch"
     page = prepare([log], batch)
+    assert not (batch / "key.json").exists() and default_key_path(batch).exists()  # key kept apart
     items = json.loads(page.read_text(encoding="utf-8").split("const ITEMS = ")[1].split(";\n")[0])
     assert len(items) == 1 and "E2-A01" not in json.dumps(items)  # blinded
     it = items[0]
-    labels = tmp_path / "labels.json"
-    labels.write_text(json.dumps({f"{it['id']}/0": {"label": "complied", "v_first": it["v_origin"] + 2.0}}))
-    merge(batch, labels, annotator="t")
+    assert it["criteria"]["checks"]  # preregistered checks frozen into the item
+    lab = {f"{it['id']}/0": {"label": "complied", "v_first": it["v_origin"] + 2.0}}
+    ratings = []
+    for name in ("R1", "R2"):  # two independent raters who agree
+        p = tmp_path / f"labels-{name}.json"
+        p.write_text(json.dumps(lab))
+        ratings.append((p, name))
+    res = merge(batch, ratings)
+    assert res["agreed"] == 1 and not res["unresolved"]
     after = score_session(load_session(log))
     assert after.chains[0].outcome.value == "success"

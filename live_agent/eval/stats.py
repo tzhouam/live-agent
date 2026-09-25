@@ -200,12 +200,18 @@ def cluster_bootstrap_rate_diff(
 # --------------------------------------------------------------------------- multiplicity
 
 
-def holm(pvalues: Sequence[float], alpha: float = 0.05) -> dict[str, list]:
-    """Holm step-down; returns adjusted p-values and reject flags in input order."""
+def holm(pvalues: Sequence[float], alpha: float = 0.05, m: int | None = None) -> dict[str, list]:
+    """Holm step-down; returns adjusted p-values and reject flags in input order.
+
+    ``m`` is the preregistered family size. When fewer p-values are supplied (a family
+    member was not run), the missing ones are treated as p = 1, i.e. the step-down still
+    starts at alpha / m. ``m`` smaller than the number of p-values is an error."""
     p = np.asarray(pvalues, dtype=float)
-    m = p.size
+    m = p.size if m is None else int(m)
+    if m < p.size:
+        raise ValueError(f"family size m={m} < number of p-values {p.size}")
     order = np.argsort(p)
-    adj = np.empty(m)
+    adj = np.empty(p.size)
     running = 0.0
     for rank, i in enumerate(order):
         running = max(running, min(1.0, (m - rank) * p[i]))

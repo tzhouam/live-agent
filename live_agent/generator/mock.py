@@ -101,5 +101,10 @@ class MockGenerator(Generator):
         return [self._timings[k] for k in sorted(self._timings)]
 
     @property
+    def session_epoch(self) -> int:
+        """Generation epoch; bumped by reset(); carried as chunk.meta["session"]."""
+        return self._session
+
+    @property
     def next_request_index(self) -> int:
         return self._next

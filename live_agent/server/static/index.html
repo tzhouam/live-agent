@@ -61,7 +61,8 @@ $("connect").onclick = () => {
   ws.onopen = () => {
     ws.send(JSON.stringify({type: "hello", mode: $("mode").value, user_id: $("uid").value}));
     setStatus("已连接"); ["talk","text","send"].forEach(id => $(id).disabled = false); $("connect").disabled = true;
-    setInterval(() => ws.readyState === 1 && ws.send(JSON.stringify({type: "ping", t: performance.now()})), 5000);
+    const ping = () => ws.readyState === 1 && ws.send(JSON.stringify({type: "ping", t: performance.now()}));
+    ping(); setTimeout(ping, 300); setTimeout(ping, 600); setInterval(ping, 5000);
   };
   ws.onclose = () => { setStatus("连接已关闭"); };
   ws.onmessage = onMessage;
@@ -75,7 +76,12 @@ async function onMessage(ev) {
     else if (m.type === "stop") { stopAll(); logLine("[stop] 打断：清空待播内容"); }
     else if (m.type === "transcript") { logLine("[你] " + m.text); }
     else if (m.type === "status") { setStatus(`会话 ${m.session} · ${m.mode} · ${m.generator}`); }
-    else if (m.type === "pong") { logLine(`[rtt] ${(performance.now() - m.t).toFixed(0)} ms`); }
+    else if (m.type === "pong") {
+      const rtt = performance.now() - m.t;
+      // clock mapping sample for the server: client send time, server receive time, RTT (ms)
+      send({type: "clock", t_client: m.t, t_server: m.ts, rtt});
+      logLine(`[rtt] ${rtt.toFixed(0)} ms`);
+    }
     return;
   }
   if (!pending) return;
@@ -107,18 +113,25 @@ function stopAll() {
   queue = []; playhead = audioCtx ? audioCtx.currentTime : 0;
 }
 
+// AudioContext time -> performance clock (ms) at the audio *output* (includes output latency).
+function ctxToPerf(t) {
+  const o = audioCtx.getOutputTimestamp ? audioCtx.getOutputTimestamp() : null;
+  if (!o || !o.performanceTime) return performance.now() + (t - audioCtx.currentTime) * 1000;
+  return o.performanceTime + (t - o.contextTime) * 1000;
+}
+
 function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
 function render() {
   if (audioCtx) {
     const t = audioCtx.currentTime;
     for (const q of queue) {
-      if (!q.startedSent && t >= q.start) { q.startedSent = true; send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk}); if (q.meta.transcript) $("caption").textContent = q.meta.transcript; }
+      if (!q.startedSent && t >= q.start) { q.startedSent = true; send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.start)}); if (q.meta.transcript) $("caption").textContent = q.meta.transcript; }
       if (q.startedSent && t < q.end) {
         const idx = Math.min(q.frames.length - 1, Math.floor((t - q.start) * q.meta.fps));
         g.drawImage(q.frames[idx], 0, 0, canvas.width, canvas.height);
       }
-      if (!q.endedSent && t >= q.end) { q.endedSent = true; send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk}); }
+      if (!q.endedSent && t >= q.end) { q.endedSent = true; send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.end)}); }
     }
     queue = queue.filter(q => !q.endedSent);
   }

@@ -142,6 +142,10 @@ class EventType(str, enum.Enum):
     CAPACITY_SKIP = "capacity_skip"
     REPAIR = "repair"
     SPEECH_ONSET = "speech_onset"
+    AUDIT = "audit"  # pre-generation script audit (proposal §15)
+    NARRATION_GUARD = "narration_guard"  # completion wording removed from an unverified line
+    ERROR = "error"
+    OBSERVATION_END = "observation_end"
 
 
 @dataclass

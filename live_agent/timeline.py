@@ -65,8 +65,26 @@ class LockScheduler:
         self.durations[k] = seconds * self.cfg.time_scale
 
     # ------------------------------------------------------------ estimates
+    def effective_leads(self) -> list[float]:
+        """Lambda samples: first chunk ready minus max(lock, previous request done).
+
+        Lock -> first chunk alone includes the wait for request k-1's final KV commit when the
+        lock came early (M0: ~1.5 s idle vs 3.6-4.5 s pipelined); feeding that into
+        P_{k+1} = V_k + R - Lambda - sigma would push locks earlier and earlier. The KV wait is
+        a separate constraint (ready_{k+1} >= done_k + G_1) and is not part of Lambda."""
+        by_k = {x.request_index: x for x in self._timings}
+        out = []
+        for k, x in sorted(by_k.items()):
+            if x.t_first_chunk is None:
+                continue
+            prev = by_k.get(k - 1)
+            # Unknown predecessor: lock time (conservative: may include some KV wait).
+            start = max(x.t_lock, prev.t_done) if prev is not None and prev.t_done is not None else x.t_lock
+            out.append(x.t_first_chunk - start)
+        return out
+
     def lambda_estimate(self) -> float:
-        leads = [x.lead_s for x in self._timings if x.lead_s is not None]
+        leads = self.effective_leads()
         if len(leads) < self.cfg.min_observations:
             return self.cfg.lambda_prior_s
         leads.sort()
@@ -149,7 +167,33 @@ class EventLog:
 
     def __init__(self, path: str | Path | None = None):
         self.events: list[TimelineEvent] = []
+        self.path = Path(path) if path else None
         self._fh: IO[str] | None = open(path, "a", encoding="utf-8") if path else None
+
+    def redact(self, term: str, replacement: str = "[已删除]") -> int:
+        """Erasure: replace ``term`` in every logged string (memory and file). Returns #events touched."""
+        def scrub(x):
+            if isinstance(x, str):
+                return x.replace(term, replacement)
+            if isinstance(x, list):
+                return [scrub(v) for v in x]
+            if isinstance(x, dict):
+                return {k: scrub(v) for k, v in x.items()}
+            return x
+
+        n = 0
+        for e in self.events:
+            new = scrub(e.data)
+            if new != e.data:
+                e.data = new
+                n += 1
+        if self.path is not None and self._fh is not None:
+            self._fh.close()
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+            self.path.write_text("".join(json.dumps(scrub(json.loads(x)), ensure_ascii=False) + "\n"
+                                         for x in lines if x.strip()), encoding="utf-8")
+            self._fh = open(self.path, "a", encoding="utf-8")
+        return n
 
     def emit(self, type_: EventType, t: float | None = None, **kw) -> TimelineEvent:
         ev = TimelineEvent(type=type_, t=now() if t is None else t,

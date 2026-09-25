@@ -32,6 +32,7 @@ class SimClient:
         self._q: asyncio.Queue[tuple[Chunk, BlockScript]] = asyncio.Queue()
         self._task: asyncio.Task | None = None
         self._last_end: float | None = None
+        self._current: Chunk | None = None
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._play())
@@ -40,18 +41,33 @@ class SimClient:
         await self._q.put((chunk, script))
 
     async def stop_playback(self) -> None:
+        """Barge-in: stop *now*. The chunk being played is cut (never acknowledged as presented)
+        and everything queued is discarded."""
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            if self._current is not None:
+                self.dropped.append((self._current.request_index, self._current.chunk_index))
+                self._current = None
+            self._task = asyncio.create_task(self._play())
         while not self._q.empty():
             ch, _ = self._q.get_nowait()
             self.dropped.append((ch.request_index, ch.chunk_index))
+        self._last_end = None  # the gap after an interruption is not a stall
 
     async def _play(self) -> None:
         while True:
             ch, _script = await self._q.get()
+            self._current = ch
             t0 = now()
             if self._last_end is not None and t0 - self._last_end > 0.05 / self.speed:
                 self.stalls.append(Stall(self._last_end, t0))
             await asyncio.sleep(ch.duration_s / self.speed)
             t1 = now()
+            self._current = None
             self._last_end = t1
             self.presented.append((ch.request_index, ch.chunk_index, t0, t1))
             if self.recorder is not None:

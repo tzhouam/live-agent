@@ -68,6 +68,17 @@ class StateLedger:
     def record_request(self, request_index: int, action: str, transcript: str) -> None:
         self.history.append(RequestState(request_index, action, transcript))
 
+    def redact(self, term: str) -> int:
+        """Erasure: remove a term from per-request history (it feeds continuity / bridging text)."""
+        n = 0
+        for r in self.history:
+            for f in ("action", "transcript", "notes"):
+                v = getattr(r, f)
+                if term in v:
+                    setattr(r, f, v.replace(term, "[已删除]"))
+                    n += 1
+        return n
+
     def mark_presented(self, request_index: int) -> None:
         for r in self.history:
             if r.request_index == request_index:

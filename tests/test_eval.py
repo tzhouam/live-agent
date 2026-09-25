@@ -17,7 +17,13 @@ from live_agent.eval.schema import (
     load_session,
     parse_session,
 )
-from live_agent.eval.scoring import Outcome, build_chains, score_session, summarize
+from live_agent.eval.scoring import (
+    Outcome,
+    ScoringConfig,
+    build_chains,
+    score_session,
+    summarize,
+)
 from live_agent.eval.sim_user import SimulatedUser, VirtualClock
 from live_agent.eval.tasks import load_suite, suite_counts
 
@@ -62,17 +68,24 @@ class Log:
         return uid
 
     def verdict(self, t, label="complied", chain="c1", source="adjudicated", **kw):
-        self.recs.append({"type": "verdict", "chain_id": chain, "source": source, "label": label,
-                          "t_first_compliant": t, "t_evidence": t, **kw})
+        ev = {"type": "verdict", "chain_id": chain, "source": source, "label": label,
+              "t_first_compliant": t, "t_evidence": t, **kw}
+        if source == "adjudicated":
+            ev.setdefault("onset_reviewed", True)  # content items: the onset was reviewed
+        self.recs.append(ev)
+
+    def onset(self, t, chain="c1", on_topic=True, source="adjudicated"):
+        self.recs.append({"type": "speech_onset", "t": t, "on_topic": on_topic, "chain_id": chain,
+                          "source": source})
 
     def ev(self, **kw):
         self.recs.append(kw)
 
-    def score(self):
-        return score_session(parse_session(self.recs))
+    def score(self, cfg=None):
+        return score_session(parse_session(self.recs), cfg)
 
-    def one(self, chain="c1"):
-        return next(c for c in self.score().chains if c.chain_id == chain)
+    def one(self, chain="c1", cfg=None):
+        return next(c for c in self.score(cfg).chains if c.chain_id == chain)
 
 
 # --------------------------------------------------------------------------- scoring
@@ -122,7 +135,7 @@ def test_revision_verdict_version_filter():
     L.new(0.0)
     L.revise(2.0)
     L.verdict(5.0, revision=0)  # judged against the superseded intent
-    assert L.one().outcome == Outcome.NEVER
+    assert L.one().outcome == Outcome.UNADJUDICATED  # the final intent has no verdict
     L.verdict(6.0, revision=1)
     assert L.one().outcome == Outcome.SUCCESS
 
@@ -131,7 +144,7 @@ def test_revision_can_change_goal_kind():
     L = Log()
     L.new(0.0, kind="action")
     L.revise(4.0, kind="content", content_type="sing")
-    L.ev(type="speech_onset", t=10.0, on_topic=True, chain_id="c1")
+    L.onset(10.0)
     L.verdict(40.0)  # response end 36 s after revision <= 15 + 30
     c = L.one()
     assert c.kind == "content" and c.outcome == Outcome.SUCCESS and c.deadline_s == 45.0
@@ -199,7 +212,7 @@ def test_content_requires_onset_and_completion_and_rubric():
         L = Log()
         L.new(0.0, kind="content", content_type=ctype)
         if onset is not None:
-            L.ev(type="speech_onset", t=onset, on_topic=True, chain_id="c1")
+            L.onset(onset)
         L.verdict(end, label=label)
         return L.one()
 
@@ -217,7 +230,7 @@ def test_content_requires_onset_and_completion_and_rubric():
 def test_off_topic_onset_does_not_count():
     L = Log()
     L.new(0.0, kind="content", content_type="qa")
-    L.ev(type="speech_onset", t=3.0, on_topic=False, chain_id="c1")
+    L.onset(3.0, on_topic=False)
     L.verdict(12.0)
     c = L.one()
     assert c.outcome == Outcome.ONSET_FAIL and c.tfmr == 15.0 and not c.tfmr_event
@@ -226,7 +239,7 @@ def test_off_topic_onset_does_not_count():
 def test_prereg_duration_override():
     L = Log()
     L.new(0.0, kind="content", content_type="explain", prereg_duration_s=10.0)
-    L.ev(type="speech_onset", t=5.0, on_topic=True, chain_id="c1")
+    L.onset(5.0)
     L.verdict(30.0)
     assert L.one().outcome == Outcome.LATE
 
@@ -247,7 +260,13 @@ def test_multistep_ordering_and_per_step_deadline():
     assert c.outcome == Outcome.ORDER_FAIL and c.steps_complied == 1
     assert c.time_to_success == 25.0  # censored at step-1 deadline (10 + 15)
     c = run([(0, 10.0)])
-    assert c.outcome == Outcome.NEVER and c.steps_complied == 1
+    assert c.outcome == Outcome.UNADJUDICATED  # step 1 not adjudicated
+    L = Log()
+    L.new(0.0, kind="multistep", steps=["a", "b", "c"])
+    L.verdict(10.0, step=0)
+    L.verdict(None, step=1, label="not_complied")  # reviewed, not done: no time needed
+    c = L.one()
+    assert c.outcome == Outcome.NEVER and c.steps_complied == 1 and c.time_to_success == 25.0
 
 
 def test_source_preference():
@@ -255,7 +274,10 @@ def test_source_preference():
     L.new(0.0)
     L.verdict(5.0, source="judge")
     L.verdict(5.0, source="human", label="not_complied")
-    assert L.one().outcome == Outcome.NEVER  # human beats judge
+    cfg = ScoringConfig.diagnostic_config(("human", "judge"))
+    assert L.one(cfg=cfg).outcome == Outcome.NEVER  # human beats judge
+    assert L.one(cfg=ScoringConfig.diagnostic_config()).outcome == Outcome.SUCCESS
+    assert L.one().outcome == Outcome.UNADJUDICATED  # primary: neither source counts
 
 
 def test_chunk_lookup_for_compliance_time():
@@ -273,13 +295,15 @@ def test_fcr_and_claim_coverage():
     L.verdict(5.0, chain="c1")
     L.ev(type="completion_claim", chain_id="c1", t=6.0)  # supported
     L.new(0.0, chain="c2")
+    L.verdict(7.0, chain="c2", label="not_complied")
     L.ev(type="completion_claim", chain_id="c2", t=6.0)  # contradicted
     L.new(0.0, chain="c3")
     L.verdict(9.0, chain="c3")
     L.ev(type="completion_claim", chain_id="c3", t=6.0)  # premature: contradicted
     L.new(0.0, chain="c4")
+    L.verdict(20.0, chain="c4")
     L.ev(type="completion_claim", chain_id="c4", t=6.0, claim_id="k4")
-    L.ev(type="verdict", claim_id="k4", source="human", label="complied")  # direct adjudication
+    L.ev(type="verdict", claim_id="k4", source="adjudicated", label="complied")  # direct adjudication
     s = summarize(L.score().chains)
     assert s["n_claims"] == 4 and s["n_false_claims"] == 2 and s["fcr"] == 0.5
     assert s["claim_coverage"] == 1.0
@@ -292,12 +316,12 @@ def test_repair_rate():
          failure_request=1, target_request=3)
     L.verdict(20.0, request=3)
     c = L.one()
-    assert c.repair_success and c.repair_offset == 2
+    assert c.repairs[0]["success"] and c.repairs[0]["offset"] == 2
     L2 = Log()
     L2.new(0.0)
     L2.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3)
     L2.verdict(25.0, request=4)
-    assert L2.one().repair_success is False
+    assert L2.one().repairs[0]["success"] is False
 
 
 def test_latencies():
@@ -328,7 +352,7 @@ def test_writer_roundtrip(tmp_path):
                  "t_start": 0.0, "t_end": 1.0})
         w.write({"type": "chain_annotation", "uid": "u1", "action": "new", "chain_id": "c",
                  "kind": "action"})
-        w.write({"type": "verdict", "chain_id": "c", "source": "human", "label": "complied",
+        w.write({"type": "verdict", "chain_id": "c", "source": "adjudicated", "label": "complied",
                  "t_evidence": 5.0})
     s = load_session(p)
     assert "喝茶" in p.read_text(encoding="utf-8")
@@ -462,7 +486,7 @@ def test_sim_user_emits_annotations_and_scores():
     assert clock.now() == pytest.approx(task.duration_s)
     recs = [{"type": "session", "session_id": "s1", "condition": "A2", "task_id": task.task_id,
              "seed": 0}, *events,
-            {"type": "verdict", "chain_id": "s1:c2", "source": "human", "label": "complied",
+            {"type": "verdict", "chain_id": "s1:c2", "source": "adjudicated", "label": "complied",
              "t_evidence": 16.0}]
     sc = score_session(parse_session(recs))
     s = summarize(sc.chains)
@@ -479,6 +503,8 @@ def test_report_end_to_end(tmp_path):
                 L.new(0.0)
                 if rng.random() < p:
                     L.verdict(float(rng.uniform(3, 14)))
+                else:
+                    L.verdict(None, label="not_complied")  # reviewed, never done: no time
                 L.ev(type="completion_claim", chain_id="c1", t=14.5)
                 scores.append(L.score())
     md = build_report(scores, pairs=[("A2", "A1")], n_boot=500)

@@ -61,7 +61,13 @@ def to_pcm16(audio: np.ndarray | None, n_samples: int) -> bytes:
 
 
 class WSTransport:
-    """Orchestrator transport over one WebSocket connection."""
+    """Orchestrator transport over one WebSocket connection.
+
+    Presentation times: the client reports, for each chunk, when its audio starts / ends at the
+    audio *output* (AudioContext.getOutputTimestamp -> performance clock, ``tp`` in ms). The
+    server maps that clock to its own with the lowest-RTT ping sample (NTP-style,
+    offset = t_server - (t_client_send + rtt/2)). Until a mapping exists, arrival time is used
+    (and the event says so)."""
 
     def __init__(self, ws: WebSocket):
         self.ws = ws
@@ -69,6 +75,8 @@ class WSTransport:
         self._send_lock = asyncio.Lock()
         self._starts: dict[tuple[int, int], float] = {}
         self._epoch = 0  # incremented on stop; stale sends are skipped
+        self.clock_offset_s: float | None = None
+        self.clock_rtt_s: float | None = None
 
     async def send_chunk(self, chunk: Chunk, script: BlockScript) -> None:
         epoch = self._epoch
@@ -86,16 +94,30 @@ class WSTransport:
                 "n_frames": len(jpegs), "fps": chunk.fps, "sample_rate": chunk.sample_rate,
                 "width": int(w), "height": int(h), "transcript": script.transcript}))
             for j in jpegs:
+                if epoch != self._epoch:
+                    return  # interrupted mid-chunk: the client discards the partial chunk
                 await self.ws.send_bytes(j)
-            await self.ws.send_bytes(pcm)
+            if epoch == self._epoch:
+                await self.ws.send_bytes(pcm)
 
     async def stop_playback(self) -> None:
+        """Immediate: does not wait for an in-flight chunk send (which aborts at its next frame)."""
         self._epoch += 1
-        async with self._send_lock:
-            await self.ws.send_text(json.dumps({"type": "stop"}))
+        await self.ws.send_text(json.dumps({"type": "stop"}))
+
+    def on_clock(self, msg: dict) -> None:
+        rtt = float(msg["rtt"]) / 1000.0
+        if self.clock_rtt_s is None or rtt <= self.clock_rtt_s:
+            self.clock_rtt_s = rtt
+            self.clock_offset_s = float(msg["t_server"]) - (float(msg["t_client"]) / 1000.0 + rtt / 2)
+
+    def _to_server(self, msg: dict) -> float:
+        if msg.get("tp") is not None and self.clock_offset_s is not None:
+            return float(msg["tp"]) / 1000.0 + self.clock_offset_s
+        return now()
 
     def on_client_message(self, msg: dict) -> None:
-        t = now()
+        t = self._to_server(msg)
         key = (int(msg.get("request", -1)), int(msg.get("chunk", -1)))
         if msg["type"] == "chunk_start":
             self._starts[key] = t
@@ -132,73 +154,86 @@ def build_app(args: argparse.Namespace) -> FastAPI:
     async def ws_endpoint(ws: WebSocket) -> None:
         await ws.accept()
         hello = json.loads(await ws.receive_text())
-        mode = hello.get("mode", "private")
+        mode = "public" if hello.get("mode") == "public" else "private"
         session_id = new_id("sess")
         transport = WSTransport(ws)
-
-        from live_agent.llm import OpenAICompatLLM
-
-        llm = OpenAICompatLLM(args.llm_url, args.llm_model)
-        manifest = CapabilityManifest.load(cfg_dir / "capabilities.json")
-        if args.dev_allow_uncalibrated:
-            manifest.min_status = Status.DOCUMENTED
-        ledger = StateLedger.from_config(cfg_dir / "canon.json")
-        director = Director(llm, manifest, ledger, persona_name=canon["display_name"],
-                            persona_bio=canon["persona_bio"],
-                            mode=DirectorMode(args.director_mode))
-        if app.state.shared_gen is not None:
+        shared = app.state.shared_gen is not None
+        if shared:
             if app.state.session_lock.locked():
                 await ws.send_text(json.dumps({"type": "error", "error": "generator busy (one live session at a time)"}))
                 await ws.close()
                 return
             await app.state.session_lock.acquire()
-            generator = SessionView(app.state.shared_gen)
-        else:
-            generator = make_generator(args)
-        sched = LockScheduler(SchedulerConfig(request_s=generator.info.request_seconds,
-                                              lambda_prior_s=args.lambda_prior))
-        judge = speech = corrector = None
-        if args.vlm_url:
-            from live_agent.qc.judge import VLMJudge
-
-            judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model))
-        asr = None
-        if args.asr_url:
-            from live_agent.asr import OpenAIASR
-            from live_agent.qc.judge import SpeechCheck
-
-            asr = OpenAIASR(args.asr_url, args.asr_model)
-            speech = SpeechCheck(asr.transcribe_sync)
-        from live_agent.qc.judge import ForwardCorrector
-
-        corrector = ForwardCorrector(llm)
-        log_dir = Path(args.log_dir)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        orch = Orchestrator(generator, director, sched, transport, judge=judge, corrector=corrector,
-                            speech_check=speech, memory=make_memory(args, hello, session_id),
-                            log=EventLog(log_dir / f"{session_id}.jsonl"),
-                            cfg=OrchestratorConfig(session_id=session_id, scope=mode,
-                                                   correction_mode=CorrectionMode(args.correction_mode)))
-        transport.orchestrator = orch
-        await orch.start()
-        await ws.send_text(json.dumps({"type": "status", "session": session_id, "mode": mode,
-                                       "generator": generator.info.name}))
+        orch = None
+        inputs: asyncio.Queue = asyncio.Queue()
+        worker = None
         try:
+            from live_agent.llm import OpenAICompatLLM
+
+            llm = OpenAICompatLLM(args.llm_url, args.llm_model)
+            manifest = CapabilityManifest.load(cfg_dir / "capabilities.json")
+            if args.dev_allow_uncalibrated:
+                manifest.min_status = Status.DOCUMENTED
+            ledger = StateLedger.from_config(cfg_dir / "canon.json")
+            director = Director(llm, manifest, ledger, persona_name=canon["display_name"],
+                                persona_bio=canon["persona_bio"], mode=DirectorMode(args.director_mode))
+            generator = SessionView(app.state.shared_gen) if shared else make_generator(args)
+            sched = LockScheduler(SchedulerConfig(request_s=generator.info.request_seconds,
+                                                  lambda_prior_s=args.lambda_prior))
+            judge = speech = None
+            if args.vlm_url:
+                from live_agent.qc.judge import VLMJudge
+
+                judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model))
+            asr = None
+            if args.asr_url:
+                from live_agent.asr import OpenAIASR
+                from live_agent.qc.judge import SpeechCheck
+
+                asr = OpenAIASR(args.asr_url, args.asr_model)
+                speech = SpeechCheck(asr.transcribe_sync)
+            from live_agent.qc.judge import ForwardCorrector
+
+            log_dir = Path(args.log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            orch = Orchestrator(generator, director, sched, transport, judge=judge, corrector=ForwardCorrector(llm),
+                                speech_check=speech, memory=make_memory(args, hello, session_id, mode),
+                                log=EventLog(log_dir / f"{session_id}.jsonl"),
+                                cfg=OrchestratorConfig(session_id=session_id, scope=mode,
+                                                       correction_mode=CorrectionMode(args.correction_mode)))
+            transport.orchestrator = orch
+            await orch.start()
+            await ws.send_text(json.dumps({"type": "status", "session": session_id, "mode": mode,
+                                           "generator": generator.info.name}))
+
+            async def handle_inputs() -> None:
+                """Utterances are processed in order, off the receive loop, so presentation acks
+                and barge-in keep being read (and timestamped) while ASR / the LLM run."""
+                while True:
+                    kind, payload = await inputs.get()
+                    try:
+                        if kind == "audio":
+                            from live_agent.asr import decode_audio_bytes
+
+                            audio = decode_audio_bytes(payload, 16000)
+                            text = await asr.transcribe(audio, 16000)
+                            await ws.send_text(json.dumps({"type": "transcript", "text": text}))
+                        else:
+                            text = payload
+                        if text:
+                            await orch.on_user_utterance(Utterance(new_id("utt"), "user", text, now(),
+                                                                   session_id=session_id, scope=mode))
+                    except Exception:  # noqa: BLE001
+                        log.exception("input handling failed")
+
+            worker = asyncio.create_task(handle_inputs())
             while True:
                 msg = await ws.receive()
                 if msg.get("type") == "websocket.disconnect":
                     break
                 if msg.get("bytes") is not None:
-                    if asr is None:
-                        continue
-                    from live_agent.asr import decode_audio_bytes
-
-                    audio = decode_audio_bytes(msg["bytes"], 16000)
-                    text = await asr.transcribe(audio, 16000)
-                    await ws.send_text(json.dumps({"type": "transcript", "text": text}))
-                    if text:
-                        await orch.on_user_utterance(Utterance(new_id("utt"), "user", text, now(),
-                                                               session_id=session_id, scope=mode))
+                    if asr is not None:
+                        inputs.put_nowait(("audio", msg["bytes"]))
                     continue
                 data = json.loads(msg["text"])
                 t = data.get("type")
@@ -207,15 +242,19 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 elif t == "speech_start":
                     await orch.on_speech_start()
                 elif t == "text" and data.get("text", "").strip():
-                    await orch.on_user_utterance(Utterance(new_id("utt"), "user", data["text"].strip(),
-                                                           now(), session_id=session_id, scope=mode))
+                    inputs.put_nowait(("text", data["text"].strip()))
                 elif t == "ping":
-                    await ws.send_text(json.dumps({"type": "pong", "t": data.get("t")}))
+                    await ws.send_text(json.dumps({"type": "pong", "t": data.get("t"), "ts": now()}))
+                elif t == "clock":
+                    transport.on_clock(data)
         except WebSocketDisconnect:
             pass
         finally:
-            await orch.stop()
-            if app.state.shared_gen is not None:
+            if worker is not None:
+                worker.cancel()
+            if orch is not None:
+                await orch.stop()
+            if shared:
                 app.state.session_lock.release()
 
     return app
@@ -233,13 +272,13 @@ def make_generator(args: argparse.Namespace):
     raise ValueError(args.generator)
 
 
-def make_memory(args: argparse.Namespace, hello: dict, session_id: str):
+def make_memory(args: argparse.Namespace, hello: dict, session_id: str, scope: str = "private"):
     if not args.memory_db:
         return None
     from live_agent.memory_bridge import MemoryBridge
 
     return MemoryBridge(args.memory_db, user_id=hello.get("user_id", "anon"),
-                        stream_id=hello.get("stream_id", "stream-0"), session_id=session_id)
+                        stream_id=hello.get("stream_id", "stream-0"), session_id=session_id, mode=scope)
 
 
 def main() -> None:

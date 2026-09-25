@@ -141,11 +141,11 @@ time), submitted one at a time.
 
 **Parity with the released path** (`scripts/m0/parity_check.py`, prompts_10s, same seed):
 - Teacher milestones (states 3/6/9) and the student's published audio latents are **bitwise identical** to the released run for both requests.
-- Video latents differ with relative L2 0.39-0.42. This is in the same range as the run-to-run variation of the released path itself (0.31-0.37). So there is no bitwise video parity, and no evidence of a systematic deviation.
+- Video latents differ with relative L2 0.39-0.42, slightly *above* the run-to-run variation of the released path itself (0.31-0.37). There is no bitwise video parity, and two comparisons cannot rule out a small systematic deviation. Visual parity must be checked (and is part of E1 human labels).
 
 ## 3. What this decides (proposal §6.4 / §11)
 
-- **Generator throughput is real time at 480p on 4 local Hopper GPUs** with the streaming adapter.
+- **Short-run generator throughput is real time at 480p on 4 local Hopper GPUs** with the streaming adapter (40 s sessions, 3 repetitions; not a sustained or client-qualified result).
   - With a dedicated 2-GPU teacher: period 3.55 s against 4.958 s of media, about 1.40× real time, and no startup buffer needed.
   - Colocated on the same 4 GPUs: period 3.8-4.35 s (about 1.14-1.30×). The worst single request was 4.98 s (rep2), so the colocated margin is thin.
 - **Teacher lookahead (T2).**

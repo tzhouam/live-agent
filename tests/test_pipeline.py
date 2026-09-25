@@ -165,3 +165,24 @@ def test_open_loop_has_no_checks():
     asyncio.run(run(orch, client, [(2.0, "喝口茶")]))
     assert all(not e.data.get("checks") for e in events(orch, EventType.LOCK))
     assert not events(orch, EventType.VERDICT)
+
+
+def test_erasure_acks_all_targets_and_redacts_log(tmp_path):
+    from live_agent.memory_bridge import MemoryBridge
+
+    def resp(messages):
+        text = messages[-1]["content"]
+        if "忘" in text:
+            return json.dumps({"relation": "chat", "kind": "memory", "steps": [{"intent": "", "line": "好的，忘掉了。"}],
+                               "forget_term": "杭州"})
+        return json.dumps({"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "杭州很美。"}],
+                           "memory_note": "用户的妹妹住在杭州"})
+
+    orch, client = build(max_requests=8)
+    orch.director.llm = ScriptedLLM(resp)
+    orch.memory = MemoryBridge(str(tmp_path / "m.sqlite"), user_id="u", stream_id="s", session_id="sess", mode="private")
+    orch.log = EventLog(tmp_path / "log.jsonl")
+    asyncio.run(run(orch, client, [(1.0, "我妹妹住在杭州"), (6.0, "忘掉我妹妹住哪")]))
+    stops = [e for e in events(orch, EventType.PLAYBACK_STOP) if e.data.get("erasure")]
+    assert stops and stops[0].data["erasure_complete"], stops[0].data
+    assert "杭州" not in (tmp_path / "log.jsonl").read_text(encoding="utf-8")

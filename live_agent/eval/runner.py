@@ -38,18 +38,52 @@ CONDITIONS = {
     "A2": dict(mode=DirectorMode.CLOSED_LOOP, qc=True, correction=CorrectionMode.GRADIENT),
     "A2-noqc": dict(mode=DirectorMode.CLOSED_LOOP, qc=False, correction=CorrectionMode.NONE),
     "A2-repeat": dict(mode=DirectorMode.CLOSED_LOOP, qc=True, correction=CorrectionMode.REPEAT),
+    # RQ2: the repair arm is drawn per eligible failure point (seeded), logged per repair.
+    "A2-rq2": dict(mode=DirectorMode.CLOSED_LOOP, qc=True, correction=CorrectionMode.RANDOMIZED),
 }
+
+CONTENT_DURATION_S = {"qa": 10.0, "explain": 30.0, "sing": 30.0}  # proposal §7 D table [proposed target]
+
+
+def observation_horizon_s(task: Task) -> float:
+    """How long after the last utterance media must be observed so every deadline D is covered."""
+    d = 15.0
+    for u in task.utterances:
+        it = u.intent or {}
+        kind = it.get("kind", task.kind)
+        if kind == "multistep":
+            steps = it.get("steps") or 1
+            d = max(d, 15.0 * (len(steps) if isinstance(steps, list) else int(steps)))
+        elif kind == "content":
+            dur = it.get("prereg_duration_s") or CONTENT_DURATION_S.get(it.get("content_type", ""), 30.0)
+            d = max(d, 15.0 + float(dur))
+    return d + 5.0
 
 
 def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: float) -> list[dict]:
     """Map orchestrator TimelineEvents + sim-user events into SCHEMA.md events."""
     ts = lambda t: (t - t0) * speed  # noqa: E731
     uid_to_chain = {e["uid"]: e["chain_id"] for e in user_events if e["type"] == "chain_annotation"}
+    gt_uids: dict[str, list[str]] = {}  # GT chain -> uids of its new/revision utterances, in order
+    for e in user_events:
+        if e["type"] == "chain_annotation" and e["action"] in ("new", "revision"):
+            gt_uids.setdefault(e["chain_id"], []).append(e["uid"])
     dchain_to_gt: dict[str, str] = {}
+    dchain_uids: dict[str, list[str]] = {}
     for c in orch.director.chains.values():
-        for uid in [c.opened_by, *c.revisions]:
+        dchain_uids[c.chain_id] = [c.opened_by, *c.revisions]
+        for uid in dchain_uids[c.chain_id]:
             if uid in uid_to_chain:
                 dchain_to_gt[c.chain_id] = uid_to_chain[uid]
+
+    def gt_revision(dchain: str, drev: int | None) -> int | None:
+        """Director revision r -> GT revision index of the utterance that defined it."""
+        uids = dchain_uids.get(dchain, [])
+        gt = dchain_to_gt.get(dchain)
+        if gt is None or drev is None or drev >= len(uids) or uids[drev] not in gt_uids.get(gt, []):
+            return None
+        return gt_uids[gt].index(uids[drev])
+
     out: list[dict[str, Any]] = []
     for e in user_events:  # already on the shared clock (monotonic) -> rescale
         e = dict(e)
@@ -57,59 +91,80 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
             if k in e:
                 e[k] = ts(e[k])
         out.append(e)
-    script_chains = {k: [dchain_to_gt.get(c) for c in s.chain_ids if dchain_to_gt.get(c)]
-                     for k, s in orch.scripts.items()}
-    presented_start: dict[int, float] = {}
     for ev in orch.log.events:
         d, k = ev.data, ev.request_index
+        script = orch.scripts.get(k) if k is not None else None
+        dchains = script.chain_ids if script is not None else []
         if ev.type == EventType.LOCK and k is not None:
-            out.append({"type": "lock", "t": ts(ev.t), "request": k, "chain_ids": script_chains.get(k, []),
+            out.append({"type": "lock", "t": ts(ev.t), "request": k,
+                        "chain_ids": [dchain_to_gt[c] for c in dchains if c in dchain_to_gt],
                         "plan_version": d.get("plan_version")})
         elif ev.type == EventType.CHUNK_PRESENTED:
             out.append({"type": "chunk_presented", "request": k, "chunk": ev.chunk_index,
                         "t_start": ts(ev.t), "t_end": ts(d["t_end"])})
-            if ev.chunk_index == 0:
-                presented_start[k] = ts(ev.t)
         elif ev.type == EventType.VERDICT and d.get("kind") == "action":
-            step = orch.scripts[k].provenance.get("step") if k in orch.scripts else None
-            for cid in script_chains.get(k, []):
-                v = {"type": "verdict", "source": "judge", "label": d["label"], "chain_id": cid,
+            for cid in d.get("chain_ids", dchains):  # only the chain the judged request served
+                gt = dchain_to_gt.get(cid)
+                if gt is None:
+                    continue
+                v = {"type": "verdict", "source": "judge", "label": d["label"], "chain_id": gt,
                      "request": k, "chunk": 0, "t_evidence": ts(d["t_evidence"]), "qid": d.get("qid")}
-                if step is not None:  # multistep: the director's step index (action steps only)
-                    v["step"] = step
+                rev = gt_revision(cid, d.get("revision"))
+                if rev is not None:
+                    v["revision"] = rev
+                if d.get("step") is not None:  # multistep: the director's step index (action steps)
+                    v["step"] = d["step"]
                 out.append(v)
         elif ev.type == EventType.COMPLETION_CLAIM:
             gt = dchain_to_gt.get(d.get("chain_id", ""))
             if gt:
-                out.append({"type": "completion_claim", "chain_id": gt, "t": presented_start.get(k, ts(ev.t)),
-                            "request": k})
+                c = {"type": "completion_claim", "chain_id": gt, "t": ts(ev.t), "request": k,
+                     "text": d.get("text", "")}
+                if d.get("step") is not None:
+                    c["step"] = d["step"]
+                out.append(c)
+        elif ev.type == EventType.SPEECH_ONSET:
+            for cid in d.get("chain_ids", []):
+                gt = dchain_to_gt.get(cid)
+                if gt:  # scripted for this chain; on-topic only a human can confirm
+                    out.append({"type": "speech_onset", "t": ts(ev.t), "on_topic": None, "source": "script",
+                                "onset_source": d.get("onset_source"), "chain_id": gt, "request": k})
         elif ev.type == EventType.REFUSAL:
             gt = dchain_to_gt.get(d.get("chain_id", ""))
             if gt:
                 out.append({"type": "refusal", "chain_id": gt, "t": ts(ev.t),
                             "kind": "degraded" if d.get("degraded") else "refused", "reason": d.get("reason", "")})
+        elif ev.type == EventType.CAPACITY_SKIP:
+            gt = dchain_to_gt.get(d.get("chain_id", ""))
+            if gt:
+                sk = {"type": "capacity_skip", "chain_id": gt, "t": ts(ev.t)}
+                rev = gt_revision(d["chain_id"], d.get("revision"))
+                if rev is not None:
+                    sk["revision"] = rev
+                out.append(sk)
         elif ev.type == EventType.PLAYBACK_STOP:
             out.append({"type": "playback_stop", "t": ts(ev.t), "reason": "erasure" if d.get("erasure") else "barge_in"})
         elif ev.type == EventType.REPAIR:
             gt = dchain_to_gt.get(d.get("chain_id", ""))
             if gt:
-                out.append({"type": "repair_assignment", "chain_id": gt,
-                            "arm": "forward_correction" if d.get("mode") == "gradient" else "repeat",
-                            "failure_request": k, "target_request": d.get("earliest_correctable"),
-                            "C": d.get("chain_cost_s")})
-    # Speech onset: the first presented request carrying a line for a chain.
-    for k, s in sorted(orch.scripts.items()):
-        if s.transcript and k in presented_start:
-            for cid in script_chains.get(k, []):
-                out.append({"type": "speech_onset", "t": presented_start[k], "on_topic": True,
-                            "chain_id": cid, "request": k})
+                r = {"type": "repair_assignment", "chain_id": gt,
+                     "arm": "forward_correction" if d.get("mode") == "gradient" else "repeat",
+                     "failure_request": k, "target_request": d.get("earliest_correctable"),
+                     "C": d.get("chain_cost_s")}
+                if d.get("step") is not None:
+                    r["step"] = d["step"]
+                out.append(r)
+        elif ev.type == EventType.OBSERVATION_END:
+            out.append({"type": "observation_end", "t": ts(ev.t)})
     return out
 
 
-async def run_task(task: Task, condition: str, seed: int, *, factory, speed: float, out_dir: Path) -> Path:
+async def run_task(task: Task, condition: str, seed: int, *, factory, speed: float, out_dir: Path,
+                   mode: str = "simulation") -> Path:
     cfg = CONDITIONS[condition]
     # Per-(task, seed) RNG stream, identical across conditions (paired design), different across tasks.
-    orch, client = factory(cfg, zlib.crc32(f"{task.task_id}/{seed}".encode()))
+    stream = zlib.crc32(f"{task.task_id}/{seed}".encode())
+    orch, client = factory(cfg, stream)
     client.orchestrator = orch
     t0 = now()
     user_events: list[dict] = []
@@ -130,17 +185,35 @@ async def run_task(task: Task, condition: str, seed: int, *, factory, speed: flo
     await orch.start()
     try:
         await user.run()
-        # let the last requests present and be checked
-        await asyncio.sleep(15.0 / speed)
+        # observe media until every deadline D of the task has passed (scorer checks observation_end)
+        await asyncio.wait_for(orch._stop.wait(), timeout=observation_horizon_s(task) / speed)
+    except asyncio.TimeoutError:
+        pass
     finally:
         await orch.stop()
         client.close()
-    with SessionLogWriter(path, session_id=f"{condition}-{task.task_id}-s{seed}", condition=condition,
-                          task_id=task.task_id, seed=seed, mode="simulation",
-                          backbone=orch.gen.info.name) as w:
+    if orch.error is not None:
+        raise RuntimeError(f"{condition}/{task.task_id}: session failed: {orch.error}")
+    header = dict(session_id=f"{condition}-{task.task_id}-s{seed}", condition=condition,
+                  task_id=task.task_id, seed=seed, mode=mode, backbone=orch.gen.info.name)
+    gseed = getattr(getattr(orch.gen, "backend", orch.gen), "seed", None)
+    with SessionLogWriter(path, **header, **({"generator_seed": gseed} if gseed is not None else {})) as w:
         for ev in convert(orch, user_events, t0=t0, speed=speed):
             w.write(ev)
     return path
+
+
+def schedule(tasks: list[Task], conditions: list[str], seeds: list[int]) -> list[tuple[Task, str, int]]:
+    """Counterbalanced order: per (seed, task) the conditions run back to back, rotated so each
+    condition appears in each position equally often (no condition-blocked warm-up/drift)."""
+    out = []
+    i = 0
+    for seed in seeds:
+        for t in tasks:
+            rot = conditions[i % len(conditions):] + conditions[: i % len(conditions)]
+            out += [(t, c, seed) for c in rot]
+            i += 1
+    return out
 
 
 def mock_factory(config_dir: Path, *, speed: float, llm, p_default: float = 0.7):
@@ -181,12 +254,12 @@ def live_factory(config_dir: Path, *, backend, llm, vlm, record_dir: Path | None
 
     def factory(cfg: dict, seed: int):
         manifest = CapabilityManifest.load(config_dir / "capabilities.json")
-        if allow_uncalibrated:
-            manifest.min_status = Status.DOCUMENTED  # pre-E1 qualification runs only; never for E2 results
+        # E2 gating needs human-validated E1 calibration; earlier runs are qualification only.
+        manifest.min_status = Status.DOCUMENTED if allow_uncalibrated else Status.CALIBRATED
         ledger = StateLedger.from_config(config_dir / "canon.json")
         director = Director(llm, manifest, ledger, persona_name=canon["display_name"],
                             persona_bio=canon["persona_bio"], mode=cfg["mode"])
-        gen = SessionView(backend)
+        gen = SessionView(backend, seed=seed)
         sched = LockScheduler(SchedulerConfig(request_s=backend.info.request_seconds))
         rec = Recorder(record_dir / f"session-{next(counter):03d}.mp4") if record_dir else None
         client = SimClient(speed=1.0, recorder=rec)
@@ -242,12 +315,11 @@ async def _main(args) -> None:
                                vlm=OpenAICompatLLM(args.vlm_url, args.vlm_model),
                                record_dir=out if args.record else None,
                                allow_uncalibrated=args.allow_uncalibrated)
+    mode = "simulation" if backend is None else "generator_path"
     try:
-        for cond in args.conditions:
-            for seed in args.seeds:
-                for t in tasks:
-                    path = await run_task(t, cond, seed, factory=factory, speed=speed, out_dir=out)
-                    print(path, flush=True)
+        for t, cond, seed in schedule(tasks, args.conditions, args.seeds):
+            path = await run_task(t, cond, seed, factory=factory, speed=speed, out_dir=out, mode=mode)
+            print(path, flush=True)
     finally:
         if backend is not None:
             await backend.close()

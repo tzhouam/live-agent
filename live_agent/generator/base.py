@@ -98,17 +98,23 @@ class SessionView(Generator):
     """One live session on a long-lived shared generator (TaoMate-H3 workers take ~130 s to start).
 
     ``start`` resets the backend (fresh KV/sink/teacher tail) and numbers this session's requests
-    from 0; ``close`` resets again instead of shutting the workers down. Chunks and timings of
-    earlier sessions are dropped. Only one view may be active at a time (the caller serialises).
+    from 0; ``close`` resets again instead of shutting the workers down. Chunks are filtered by
+    the backend's generation epoch (``chunk.meta["session"]``), so output queued before any reset
+    (session start, barge-in reset, erasure) is never yielded. Only one view may be active at a
+    time (the caller serialises). ``seed`` (optional) sets the backend's generation seed.
     """
 
-    def __init__(self, backend: Generator) -> None:
+    def __init__(self, backend: Generator, seed: int | None = None) -> None:
         self.backend = backend
         self.info = backend.info
+        self.seed = seed
         self._offset = 0
+        self._epoch = None
 
     async def start(self) -> None:
-        await self.backend.reset()
+        if self.seed is not None and hasattr(self.backend, "seed"):
+            self.backend.seed = self.seed
+        await self.reset()
         self._offset = self.backend.next_request_index
 
     async def submit(self, request_index: int, prompt: str) -> None:
@@ -120,10 +126,13 @@ class SessionView(Generator):
         async for ch in self.backend.chunks():
             if ch.request_index < self._offset:
                 continue  # stale chunk from an earlier session
+            if self._epoch is not None and ch.meta.get("session", self._epoch) != self._epoch:
+                continue  # generated before the latest reset
             yield replace(ch, request_index=ch.request_index - self._offset)
 
     async def reset(self) -> None:
         await self.backend.reset()  # indices stay monotonic within the session
+        self._epoch = getattr(self.backend, "session_epoch", None)
 
     async def close(self) -> None:
         await self.backend.reset()

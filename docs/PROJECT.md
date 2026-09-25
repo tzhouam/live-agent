@@ -84,7 +84,7 @@ alone is insufficient for reliable, stateful agent behavior.
   lock → teacher → student → presentation timeline, with just-in-time prompt locking.
 - **Memory:** typed by provenance and separated by scope (private/public/canon). Deletion cascades to derived
   artifacts.
-- **Phase 2 status:** M0 done (TaoMate-H3 real time at 480p on 4 local Hopper GPUs, D-021). The next
+- **Phase 2 status:** M0 done (short-run TaoMate-H3 generator throughput is real time at 480p on 4+2 local Hopper GPUs, D-021). The next
   gates are M1 qualification, E1 calibration (needs human labels) and the E2 pilot (needs blinded adjudication).
 
 ## Requirement → deliverable checklist (from goal.md)

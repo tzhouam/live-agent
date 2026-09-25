@@ -50,8 +50,12 @@ gpu run --gpus 6 --timeout 1h --note "live-agent M1" -- env PYTHONPATH=. python3
 python3 -m live_agent.eval.report .cache/m1/*.jsonl --compare A2:A1 -o .cache/m1/report.md
 
 # blinded adjudication of the primary outcome
-python3 -m live_agent.eval.adjudicate prepare .cache/m1/*.jsonl -o .cache/adj/batch1
-python3 -m live_agent.eval.adjudicate merge .cache/adj/batch1 labels-batch1.json --annotator <id>
+python3 -m live_agent.eval.adjudicate --help   # prepare (criteria frozen from the suite; key kept in
+                                               # <batch>.key/, outside the annotator's folder) and merge
+                                               # (two raters + optional arbiter; only reconciled verdicts
+                                               # are appended; unresolved items listed)
+python3 -m live_agent.eval.report <logs> -o report.md              # primary: exits 2 if any chain/claim unadjudicated
+python3 -m live_agent.eval.report <logs> --source judge -o diag.md # labelled DIAGNOSTIC
 
 # E1 calibration
 gpu run --gpus 6 --timeout 4h --note "live-agent E1" -- env PYTHONPATH=. python3 scripts/e1_calibrate.py \
@@ -81,7 +85,7 @@ python3 -m pytest
 
 - **M0 (measured locally):** the TaoMate-H3 streaming adapter is real time at 480x864 on 4+2 GPUs. See
   `docs/m0_measurements.md` and D-021.
-- **M1 qualification run (measured locally, 2026-09-26; `.cache/m1`, 12 sessions = 6 tasks × A2/A1, seed 0,
+- **Generator-path diagnostic run (not M1 qualification; measured locally, 2026-09-26; `.cache/m1`, 12 sessions = 6 tasks × A2/A1, seed 0,
   real TaoMate-H3 + Qwen3-8B responder + Qwen3-VL-8B judge, pre-E1 manifest with `--allow-uncalibrated`):**
   - 29–52 chunks per session, **0 playback gaps > 50 ms** in all 12 sessions (after moving the recorder off
     the event loop; the first attempt showed ~0.1 s gaps per chunk caused by the synchronous recorder).
@@ -101,6 +105,22 @@ python3 -m pytest
   real LLM). The pipeline scores end to end. The repair offset j−k is always 2 with 5 s requests (the
   failure is known only after the full request is presented, and request k+1 is already locked), so most
   repaired chains finish after the 15 s action deadline. This is a structural property to report.
+
+## Known deviations and scope limits (after Codex impl1/impl2)
+
+- **Online checks cover action steps only.** Content and memory instructions get a speech (ASR) check but no
+  online compliance question, so they cannot be forward-repaired; their outcomes come only from blinded
+  adjudication. The drift detector and its three interventions (§10.4: textual correction, session reset,
+  image re-anchoring) are not wired into the active path; only the textual bridging note after barge-in is.
+  **The E2 pilot claim for A2's online loop is therefore restricted to action and multistep-action chains.**
+- **Pre-play ASR of generated speech (§15) is not implemented.** ASR runs after presentation, off the event
+  loop. The pre-generation script audit is implemented (erased terms, length).
+- **Transport:** the browser path sends JPEG frames + PCM16 per chunk instead of the proposal's per-chunk fMP4
+  (`Chunk.encoded` is unused). Presentation acks carry the client's audio-output time (performance clock via
+  `getOutputTimestamp`), mapped to server time with the lowest-RTT ping; the accuracy of this mapping is
+  not yet measured.
+- **Generator-path runs are not M1 qualification.** The §6.4 gate needs the client playback path and at least
+  three 30-minute soak runs. The runs in `.cache/m1` are short generator-path diagnostics.
 
 ## Not yet verified
 

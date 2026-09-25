@@ -13,12 +13,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from live_agent.memory import (
     CANON,
     ClaimType,
+    ErasureIncompleteError,
     ExtractiveSummarizer,
     HashingEmbedder,
     ImmutableRecordError,
     Kind,
     MemoryStore,
     RuleExtractor,
+    ScopeViolationError,
     Status,
     private_scope,
     public_scope,
@@ -183,8 +185,17 @@ def test_agent_inference_is_candidate_belief(mem):
     assert b.claim_type == ClaimType.AGENT_INFERENCE
     assert all(r.kind == Kind.USER_FACT for r in mem.profile(U))
     assert mem.resolve(U, "user", "speaks").value is None
-    c = mem.confirm(b.id)
-    assert c.kind == Kind.USER_FACT and c.claim_type == ClaimType.OWN_ASSERTION
+    with pytest.raises(ValueError):
+        mem.confirm(b.id)  # an inference needs the user's confirming turn
+    yes = say(mem, "对，我会说法语。").episode
+    c = mem.confirm(b.id, yes.id)
+    assert c.id != b.id and c.kind == Kind.USER_FACT and c.claim_type == ClaimType.OWN_ASSERTION
+    assert c.provenance.speaker == "user" and c.provenance.source_id == yes.provenance.source_id
+    assert set(c.derived_from) == {yes.id, b.id} and c.meta["confirmed_from"] == b.id
+    kept = mem.get(b.id)  # the inference is preserved as provenance, unchanged in kind / speaker
+    assert kept.kind == Kind.CANDIDATE_BELIEF and kept.claim_type == ClaimType.AGENT_INFERENCE
+    assert kept.provenance.speaker == "agent" and kept.status == Status.SUPERSEDED
+    assert kept.meta["confirmed_as"] == c.id
     assert mem.resolve(U, "user", "speaks").value == "French"
 
 
@@ -267,7 +278,9 @@ def test_conflicting_user_facts_flagged(mem):
 def _private_session_with_derivatives(mem):
     (f,) = say(mem, "我妹妹住在巴黎，她是画家。", session="p1").facts
     g = mem.record_generated_event("你妹妹在巴黎当画家，真浪漫！", "p1", private_scope(U), derived_from=[f.id])
-    led = mem.add_ledger("persona promised to mail a postcard to 巴黎", public_scope(S), derived_from=[g.id])
+    with pytest.raises(ScopeViolationError):  # a public artifact may never have a private input
+        mem.add_ledger("persona promised to mail a postcard to 巴黎", public_scope(S), derived_from=[g.id])
+    led = mem.add_ledger("persona promised to mail a postcard to 巴黎", private_scope(U), derived_from=[g.id])
     summ = mem.consolidate("p1")
     return f, g, led, summ
 
@@ -275,7 +288,7 @@ def _private_session_with_derivatives(mem):
 def test_source_scopes_propagate(mem):
     f, g, led, summ = _private_session_with_derivatives(mem)
     assert g.source_scopes == {private_scope(U)}
-    assert led.scope == public_scope(S) and led.source_scopes == {public_scope(S), private_scope(U)}
+    assert led.scope == private_scope(U) and led.source_scopes == {private_scope(U)}
     assert summ.kind == Kind.SUMMARY and summ.scope == private_scope(U)
     assert f.id in summ.derived_from and g.id in summ.derived_from
     with pytest.raises(ValueError):
@@ -314,6 +327,11 @@ def test_fresh_public_session_after_private_leaks_nothing(mem):
     # public-session summary is built only from public inputs
     s = mem.consolidate("pub1")
     assert s.source_scopes == {public_scope(S)}
+    # legacy row with a mixed public/private tag (written before the write-time check):
+    # retrieval's SQL filter still excludes it
+    leg = mem.add_ledger("legacy postcard note", public_scope(S))
+    mem.db.execute("INSERT INTO record_scopes VALUES (?, ?)", (leg.id, private_scope(U)))
+    assert leg.id not in {h.record.id for h in mem.retrieve("legacy postcard", "public", stream_id=S, k=50)}
     # SQL filter is the first gate: unfiltered candidate set excludes private rows
     assert mem.scope_readable({public_scope(S), private_scope(U)}, "public", None, S) is False
 
@@ -349,6 +367,7 @@ def test_profile_preload(mem):
 
 def test_correction_bitemporal_and_invalidates_derivatives(mem, clock):
     (old,) = say(mem, "我妹妹住在巴黎。", session="c1").facts
+    say(mem, "我喜欢猫。", session="c1")
     gen = mem.record_generated_event("巴黎的咖啡馆很适合你妹妹", "c1", private_scope(U), derived_from=[old.id])
     belief = mem.record_inference("sister speaks French", user_id=U, derived_from=[old.id])
     led = mem.add_ledger("postcard to sister in 巴黎", private_scope(U), derived_from=[gen.id])
@@ -370,7 +389,8 @@ def test_correction_bitemporal_and_invalidates_derivatives(mem, clock):
     assert not ids & {old.id, gen.id, belief.id, led.id, summ.id}
     # regeneration hook rebuilds the summary without the corrected value
     (s2,) = mem.regenerate_stale()
-    assert s2.status == Status.ACTIVE and "巴黎" not in s2.text.split("[persona said]")[0]
+    assert s2.status == Status.ACTIVE and "巴黎" not in s2.text and "猫" in s2.text
+    assert gen.id not in s2.derived_from  # stale persona line never feeds a fresh summary
     assert mem.get(summ.id).status == Status.SUPERSEDED
 
 
@@ -391,24 +411,44 @@ def test_forget_cascades_and_verify_erased_empty(tmp_path, clock):
     say(mem, "我喜欢猫。", session="e1")
     g = mem.record_generated_event("巴黎现在很冷吧？", "e1", private_scope(U))
     led = mem.add_ledger("postcard to sister", private_scope(U), derived_from=[f.id])
-    pub_led = mem.add_ledger("persona mentioned a postcard", public_scope(S), derived_from=[led.id])
+    # a public artifact repeating the user's data without lineage (mis-tagged): still erased
+    pub_led = mem.add_ledger("persona mentioned a postcard to 巴黎", public_scope(S))
     belief = mem.record_inference("sister speaks French", user_id=U, derived_from=[f.id])
     summ = mem.consolidate("e1")
     anchor = mem.add_ledger("canon anchor", CANON, canonical=True)
     other = say(mem, "I live in Paris too", user=V, session="o1").facts[0]  # another user's data stays
     reports = []
-    mem.erasure_hooks.append(reports.append)
-    mem.erasure_hooks.append(lambda r: (_ for _ in ()).throw(RuntimeError("cache down")))
 
-    rep = mem.forget("巴黎", U, reason="gdpr")
+    def cache_ok(r):
+        reports.append(r)
+        return True
+
+    def cache_down(r):
+        raise RuntimeError("cache down")
+
+    cache_down.purge_target = "prompt_cache"
+    mem.register_purge_target("kv", cache_ok)
+    mem.erasure_hooks.append(cache_down)
+
+    rep = mem.forget("巴黎", U, reason="gdpr", require=["recordings"])
 
     for rid in (f.id, g.id, led.id, pub_led.id, belief.id, summ.id, f.derived_from[0]):
         assert mem.get(rid) is None, rid
     assert mem.get(anchor.id) is not None and mem.get(other.id) is not None
-    assert mem.verify_erased("巴黎", U) == []
-    assert mem.verify_erased("巴黎", U, raw_file=True) == []  # bytes overwritten (secure_delete)
+    assert mem.verify_erased("巴黎", U).ok
+    assert mem.verify_erased("巴黎", U, raw_file=True).ok  # bytes overwritten (secure_delete)
+    assert mem.verify_erasure(rep, raw_file=True).ok  # ids + descendants gone, tombstoned
     assert reports and reports[0] is rep and "e1" in rep.sessions and "巴黎" in rep.terms
     assert rep.hook_errors and "cache down" in rep.hook_errors[0]
+    # fail closed: a hook error and an unacked required target keep the erasure incomplete
+    assert rep.acks["memory_db"].ok and rep.acks["kv"].ok and not rep.acks["prompt_cache"].ok
+    assert not rep.complete and set(rep.pending_targets) == {"prompt_cache", "recordings"}
+    with pytest.raises(ErasureIncompleteError):
+        rep.raise_if_incomplete()
+    rep.acknowledge("recordings", detail="2 mp4 deleted")
+    assert not rep.complete and mem.get(f.id) is None  # nothing is un-deleted
+    rep.acknowledge("prompt_cache", detail="retried")
+    assert rep.complete
     # summary regenerated from what remains (cat fact), no trace of the erased value
     assert rep.regenerated
     new_s = mem.get(rep.regenerated[0])
@@ -431,16 +471,27 @@ def test_forget_by_record_id(mem):
     rep = mem.forget(f.id, U)
     assert mem.get(f.id) is None and mem.get(c.id) is not None
     assert rep.kinds["user_fact"] == 1 and rep.kinds["episode"] == 1 and rep.kinds["generated_event"] == 1
-    assert mem.verify_erased("Paris", U) == []
+    assert mem.verify_erased("Paris", U).ok and rep.complete  # no external targets registered
     with pytest.raises(PermissionError):
         mem.forget(c.id, V)
 
 
 def test_verify_erased_detects_residue(mem):
-    say(mem, "我住在巴黎")
-    assert mem.verify_erased("巴黎", U)
+    r = say(mem, "我住在巴黎")
+    v = mem.verify_erased("巴黎", U)
+    assert not v.ok and f"records:{r.episode.id}" in v.term_hits
+    # residue in another user's private data or in canon is informational only
+    say(mem, "我也住在巴黎", user=V, session="o1")
+    mem.add_ledger("persona visited 巴黎 once", CANON, canonical=True)
+    mem.forget("巴黎", U)
+    v = mem.verify_erased("巴黎", U)
+    assert v.ok and len(v.foreign_hits) >= 3
+    # a deleted id that is still present, untombstoned or referenced fails the check
+    (c,) = say(mem, "I like cats").facts
+    v = mem.verify_erased(None, U, deleted_ids=[c.id])
+    assert f"records:{c.id}" in v.surviving and v.missing_tombstones == [c.id] and not v.ok
     mem.db.execute("INSERT INTO embeddings VALUES ('ghost', 'm', x'00')")
-    assert any("orphan" in h for h in mem.verify_erased("zzz", U))
+    assert any("orphan" in h for h in mem.verify_erased("zzz", U).orphans)
 
 
 # ---------------------------------------------------------------- canon / ledger / procedural / summaries
@@ -471,8 +522,8 @@ def test_ledger_key_supersedes(mem):
 
 
 def test_procedural_entries(mem):
-    p = mem.add_procedure("wave: 'raises right hand and waves' works", "success", tags=["action:wave"])
-    q = mem.add_procedure("spin 360 fails: limbs smear", "failure")
+    p = mem.add_procedure("wave: 'raises right hand and waves' works", "success", tags=["action:wave"], curated=True)
+    q = mem.add_procedure("spin 360 fails: limbs smear", "failure", curated=True)
     assert p.kind == Kind.PROCEDURAL and p.meta["outcome"] == "success" and p.scope == CANON
     hits = mem.retrieve("wave raises hand", "public", stream_id=S, kinds=[Kind.PROCEDURAL])
     assert hits.hits[0].record.id == p.id and q.id in {h.record.id for h in hits}

@@ -30,6 +30,9 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "visual_ack": ("t", "uid"),
     "playback_stop": ("t",),
     "repair_assignment": ("chain_id", "arm", "failure_request", "target_request"),
+    "observation_end": ("t",),
+    # one annotator's raw, independent label (kept for agreement statistics; never scored)
+    "rating": ("annotator", "chain_id", "label"),
 }
 
 ANNOTATION_ACTIONS = ("new", "revision", "withdrawal")
@@ -37,6 +40,8 @@ VERDICT_LABELS = ("complied", "not_complied", "unknown")
 VERDICT_SOURCES = ("adjudicated", "human", "judge")
 REFUSAL_KINDS = ("refused", "degraded")
 REPAIR_ARMS = ("forward_correction", "repeat")
+ONSET_SOURCES = ("script", "adjudicated", "human")
+SESSION_MODES = ("simulation", "generator_path", "browser")
 
 
 class SchemaError(ValueError):
@@ -88,6 +93,15 @@ def validate_event(ev: dict[str, Any]) -> None:
         raise SchemaError(f"bad refusal kind {ev.get('kind')!r}")
     if typ == "repair_assignment" and ev["arm"] not in REPAIR_ARMS:
         raise SchemaError(f"bad repair arm {ev['arm']!r}")
+    if typ == "rating" and ev["label"] not in VERDICT_LABELS:
+        raise SchemaError(f"bad rating label {ev['label']!r}")
+    if typ == "speech_onset":
+        if ev.get("source", "script") not in ONSET_SOURCES:
+            raise SchemaError(f"bad speech_onset source {ev.get('source')!r}")
+        if ev["on_topic"] not in (True, False, None):
+            raise SchemaError(f"speech_onset on_topic must be true/false/null: {ev}")
+    if typ == "session" and ev.get("mode") is not None and ev["mode"] not in SESSION_MODES:
+        raise SchemaError(f"bad session mode {ev['mode']!r} (expected one of {SESSION_MODES})")
 
 
 def _sort_key(ev: dict[str, Any]) -> float:

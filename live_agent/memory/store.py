@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import sqlite3
 import time
@@ -55,6 +56,8 @@ from .schema import (
     validate_scope,
 )
 from .summarize import ExtractiveSummarizer, Summarizer
+
+log = logging.getLogger("live_agent.memory")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (
@@ -125,6 +128,16 @@ class ImmutableRecordError(RuntimeError):
     pass
 
 
+class ScopeViolationError(ValueError):
+    """A write would widen visibility: e.g. a public record with a private input, a user
+    fact in canon, or a record mixing two users' private scopes. Callers must not retry
+    the write in a wider scope."""
+
+
+class ErasureIncompleteError(RuntimeError):
+    """Raised by :meth:`ErasureReport.raise_if_incomplete` when not every purge target acked."""
+
+
 @dataclass
 class IngestResult:
     episode: Record | None
@@ -179,12 +192,51 @@ class Resolution:
 
 
 @dataclass
+class PurgeAck:
+    ok: bool
+    detail: str = ""
+
+
+@dataclass
+class ErasureVerification:
+    """Structured result of :meth:`MemoryStore.verify_erased`; ``ok`` iff every failing list is empty.
+
+    ``foreign_hits`` (term found in another user's private records or in canon-only
+    records) is informational: those rows are not this user's to erase.
+    """
+
+    surviving: list[str] = field(default_factory=list)  # deleted ids still present / referenced
+    missing_tombstones: list[str] = field(default_factory=list)  # deleted ids without a tombstone
+    term_hits: list[str] = field(default_factory=list)  # term residue in erasable records (any scope)
+    orphans: list[str] = field(default_factory=list)  # index / embedding / edge rows without a record
+    file_hits: list[str] = field(default_factory=list)  # term bytes still in the DB file(s)
+    foreign_hits: list[str] = field(default_factory=list)  # informational only
+
+    @property
+    def hits(self) -> list[str]:
+        return [*self.surviving, *self.missing_tombstones, *self.term_hits, *self.orphans, *self.file_hits]
+
+    @property
+    def ok(self) -> bool:
+        return not self.hits
+
+
+MEMORY_DB_TARGET = "memory_db"
+
+
+@dataclass
 class ErasureReport:
-    """Passed to erasure hooks so the orchestrator can purge external caches.
+    """Result of :meth:`MemoryStore.forget`; passed to purge hooks.
 
     ``terms`` are held in memory only (never persisted) so hooks can scrub LLM prompt
     caches, unsent BlockScripts and recordings; ``sessions`` tells which generator / LLM
     sessions to restart from canon anchors.
+
+    Erasure is **complete** only when every name in ``required_targets`` has an ok
+    acknowledgement in ``acks`` (the store acks ``memory_db`` itself after verifying the
+    deletion), and no hook raised. Anything else is a failed erasure: the caller must
+    report it as failed and retry the missing purges. Deleted records stay deleted.
+    Asynchronous purges (generator reset, recordings) ack later via :meth:`acknowledge`.
     """
 
     user_id: str
@@ -196,6 +248,34 @@ class ErasureReport:
     terms: set[str]
     regenerated: list[str] = field(default_factory=list)  # new summary ids
     hook_errors: list[str] = field(default_factory=list)
+    required_targets: list[str] = field(default_factory=list)
+    acks: dict[str, PurgeAck] = field(default_factory=dict)
+    verification: ErasureVerification | None = None
+
+    def acknowledge(self, target: str, ok: bool = True, detail: str = "") -> None:
+        if target not in self.required_targets:
+            self.required_targets.append(target)
+        prev = self.acks.get(target)
+        if prev is not None and not prev.ok and ok:
+            detail = f"{detail} (after earlier failure: {prev.detail})".strip()
+        self.acks[target] = PurgeAck(bool(ok), detail)
+
+    @property
+    def pending_targets(self) -> list[str]:
+        return [t for t in self.required_targets if not (t in self.acks and self.acks[t].ok)]
+
+    @property
+    def complete(self) -> bool:
+        return not self.pending_targets
+
+    def raise_if_incomplete(self) -> None:
+        if not self.complete:
+            raise ErasureIncompleteError(
+                f"erasure not complete; pending purge targets: {self.pending_targets}; errors: {self.hook_errors}")
+
+
+def _hook_name(hook: Callable[..., Any]) -> str:
+    return str(getattr(hook, "purge_target", None) or getattr(hook, "__qualname__", None) or repr(hook))
 
 
 class _RateLimiter:
@@ -243,7 +323,13 @@ class MemoryStore:
         self._viewer_limiter = _RateLimiter(viewer_rate[0], viewer_rate[1], clock)
         self.stats: dict[str, int] = defaultdict(int)
         # hooks: erasure -> external caches; stale -> summary regeneration etc.
-        self.erasure_hooks: list[Callable[[ErasureReport], None]] = []
+        # Every erasure hook is a *required* purge target: it must return a truthy ack
+        # (True / non-empty detail string); None, False or an exception leaves the
+        # erasure incomplete (see ErasureReport.complete). Name a hook by setting
+        # ``hook.purge_target = "<name>"`` or use :meth:`register_purge_target`.
+        self.erasure_hooks: list[Callable[[ErasureReport], Any]] = []
+        self.required_purge_targets: set[str] = set()  # must ack, even without a hook
+        self.purge_hooks: dict[str, Callable[[ErasureReport], Any]] = {}
         self.stale_hooks: list[Callable[[list[Record]], None]] = []
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
@@ -290,8 +376,7 @@ class MemoryStore:
         validate_scope(scope)
         parents = [self._require(pid) for pid in dict.fromkeys(derived_from)]
         source_scopes = union_scopes(scope, parents)
-        if scope == CANON and source_scopes != {CANON}:
-            raise ValueError("canon records may only derive from canon records")
+        self._check_write_scope(kind, scope, source_scopes, provenance)
         if kind == Kind.GENERATED_EVENT and claim_type == ClaimType.OWN_ASSERTION:
             raise ValueError("generated events are never user assertions")
         now = self.clock()
@@ -337,6 +422,39 @@ class MemoryStore:
         if commit:
             self.db.commit()
         return rec
+
+    @staticmethod
+    def _check_write_scope(kind: Kind, scope: str, source_scopes: frozenset[str], prov: Provenance) -> None:
+        """Fail-closed scope rules for every write (review findings 12/13)."""
+        if scope == CANON:
+            if source_scopes != {CANON}:
+                raise ScopeViolationError("canon records may only derive from canon records")
+            if kind not in (Kind.LEDGER, Kind.PROCEDURAL):
+                raise ScopeViolationError(f"{kind.value} records can never be canon")
+            if prov.user_id or prov.speaker in ("user", "agent") or prov.speaker.startswith("viewer:"):
+                raise ScopeViolationError("user / viewer / agent-origin records can never be canon")
+        privs = {s for s in source_scopes if is_private(s)}
+        if scope.startswith("public:") and privs:
+            raise ScopeViolationError(f"public write {scope!r} has private inputs {sorted(privs)}")
+        if len(privs) > 1 or (is_private(scope) and privs - {scope}):
+            raise ScopeViolationError(f"record would mix private scopes {sorted(privs | {scope})}")
+
+    def existing_ids(self, ids: Iterable[str]) -> list[str]:
+        """The subset of ``ids`` that still exist (order kept)."""
+        ids = list(dict.fromkeys(ids))
+        have: set[str] = set()
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            have |= set(self._ids(f"SELECT id FROM records WHERE id IN ({','.join('?' * len(chunk))})", chunk))
+        return [i for i in ids if i in have]
+
+    def register_purge_target(self, name: str, hook: Callable[[ErasureReport], Any] | None = None) -> None:
+        """Declare an external store (recordings, generator state, LLM KV ...) that must
+        acknowledge every erasure. With ``hook`` it is called synchronously and must return
+        a truthy ack; without, the owner acks later via :meth:`ErasureReport.acknowledge`."""
+        self.required_purge_targets.add(name)
+        if hook is not None:
+            self.purge_hooks[name] = hook
 
     @staticmethod
     def _embed_text(rec: Record) -> str:
@@ -431,14 +549,27 @@ class MemoryStore:
             return False
         return True
 
-    def _utterance_scope(self, utt: Utterance, user_id: str, stream_id: str | None) -> str:
-        if ":" in utt.scope or utt.scope == CANON:
-            return validate_scope(utt.scope)
-        if utt.scope == "public":
+    @staticmethod
+    def session_write_scope(mode: str | None, user_id: str, stream_id: str | None) -> str:
+        """Write scope of an authenticated session: ``private:<user>`` for a 1:1 session
+        (also the fail-closed default when the mode is unknown), ``public:<stream>`` for a
+        livestream. Never canon; never taken from a client-supplied utterance field."""
+        if mode in (None, "", "private"):
+            return private_scope(user_id)
+        if mode == "public":
             if not stream_id:
-                raise ValueError("public utterance requires stream_id")
+                raise ValueError("public session requires stream_id")
             return public_scope(stream_id)
-        return private_scope(user_id)
+        raise ScopeViolationError(f"session mode {mode!r} cannot be a write scope (expected private/public)")
+
+    def _utterance_scope(self, utt: Utterance, user_id: str, stream_id: str | None, mode: str | None) -> str:
+        scope = self.session_write_scope(mode, user_id, stream_id)
+        claimed = (utt.scope or "").strip()
+        if claimed and claimed not in (scope, mode or "private"):
+            # The utterance's own scope field is client data: ignored, but counted and logged.
+            self.stats["utterance_scope_ignored"] += 1
+            log.warning("utterance %s claims scope %r; using session scope %r", utt.uid, claimed, scope)
+        return scope
 
     # ------------------------------------------------------------------ write policy
 
@@ -449,16 +580,21 @@ class MemoryStore:
         *,
         user_id: str,
         stream_id: str | None = None,
+        mode: str | None = None,
     ) -> IngestResult:
         """Append the turn to the episode log and store candidate facts per the write policy.
 
-        Persona utterances are routed to the generated-event log; viewer utterances to
-        :meth:`ingest_viewer_chat`. Only ``own_assertion`` sentences produce facts.
+        The write scope comes from the authenticated session ``mode`` ("private" /
+        "public"; ``None`` = private), never from ``utt.scope``; canon is refused.
+        Persona utterances are routed to the generated-event log (lineage unknown);
+        viewer utterances to :meth:`ingest_viewer_chat`. Only ``own_assertion``
+        sentences produce facts.
         """
         ex = extractor or self.extractor
-        scope = self._utterance_scope(utt, user_id, stream_id)
+        scope = self._utterance_scope(utt, user_id, stream_id, mode)
         if utt.speaker == "persona":
-            gen = self.record_generated_event(utt.text, utt.session_id, scope, source_id=utt.uid, user_id=user_id)
+            gen = self.record_generated_event(utt.text, utt.session_id, scope, source_id=utt.uid, user_id=user_id,
+                                              derived_from=None)
             return IngestResult(episode=None, generated_event=gen)
         if utt.speaker.startswith("viewer:"):
             if not stream_id:
@@ -561,23 +697,33 @@ class MemoryStore:
         *,
         source_id: str = "",
         user_id: str = "",
-        derived_from: Sequence[str] = (),
+        derived_from: Sequence[str] | None = None,
         request_index: int | None = None,
+        lineage: str | None = None,
     ) -> Record:
         """Log persona output (speech / shown content). Never promoted to a user fact.
 
-        Persona lines in a private conversation are private (pass ``private:<user>``);
-        ``derived_from`` should list the memory records the line was conditioned on so the
-        line inherits their ``source_scopes``.
+        ``scope`` must be the *session's* write scope (persona lines in a private
+        conversation are private). ``derived_from`` lists the memory records the line was
+        conditioned on; the line inherits their ``source_scopes`` and erasure / correction
+        cascade through them. A public ``scope`` with any private input raises
+        :class:`ScopeViolationError` (nothing is written). ``derived_from=None`` means the
+        lineage is unknown: recorded as ``meta.lineage = "unknown"``; the caller must then
+        pass the session scope (never a public scope from a private session).
         """
         validate_scope(scope)
+        if scope == CANON:
+            raise ScopeViolationError("persona output is never canon")
         if not user_id and is_private(scope):
             user_id = scope.split(":", 1)[1]
+        meta: dict[str, Any] = {"lineage": lineage or ("unknown" if derived_from is None else "explicit")}
+        if request_index is not None:
+            meta["request_index"] = request_index
         prov = Provenance(source_id=source_id, speaker="persona", session_id=session_id,
                           timestamp=self.clock(), user_id=user_id)
         return self.add_record(
             Kind.GENERATED_EVENT, scope, text, ClaimType.SYSTEM_OBSERVATION, prov,
-            derived_from=derived_from, meta={"request_index": request_index} if request_index is not None else None,
+            derived_from=derived_from or (), meta=meta,
         )
 
     def ingest_viewer_chat(
@@ -694,44 +840,114 @@ class MemoryStore:
         text: str,
         outcome: str,
         *,
-        scope: str = CANON,
-        tags: Sequence[str] = (),
         derived_from: Sequence[str] = (),
+        scope: str | None = None,
+        tags: Sequence[str] = (),
+        curated: bool = False,
     ) -> Record:
-        """A²RD-style prompt-library entry: what worked (``success``) or failed (``failure``)."""
+        """A²RD-style prompt-library entry: what worked (``success``) or failed (``failure``).
+
+        Learned entries must name their sources (``derived_from``: the episodes / generated
+        events / verdict records they were learned from). Their scope is derived from the
+        sources: the most restrictive one wins (a user's private scope > a public stream >
+        canon), so a procedure learned in a private session stays private. An explicit
+        ``scope`` may only be *more* restrictive than the derived one. Canon therefore
+        requires canon-only sources, or ``curated=True`` (operator-authored, no sources).
+        """
         if outcome not in ("success", "failure"):
             raise ValueError("outcome must be 'success' or 'failure'")
-        prov = Provenance(speaker="system", timestamp=self.clock())
+        parents = [self._require(pid) for pid in dict.fromkeys(derived_from)]
+        if curated:
+            if parents or scope not in (None, CANON):
+                raise ValueError("curated procedures are operator-authored canon entries without sources")
+            derived = CANON
+        else:
+            if not parents:
+                raise ValueError("learned procedures require derived_from (source lineage)")
+            scopes = frozenset().union(*(p.source_scopes for p in parents))
+            privs = sorted(s for s in scopes if is_private(s))
+            pubs = sorted(s for s in scopes if s.startswith("public:"))
+            if len(privs) > 1:
+                raise ScopeViolationError(f"procedure would mix private scopes {privs}")
+            derived = privs[0] if privs else (pubs[0] if pubs else CANON)
+        if scope is None or scope == derived:
+            scope = derived
+        elif not (is_private(scope) and not is_private(derived)):  # only narrowing to private is allowed
+            raise ScopeViolationError(f"procedure scope {scope!r} is wider than its sources ({derived!r})")
+        user_id = scope.split(":", 1)[1] if is_private(scope) else ""
+        prov = Provenance(speaker="operator" if curated else "system", timestamp=self.clock(), user_id=user_id)
         return self.add_record(
-            Kind.PROCEDURAL, scope, text, ClaimType.SYSTEM_OBSERVATION, prov, derived_from=derived_from,
-            meta={"outcome": outcome, "tags": list(tags)},
+            Kind.PROCEDURAL, scope, text, ClaimType.SYSTEM_OBSERVATION, prov, derived_from=[p.id for p in parents],
+            meta={"outcome": outcome, "tags": list(tags), "curated": curated},
         )
 
     # ------------------------------------------------------------------ confirmation / correction
 
-    def confirm(self, record_id: str) -> Record:
-        """User explicitly confirms a pending echo / conflicting fact or a candidate belief."""
+    def confirm(self, record_id: str, confirmation_id: str | None = None) -> Record:
+        """User explicitly confirms a pending echo / conflicting fact or a candidate belief.
+
+        ``confirmation_id`` is the ``episode`` record of the user's confirming turn (e.g.
+        "yes, that's right"). It is **required** for a candidate belief: the belief is not
+        rewritten; a *new* ``own_assertion`` user fact (speaker="user", derived from the
+        confirming episode and the belief) is created and returned, and the belief is kept
+        as provenance (status superseded, ``meta.confirmed_by``). For a pending user fact
+        it is optional and, when given, is linked into the fact's lineage.
+        """
         rec = self._require(record_id)
         if rec.status != Status.PENDING:
             raise ValueError(f"{record_id} is not pending (status={rec.status.value})")
+        owner = rec.provenance.user_id
+        conf = self._require(confirmation_id) if confirmation_id else None
+        if conf is not None:
+            if conf.kind != Kind.EPISODE or conf.provenance.speaker != "user" or conf.provenance.user_id != owner:
+                raise ValueError("confirmation must be an episode spoken by the record's owner")
+            if conf.claim_type in (ClaimType.QUESTION, ClaimType.HYPOTHETICAL, ClaimType.QUOTE_OF_PERSONA):
+                raise ValueError(f"a {conf.claim_type.value} turn cannot confirm a memory")
+        elif rec.kind == Kind.CANDIDATE_BELIEF:
+            raise ValueError("confirming an agent inference requires the user's confirming episode")
         now = self.clock()
+        others: list[Record] = []
         if rec.subject and rec.predicate and is_single_valued(rec.predicate):
-            owner = rec.provenance.user_id
             others = [r for r in self._current_facts(rec.subject, rec.predicate, owner, claim=None)
                       if r.id != rec.id and r.kind == Kind.USER_FACT
                       and r.claim_type in (ClaimType.OWN_ASSERTION, ClaimType.SYSTEM_OBSERVATION)
                       and _norm(r.value) != _norm(rec.value)]
             self._supersede(others)
-            if others:
-                self._update_meta(rec.id, supersedes=[r.id for r in others])
-        cols: dict[str, Any] = {"valid_from": now}
         if rec.kind == Kind.CANDIDATE_BELIEF:
-            cols.update(kind=Kind.USER_FACT.value, claim_type=ClaimType.OWN_ASSERTION.value)
-            self._update_meta(rec.id, confirmed_from=ClaimType.AGENT_INFERENCE.value)
-        self._set_status(rec.id, Status.ACTIVE, **cols)
-        self._update_meta(rec.id, confirmed_at=now)
+            assert conf is not None
+            prov = Provenance(source_id=conf.provenance.source_id, speaker="user",
+                              session_id=conf.provenance.session_id, timestamp=now, user_id=owner)
+            fact = self.add_record(
+                Kind.USER_FACT, private_scope(owner) if owner else rec.scope, rec.text, ClaimType.OWN_ASSERTION,
+                prov, derived_from=[conf.id, rec.id], subject=rec.subject, predicate=rec.predicate,
+                value=rec.value, valid_from=now,
+                meta={"confirmed_from": rec.id, "confirmed_from_claim": ClaimType.AGENT_INFERENCE.value,
+                      "confirmed_by": conf.id, "confirmed_at": now,
+                      **({"supersedes": [r.id for r in others]} if others else {})},
+                commit=False,
+            )
+            # the inference is kept (for audit / lineage) but no longer usable on its own
+            self._set_status(rec.id, Status.SUPERSEDED, valid_to=now)
+            self._update_meta(rec.id, confirmed_as=fact.id, confirmed_by=conf.id)
+            self.db.commit()
+            return self._require(fact.id)
+        if others:
+            self._update_meta(rec.id, supersedes=[r.id for r in others])
+        if conf is not None:
+            self._link_parent(rec.id, conf)
+        self._set_status(rec.id, Status.ACTIVE, valid_from=now)
+        self._update_meta(rec.id, confirmed_at=now, **({"confirmed_by": conf.id} if conf else {}))
         self.db.commit()
         return self._require(rec.id)
+
+    def _link_parent(self, child_id: str, parent: Record) -> None:
+        """Add a lineage edge after insertion (and widen the child's source_scopes accordingly)."""
+        child = self._require(child_id)
+        scopes = union_scopes(child.scope, [child, parent])
+        self._check_write_scope(child.kind, child.scope, scopes, child.provenance)
+        self.db.execute("INSERT OR IGNORE INTO derivations (child_id, parent_id) VALUES (?, ?)", (child_id, parent.id))
+        self.db.executemany("INSERT OR IGNORE INTO record_scopes (record_id, scope) VALUES (?, ?)",
+                            [(child_id, sc) for sc in sorted(scopes)])
 
     def reject(self, record_id: str) -> Record:
         rec = self._require(record_id)
@@ -947,12 +1163,18 @@ class MemoryStore:
         Supersedes any previous summary of the same session."""
         summ = summarizer or ExtractiveSummarizer()
         now = self.clock()
+        # only usable inputs: stale / superseded / rejected / pending records never feed a summary
         ids = self._ids(
-            "SELECT id FROM records WHERE session_id = ? AND ("
-            " (kind IN ('episode', 'generated_event'))"
-            " OR (kind = 'user_fact' AND status = 'active' AND (valid_to IS NULL OR valid_to > ?)))"
+            "SELECT id FROM records WHERE session_id = ? AND status = 'active' AND ("
+            " kind IN ('episode', 'generated_event')"
+            " OR (kind = 'user_fact' AND (valid_to IS NULL OR valid_to > ?)))"
             " ORDER BY t", [session_id, now])
         recs = self._load(ids)
+        # persona lines with unknown / incomplete lineage that repeat a corrected-away value
+        retracted = self._retracted_values({r.provenance.user_id for r in recs if r.provenance.user_id})
+        if retracted:
+            recs = [r for r in recs if not (r.kind == Kind.GENERATED_EVENT
+                                            and any(v in _norm(r.text) for v in retracted))]
         # drop turns whose extracted facts were all corrected away (history stays in the episode log)
         retired = set(self._ids(
             "SELECT d.parent_id FROM derivations d JOIN records c ON c.id = d.child_id"
@@ -982,11 +1204,41 @@ class MemoryStore:
         return self.add_record(Kind.SUMMARY, scope, text, ClaimType.SYSTEM_OBSERVATION, prov,
                                derived_from=[r.id for r in recs], meta={"session": session_id})
 
+    def _retracted_values(self, owners: Iterable[str]) -> set[str]:
+        """Normalised values of this user's superseded facts that no current fact still holds."""
+        old: set[str] = set()
+        cur: set[str] = set()
+        for owner in owners:
+            for r in self.db.execute(
+                    "SELECT status, value FROM records WHERE owner = ? AND kind IN ('user_fact', 'candidate_belief')"
+                    " AND value IS NOT NULL AND status IN ('active', 'pending', 'superseded')", [owner]):
+                (cur if r["status"] != "superseded" else old).add(_norm(r["value"]))
+        return {v for v in old - cur if len(v) >= 2}
+
     # ------------------------------------------------------------------ erasure
 
     def _user_records_sql(self) -> str:
         return ("(r.owner = ? OR EXISTS (SELECT 1 FROM record_scopes rs WHERE rs.record_id = r.id"
                 " AND rs.scope = ?))")
+
+    def _erasable_sql(self) -> str:
+        """Records a user's erasure may touch by *content*: their own records, plus any
+        public-scoped record carrying no other user's private scope (a public artifact that
+        repeats the user's data may be untagged; over-deletion is the safe side). Canon-only
+        records and other users' private records are never touched. Params: (user, priv, priv)."""
+        return (
+            "r.immutable = 0 AND (" + self._user_records_sql() +
+            " OR (EXISTS (SELECT 1 FROM record_scopes rs WHERE rs.record_id = r.id AND rs.scope LIKE 'public:%')"
+            " AND NOT EXISTS (SELECT 1 FROM record_scopes rs WHERE rs.record_id = r.id"
+            " AND rs.scope LIKE 'private:%' AND rs.scope != ?)))"
+        )
+
+    def _content_match(self, term: str, user_id: str) -> list[str]:
+        priv = private_scope(user_id)
+        return self._ids(
+            f"SELECT r.id FROM records r WHERE {self._erasable_sql()} AND ("
+            " instr(lower(r.text), lower(?)) > 0 OR instr(lower(coalesce(r.value, '')), lower(?)) > 0)",
+            [user_id, priv, priv, term, term])
 
     def forget(
         self,
@@ -995,20 +1247,25 @@ class MemoryStore:
         reason: str = "user_request",
         *,
         regenerate: bool | Summarizer = True,
+        require: Iterable[str] = (),
     ) -> ErasureReport:
         """Physically erase a fact (by record id / Record) or everything matching a query term.
 
-        Cascade: matched records -> source episodes (id link) -> every record of this user
-        mentioning the value/term (content match: episodes, persona lines, summaries,
-        ledger ...) -> all descendants through ``derived_from``; plus their embeddings,
-        scope rows and derivation edges. A tombstone keeps only sha256(id), time and
-        reason. Affected session summaries are regenerated from what remains, then
-        erasure hooks fire so the orchestrator can reset LLM KV / generator sessions and
-        delete recordings. Over-deletion (e.g. another fact from the same turn) is
-        accepted as the safe side.
+        Cascade: matched records -> source episodes (id link) -> every erasable record
+        mentioning the value/term (this user's records of any kind, and public records
+        carrying no other user's private scope) -> all descendants through
+        ``derived_from``; plus their embeddings, scope rows, derivation edges and id
+        references in other records' meta. A tombstone keeps only sha256(id), time and
+        reason. Affected session summaries are regenerated from what remains.
+
+        Fail-closed completion: the store verifies its own deletion (ids, descendants,
+        term residue in every scope) and acks ``memory_db``; then every erasure hook is
+        called and must return a truthy ack. ``require`` names further purge targets
+        (recordings, generator state, LLM context ...) that must ack via
+        :meth:`ErasureReport.acknowledge`. ``report.complete`` is False until all of them
+        acked ok; a hook error never un-deletes anything.
         """
         priv = private_scope(user_id)
-        mine = self._user_records_sql()
         seeds: list[Record] = []
         terms: set[str] = set()
         rid = target.id if isinstance(target, Record) else target
@@ -1022,10 +1279,7 @@ class MemoryStore:
             if not term:
                 raise ValueError("empty erasure target")
             terms.add(term)
-            seeds = self._load(self._ids(
-                f"SELECT r.id FROM records r WHERE {mine} AND r.immutable = 0 AND ("
-                " instr(lower(r.text), lower(?)) > 0 OR instr(lower(coalesce(r.value, '')), lower(?)) > 0)",
-                [user_id, priv, term, term]))
+            seeds = self._load(self._content_match(term, user_id))
         terms |= {s.value for s in seeds if s.value and len(s.value.strip()) >= 2}
         erase: set[str] = {s.id for s in seeds}
         # id link: the episodes the seed facts were extracted from (facts only: a summary's
@@ -1036,12 +1290,8 @@ class MemoryStore:
             for p in self._load(list(s.derived_from)):
                 if p.kind == Kind.EPISODE and (p.provenance.user_id == user_id or priv in p.source_scopes):
                     erase.add(p.id)
-        # content match over all of this user's records (any kind)
         for term in terms:
-            erase |= set(self._ids(
-                f"SELECT r.id FROM records r WHERE {mine} AND r.immutable = 0 AND ("
-                " instr(lower(r.text), lower(?)) > 0 OR instr(lower(coalesce(r.value, '')), lower(?)) > 0)",
-                [user_id, priv, term, term]))
+            erase |= set(self._content_match(term, user_id))
         erase = self._descendants(erase)
         doomed = self._load(sorted(erase))
         if any(r.immutable for r in doomed):
@@ -1064,52 +1314,137 @@ class MemoryStore:
                 "INSERT INTO tombstones (id_hash, t, reason) VALUES (?, ?, ?)",
                 [(hashlib.sha256(i.encode()).hexdigest(), now, reason) for i in ids],
             )
+            self._scrub_refs(set(ids))
+        hook_names = [(_hook_name(h), h) for h in self.erasure_hooks] + list(self.purge_hooks.items())
+        required = [MEMORY_DB_TARGET, *dict.fromkeys(
+            [n for n, _ in hook_names] + sorted(self.required_purge_targets) + list(require))]
         report = ErasureReport(user_id=user_id, reason=reason, t=now, deleted_ids=ids, kinds=dict(kinds),
-                               sessions=sessions, terms=terms)
+                               sessions=sessions, terms=terms, required_targets=required)
         if regenerate and kinds.get(Kind.SUMMARY.value):
             summ = regenerate if not isinstance(regenerate, bool) else None
             for s in sorted(sessions):
                 new = self.consolidate(s, summ)
                 if new is not None:
                     report.regenerated.append(new.id)
-        for hook in list(self.erasure_hooks):
+        report.verification = self.verify_erasure(report)
+        v = report.verification
+        report.acknowledge(MEMORY_DB_TARGET, v.ok, "verified" if v.ok else f"residue: {v.hits[:10]}")
+        for name, hook in hook_names:
             try:
-                hook(report)
-            except Exception as e:  # a failing cache hook must not undo the erasure
-                report.hook_errors.append(f"{getattr(hook, '__name__', hook)}: {e!r}")
+                ack = hook(report)
+            except Exception as e:  # noqa: BLE001 -- any failure leaves the erasure incomplete (never undone)
+                report.hook_errors.append(f"{name}: {e!r}")
+                report.acknowledge(name, False, f"error: {e!r}")
+                continue
+            if name in report.acks and report.acks[name].ok:
+                continue  # the hook acknowledged through the report itself
+            report.acknowledge(name, bool(ack), ack if isinstance(ack, str) else ("" if ack else "no ack"))
+        if not report.complete:
+            log.error("erasure for %s incomplete; pending purge targets %s", hashlib.sha256(user_id.encode())
+                      .hexdigest()[:12], report.pending_targets)
         return report
 
-    def verify_erased(self, term: str, user_id: str, *, raw_file: bool = False) -> list[str]:
-        """Search every table for residue of ``term`` belonging to ``user_id``; returns hits
-        (must be empty after :meth:`forget`). ``raw_file`` additionally greps the DB file
-        bytes (only meaningful if no other user legitimately stores the term)."""
-        priv = private_scope(user_id)
-        hits: list[str] = []
-        like = [term, term, term, term, term]
-        for r in self.db.execute(
-            f"SELECT r.id FROM records r WHERE {self._user_records_sql()} AND ("
-            " instr(lower(r.text), lower(?)) > 0 OR instr(lower(coalesce(r.value, '')), lower(?)) > 0"
-            " OR instr(lower(coalesce(r.subject, '')), lower(?)) > 0 OR instr(lower(r.provenance), lower(?)) > 0"
-            " OR instr(lower(r.meta), lower(?)) > 0)", [user_id, priv, *like]):
-            hits.append(f"records:{r[0]}")
-        for r in self.db.execute("SELECT rowid FROM tombstones WHERE instr(lower(reason), lower(?)) > 0", [term]):
-            hits.append(f"tombstones:{r[0]}")
+    def _scrub_refs(self, deleted: set[str]) -> None:
+        """Remove references to erased ids from surviving records' meta (echo_of, supersedes ...)."""
+        if not deleted:
+            return
+        for row in self.db.execute("SELECT id, meta FROM records WHERE immutable = 0 AND meta != '{}'").fetchall():
+            meta = json.loads(row["meta"])
+            changed = False
+            for k, v in list(meta.items()):
+                if isinstance(v, list) and any(x in deleted for x in v if isinstance(x, str)):
+                    meta[k] = [x for x in v if x not in deleted]
+                    changed = True
+                elif isinstance(v, str) and v in deleted:
+                    del meta[k]
+                    changed = True
+            if changed:
+                self.db.execute("UPDATE records SET meta = ? WHERE id = ?", (json.dumps(meta, ensure_ascii=False), row["id"]))
+
+    def verify_erasure(self, report: ErasureReport, *, raw_file: bool = False) -> ErasureVerification:
+        """Verify one :meth:`forget` result (its deleted ids incl. descendants, and its terms)."""
+        return self.verify_erased(report.terms, report.user_id, deleted_ids=report.deleted_ids, raw_file=raw_file)
+
+    def verify_erased(
+        self,
+        term: str | Iterable[str] | None,
+        user_id: str | None = None,
+        *,
+        deleted_ids: Iterable[str] = (),
+        raw_file: bool = False,
+    ) -> ErasureVerification:
+        """Check that erased data is gone from every table.
+
+        * ``deleted_ids`` (a forget report's ids, which include all descendants): no row in
+          records / embeddings / record_scopes / derivations, no reference from another
+          record's meta or provenance, and a tombstone hash exists for each.
+        * ``term``: literal search in *all* scopes (text, value, subject, provenance, meta,
+          tombstone reasons). Hits in records this user's erasure may touch fail the check;
+          hits in other users' private records or canon-only records are listed in
+          ``foreign_hits`` only.
+        * orphan index / embedding / edge rows; with ``raw_file``, the DB file bytes (only
+          meaningful if no other user legitimately stores the term).
+
+        External stores (recordings, generator / LLM state) are verified by their purge
+        targets' acknowledgements on the :class:`ErasureReport`, not here.
+        """
+        out = ErasureVerification()
+        terms = [term] if isinstance(term, str) else list(term or [])
+        ids = list(dict.fromkeys(deleted_ids))
+        priv = private_scope(user_id) if user_id else None
+        if ids:
+            tomb = {r[0] for r in self.db.execute("SELECT id_hash FROM tombstones")}
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                q = ",".join("?" * len(chunk))
+                for tbl, col in (("records", "id"), ("embeddings", "record_id"), ("record_scopes", "record_id"),
+                                 ("derivations", "child_id"), ("derivations", "parent_id")):
+                    for r in self.db.execute(f"SELECT DISTINCT {col} FROM {tbl} WHERE {col} IN ({q})", chunk):
+                        out.surviving.append(f"{tbl}:{r[0]}")
+            idset = set(ids)
+            for r in self.db.execute("SELECT id, meta, provenance FROM records"):
+                blob = r["meta"] + r["provenance"]
+                if any(i in blob for i in idset):
+                    out.surviving.append(f"ref:{r['id']}")
+            out.missing_tombstones = [i for i in ids if hashlib.sha256(i.encode()).hexdigest() not in tomb]
+        for t in terms:
+            rows = self.db.execute(
+                "SELECT r.id, r.immutable FROM records r WHERE"
+                " instr(lower(r.text), lower(?)) > 0 OR instr(lower(coalesce(r.value, '')), lower(?)) > 0"
+                " OR instr(lower(coalesce(r.subject, '')), lower(?)) > 0 OR instr(lower(r.provenance), lower(?)) > 0"
+                " OR instr(lower(r.meta), lower(?)) > 0", [t] * 5).fetchall()
+            hit_ids = [r["id"] for r in rows]
+            scopes: dict[str, set[str]] = defaultdict(set)
+            for i in range(0, len(hit_ids), 500):
+                chunk = hit_ids[i:i + 500]
+                for r in self.db.execute(
+                        f"SELECT record_id, scope FROM record_scopes WHERE record_id IN ({','.join('?' * len(chunk))})",
+                        chunk):
+                    scopes[r[0]].add(r[1])
+            for r in rows:
+                sc = scopes[r["id"]]
+                foreign = any(is_private(s) and s != priv for s in sc)
+                canon_only = sc <= {CANON}
+                (out.foreign_hits if foreign or canon_only else out.term_hits).append(f"records:{r['id']}")
+            for r in self.db.execute("SELECT rowid FROM tombstones WHERE instr(lower(reason), lower(?)) > 0", [t]):
+                out.term_hits.append(f"tombstones:{r[0]}")
         for r in self.db.execute(
                 "SELECT record_id FROM embeddings WHERE record_id NOT IN (SELECT id FROM records)"):
-            hits.append(f"embeddings(orphan):{r[0]}")
+            out.orphans.append(f"embeddings(orphan):{r[0]}")
         for r in self.db.execute(
                 "SELECT record_id FROM record_scopes WHERE record_id NOT IN (SELECT id FROM records)"):
-            hits.append(f"record_scopes(orphan):{r[0]}")
+            out.orphans.append(f"record_scopes(orphan):{r[0]}")
         for r in self.db.execute(
                 "SELECT child_id, parent_id FROM derivations WHERE child_id NOT IN (SELECT id FROM records)"
                 " OR parent_id NOT IN (SELECT id FROM records)"):
-            hits.append(f"derivations(orphan):{r[0]}->{r[1]}")
+            out.orphans.append(f"derivations(orphan):{r[0]}->{r[1]}")
         if raw_file and self.path != ":memory:":
-            needle = term.encode("utf-8")
-            for p in (Path(self.path), Path(self.path + "-journal"), Path(self.path + "-wal")):
-                if p.exists() and needle in p.read_bytes():
-                    hits.append(f"file:{p.name}")
-        return hits
+            for t in terms:
+                needle = t.encode("utf-8")
+                for p in (Path(self.path), Path(self.path + "-journal"), Path(self.path + "-wal")):
+                    if p.exists() and needle in p.read_bytes():
+                        out.file_hits.append(f"file:{p.name}")
+        return out
 
 
 def _norm(v: str | None) -> str:

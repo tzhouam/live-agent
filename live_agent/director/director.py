@@ -2,17 +2,24 @@
 
 Responsibilities
 - Interpret each user utterance with the responder LLM: new intent chain, revision of
-  an open chain, or withdrawal; the plan is a queue of *segments* (one per 5-s request:
+  an open chain, withdrawal, or chat. The plan is a queue of *segments* (one per 5-s request:
   an action intent and at most ~5 s of speech).
-- On a new plan version, drop *unsent* segments of older versions (cancellation rule).
-- At each lock, build the BlockScript for the next request: canon from the ledger
-  (verbatim), action via the capability manifest (emit / degrade / refuse), pending
-  forward corrections, and compile-time check questions.
-- Narration policy: the LLM never claims completion; the director appends a completion
-  remark only after QC verified the action on presented frames (FCR control).
+- Admission control (§4): at most one unexecuted instruction. A newer instruction supersedes
+  an older unexecuted one, which is logged as a *capacity skip* (distinct from the user's own
+  revision / withdrawal, which only touch the chain they target).
+- Multistep chains are released step by step: step i+1 is queued only after step i was verified.
+- Verdicts and retries are bound to (chain, revision, step): a late verdict about a superseded
+  intent or another step is ignored.
+- At each lock, build the BlockScript for the next request: canon from the ledger (verbatim),
+  action via the capability manifest (emit / degrade / refuse), pending forward corrections,
+  compile-time check questions. Repairs are reserved for their earliest correctable request.
+- Narration policy: completion is voiced only after QC verified the action on presented
+  frames; completion wording in LLM lines is removed in code (not only by the prompt).
 
-Modes: ``closed_loop`` (A2) and ``open_loop`` (A1 baseline: the LLM writes the action
-phrase freely, no manifest, no QC-driven corrections, no narration guard).
+Modes: ``closed_loop`` (A2) and ``open_loop`` (A1 comparator, proposal §7.2: the LLM writes the
+next request's prompt directly — a free visible-action phrase and the line; no manifest, no
+ledger context, no QC, no corrections, no narration guard, no step gating). Both modes share
+the generator, canon compiler, LLM, memory and presentation path.
 """
 
 from __future__ import annotations
@@ -40,12 +47,15 @@ class DirectorMode(str, enum.Enum):
 class Segment:
     chain_id: str | None
     plan_version: int
-    intent: str = ""  # capability intent (closed loop) or free phrase (open loop)
+    intent: str = ""  # capability intent (closed loop)
     line: str = ""
     step: int | None = None
     is_completion_remark: bool = False
     correction: str = ""  # forward correction attached to a retried action
     retry_of: int | None = None  # request index whose check failed
+    revision: int | None = None  # chain revision count this segment was planned under
+    action_text: str = ""  # open loop: the LLM's own visible-action phrase
+    min_request: int = 0  # reserved slot: do not lock before this request index
 
 
 @dataclass
@@ -54,8 +64,9 @@ class DirectorEvents:
 
     refusals: list[tuple[str, str]] = field(default_factory=list)  # (chain_id, reason)
     degradations: list[tuple[str, str]] = field(default_factory=list)
-    completion_claims: list[tuple[str, int]] = field(default_factory=list)  # (chain_id, request)
-    capacity_skips: list[str] = field(default_factory=list)
+    completion_claims: list[tuple[str, int, int | None]] = field(default_factory=list)  # (chain, request, step)
+    capacity_skips: list[tuple[str, int]] = field(default_factory=list)  # (chain_id, revision)
+    narration_guards: list[tuple[str, str]] = field(default_factory=list)  # (original, cleaned)
 
 
 RESPONDER_SYSTEM = """你是直播数字人「{name}」的应答大脑。人设：{bio}
@@ -83,6 +94,20 @@ RESPONDER_SYSTEM = """你是直播数字人「{name}」的应答大脑。人设�
 人设当前状态：{state}
 相关记忆（带来源标签，只作参考）：{memories}"""
 
+# A1 comparator: the LLM writes the request prompt content directly (free action phrase + line).
+OPEN_LOOP_SYSTEM = """你是直播数字人「{name}」的导演，直接为下一段 5 秒的视频写提示。人设：{bio}
+画面里的人设是一位女性，视频模型读英文动作描述、中文台词。
+输出一个 JSON 对象（不要输出任何其他文字），字段：
+- "relation": "new" | "revision" | "withdrawal" | "chat"（含义：新要求 / 改口 / 取消 / 闲聊）
+- "target_chain": relation 为 revision/withdrawal 时，被修改的链 id；否则 null
+- "kind": "action" | "multistep" | "content" | "memory" | "chat"
+- "steps": [{{"action": 英文短语，描述她在画面里可见地做什么（如 "she lifts the teacup and takes a sip"），没有动作就写 "", "line": 她说的中文台词}}]，每个 step 是一段 5 秒视频
+- "memory_note": 用户陈述了关于他自己的事实时写成一句；否则 null
+- "forget_term": 用户要求忘记某事时写关键词；否则 null
+每个 line 不超过 {chars} 个汉字。
+当前未完成的指令链：{open_chains}
+相关记忆（只作参考）：{memories}"""
+
 
 class Director:
     def __init__(self, llm: ChatLLM, manifest: CapabilityManifest, ledger: StateLedger, *,
@@ -98,26 +123,36 @@ class Director:
         self.listen_intent = listen_intent
         self.plan_version = 0
         self.queue: deque[Segment] = deque()
+        self.held: dict[str, dict[int, list[Segment]]] = {}  # multistep: steps not yet released
         self.chains: dict[str, IntentChain] = {}
+        self.latest_chain: str | None = None  # the newest instruction (admission control)
         self.pending_corrections: dict[int, list[str]] = {}  # request index -> correction sentences
         self.events = DirectorEvents()
         self.listening = False
         self.memory_notes: list[tuple[str, str]] = []  # (utterance id, note)
+        self.erased_terms: set[str] = set()
+
+    @property
+    def closed(self) -> bool:
+        return self.mode == DirectorMode.CLOSED_LOOP
 
     # ------------------------------------------------------------ utterances
     def _open_chains(self) -> list[IntentChain]:
         return [c for c in self.chains.values() if c.status == ChainStatus.OPEN]
 
     async def on_user_utterance(self, utt: Utterance, memories: list[str] | None = None) -> dict:
-        """Interpret an utterance and replace the unsent plan. Returns the parsed decision."""
-        intents = ", ".join(sorted({c.intent for c in self.manifest.caps.values()
-                                    if self.mode == DirectorMode.OPEN_LOOP
-                                    or c.usable(self.manifest.min_status, self.manifest.min_p)})) or "（暂无）"
+        """Interpret an utterance and update the plan. Returns the parsed decision."""
         open_chains = [{"chain_id": c.chain_id, "intent": c.final_intent} for c in self._open_chains()]
-        sys = RESPONDER_SYSTEM.format(
-            name=self.persona_name, bio=self.persona_bio, intents=intents, chars=CHARS_PER_REQUEST,
-            open_chains=open_chains or "无", state=self.ledger.continuity_sentence(),
-            memories=memories or "无")
+        if self.closed:
+            intents = ", ".join(sorted({c.intent for c in self.manifest.caps.values()
+                                        if c.usable(self.manifest.min_status, self.manifest.min_p)})) or "（暂无）"
+            sys = RESPONDER_SYSTEM.format(
+                name=self.persona_name, bio=self.persona_bio, intents=intents, chars=CHARS_PER_REQUEST,
+                open_chains=open_chains or "无", state=self.ledger.continuity_sentence(),
+                memories=memories or "无")
+        else:
+            sys = OPEN_LOOP_SYSTEM.format(name=self.persona_name, bio=self.persona_bio, chars=CHARS_PER_REQUEST,
+                                          open_chains=open_chains or "无", memories=memories or "无")
         raw = await self.llm.chat([{"role": "system", "content": sys},
                                    {"role": "user", "content": utt.text}], json_mode=True)
         try:
@@ -127,132 +162,276 @@ class Director:
         self._apply_decision(utt, d)
         return d
 
+    def _validate(self, kind: TaskKind, steps: list[dict]) -> str | None:
+        """Closed loop: enforce the contract in code. Returns a refusal reason or None."""
+        allowed = {c.intent for c in self.manifest.caps.values()}
+        is_action = kind in (TaskKind.ACTION, TaskKind.MULTISTEP)
+        unsupported = []
+        for st in steps:
+            it = st.get("intent") or ""
+            if not is_action:
+                st["intent"] = ""
+            elif it and it not in allowed:
+                unsupported.append(it)
+                st["intent"] = ""
+        if is_action and unsupported:
+            return f"unsupported intent(s): {', '.join(unsupported)}"
+        if is_action and not any(st.get("intent") for st in steps):
+            return "action requested but no supported capability"  # LLM declined with a line only
+        return None
+
+    def _guard(self, line: str) -> str:
+        """Closed loop: remove clauses that claim completion from an (unverified) LLM line."""
+        if not self.closed or not _claims_completion(line):
+            return line
+        kept = [c for c in re.split(r"(?<=[。！？!?；;，,])", line) if c and not _claims_completion(c)]
+        clean = "".join(kept)
+        self.events.narration_guards.append((line, clean))
+        return clean
+
     def _apply_decision(self, utt: Utterance, d: dict) -> None:
         relation = d.get("relation", "new")
         kind = TaskKind(d.get("kind", "chat")) if d.get("kind") in TaskKind._value2member_map_ else TaskKind.CHAT
-        steps = [s for s in d.get("steps", []) if isinstance(s, dict)]
-        # Enforce the contract in code, not only in the prompt: actions only for action/multistep
-        # chains and only from the manifest; lines must not be empty punctuation.
-        allowed = {c.intent for c in self.manifest.caps.values()}
+        steps = [dict(s) for s in d.get("steps", []) if isinstance(s, dict)]
+        refusal = self._validate(kind, steps) if self.closed else None
         for st in steps:
-            if kind not in (TaskKind.ACTION, TaskKind.MULTISTEP) or st.get("intent") not in allowed:
-                if kind in (TaskKind.ACTION, TaskKind.MULTISTEP) and st.get("intent"):
-                    st["unsupported_intent"] = st["intent"]  # keep: the compiler will refuse it
-                    continue
-                st["intent"] = ""
+            st["line"] = self._guard(st.get("line") or "")
         target = self.chains.get(d.get("target_chain") or "")
         if d.get("memory_note"):
             self.memory_notes.append((utt.uid, d["memory_note"]))
-
-        # New plan version: drop unsent segments of older versions (sent ones can only be superseded).
         self.plan_version += 1
-        self.queue.clear()
+        self.listening = False
 
-        if relation == "withdrawal" and target:
+        if relation == "withdrawal" and target and target.status == ChainStatus.OPEN:
             target.status = ChainStatus.WITHDRAWN
-            chain_id = None
-        elif relation == "revision" and target:
+            self._drop_chain_segments(target.chain_id)
+            self._enqueue_chat(steps)
+            return
+        if relation == "revision" and target and target.status == ChainStatus.OPEN:
+            self._drop_chain_segments(target.chain_id)
             target.revisions.append(utt.uid)
             target.final_intent = utt.text
             target.clock_origin = utt.t_end
+            target.kind = kind if kind != TaskKind.CHAT else target.kind
             target.steps = [s.get("intent", "") for s in steps]
             target.step_index = 0
-            chain_id = target.chain_id
-        elif relation == "chat" and kind == TaskKind.CHAT:
-            chain_id = None
+            chain = target
+        elif kind in (TaskKind.CHAT, TaskKind.MEMORY) and relation in ("chat", "new", "withdrawal", "revision"):
+            self._enqueue_chat(steps)
+            return
         else:
             chain = IntentChain(chain_id=new_id("chain"), kind=kind, opened_by=utt.uid,
                                 final_intent=utt.text, clock_origin=utt.t_end,
                                 steps=[s.get("intent", "") for s in steps])
             self.chains[chain.chain_id] = chain
-            chain_id = chain.chain_id
+        self._admit(chain.chain_id)
+        if refusal:
+            chain.status = ChainStatus.REFUSED
+            self.events.refusals.append((chain.chain_id, refusal))
+            self._enqueue_chat(steps)  # the spoken explanation, not bound to the refused chain
+            return
+        self._enqueue_chain(chain, steps)
 
-        for i, s in enumerate(steps):
-            for j, line in enumerate(_split_line(s.get("line", "")) or [""]):
-                self.queue.append(Segment(chain_id=chain_id, plan_version=self.plan_version,
-                                          intent=(s.get("intent") or "") if j == 0 else "",
-                                          line=line, step=i if len(steps) > 1 else None))
-        self.listening = False
+    # ------------------------------------------------------------ queue management
+    def _admit(self, chain_id: str) -> None:
+        """At most one unexecuted instruction: older unexecuted chains are capacity-skipped."""
+        for c in self._open_chains():
+            if c.chain_id != chain_id and self._unexecuted(c.chain_id):
+                self._drop_chain_segments(c.chain_id)
+                c.status = ChainStatus.CAPACITY_SKIPPED
+                self.events.capacity_skips.append((c.chain_id, len(c.revisions)))
+        self.latest_chain = chain_id
+
+    def _unexecuted(self, chain_id: str) -> bool:
+        return any(s.chain_id == chain_id and not s.is_completion_remark for s in self.queue) or \
+            bool(self.held.get(chain_id))
+
+    def _drop_chain_segments(self, chain_id: str) -> None:
+        self.queue = deque(s for s in self.queue if s.chain_id != chain_id)
+        self.held.pop(chain_id, None)
+
+    def _enqueue_chat(self, steps: list[dict]) -> None:
+        """Chat / explanation lines go first; they do not displace instructions."""
+        segs = [Segment(chain_id=None, plan_version=self.plan_version, line=line)
+                for s in steps for line in _split_line(s.get("line", ""))]
+        for seg in reversed(segs):
+            self.queue.appendleft(seg)
+
+    def _segments_for_step(self, chain: IntentChain, i: int, s: dict, n_steps: int) -> list[Segment]:
+        out = []
+        for j, line in enumerate(_split_line(s.get("line", "")) or [""]):
+            out.append(Segment(chain_id=chain.chain_id, plan_version=self.plan_version,
+                               intent=(s.get("intent") or "") if j == 0 else "",
+                               action_text=(s.get("action") or "") if j == 0 else "",
+                               line=line, step=i if n_steps > 1 else None, revision=len(chain.revisions)))
+        return [x for x in out if x.intent or x.action_text or x.line]
+
+    def _enqueue_chain(self, chain: IntentChain, steps: list[dict]) -> None:
+        per_step = [self._segments_for_step(chain, i, s, len(steps)) for i, s in enumerate(steps)]
+        if self.closed and chain.kind == TaskKind.MULTISTEP and len(steps) > 1:
+            first = self._release_upto(chain, -1)
+            self.held[chain.chain_id] = {i: segs for i, segs in enumerate(per_step) if i > first}
+            released = [seg for i in range(first + 1) for seg in per_step[i]]
+        else:
+            released = [seg for segs in per_step for seg in segs]
+        self.queue.extend(released)
+
+    def _release_upto(self, chain: IntentChain, after: int) -> int:
+        """Index of the last step released together after step ``after``: all following
+        content steps up to and including the next action step."""
+        i = after + 1
+        while i < len(chain.steps) - 1 and not chain.steps[i]:
+            i += 1
+        return min(i, len(chain.steps) - 1)
+
+    def _action_steps(self, chain: IntentChain) -> list[int]:
+        idx = [i for i, s in enumerate(chain.steps) if s]
+        return idx or [0]
+
+    def _expected_step(self, chain: IntentChain) -> int | None:
+        acts = self._action_steps(chain)
+        return acts[chain.step_index] if chain.step_index < len(acts) else None
+
+    def _matches(self, chain: IntentChain, revision: int | None, step: int | None) -> bool:
+        if revision is not None and revision != len(chain.revisions):
+            return False  # verdict about a superseded intent
+        exp = self._expected_step(chain)
+        return exp is not None and (step if step is not None else self._action_steps(chain)[0]) == exp
 
     def on_barge_in(self) -> None:
-        """User started speaking: stop planning ahead; next requests show the persona listening."""
+        """User started speaking: stop planning ahead; next requests show the persona listening.
+        Unsent segments of open chains are kept (the utterance decides what happens to them)."""
         self.plan_version += 1
-        self.queue.clear()
+        self.queue = deque(s for s in self.queue if s.chain_id is not None and not s.is_completion_remark)
         self.listening = True
 
     # ------------------------------------------------------------ verdict feedback
-    def on_verified(self, chain_id: str, intent: str, request_index: int, t: float) -> None:
+    def on_verified(self, chain_id: str, intent: str, request_index: int, t: float, *,
+                    revision: int | None = None, step: int | None = None) -> bool:
         chain = self.chains.get(chain_id)
-        if not chain or chain.status != ChainStatus.OPEN:
-            return
+        if not chain or chain.status != ChainStatus.OPEN or not self._matches(chain, revision, step):
+            return False
         self.ledger.apply_verified_action(intent)
+        done_step = self._expected_step(chain)
         chain.step_index += 1
         if chain.first_compliant_t is None:
             chain.first_compliant_t = t
-        if chain.step_index >= max(1, len([s for s in chain.steps if s])):
+        held = self.held.get(chain_id, {})
+        released: list[Segment] = []
+        if held and done_step is not None:
+            last = self._release_upto(chain, done_step)
+            for i in range(done_step + 1, last + 1):
+                released += held.pop(i, [])
+        if chain.step_index >= len(self._action_steps(chain)):
             chain.status = ChainStatus.COMPLIED
-            if self.mode == DirectorMode.CLOSED_LOOP:
-                # Narration policy: completion is voiced only after verification.
-                self.queue.appendleft(Segment(chain_id=chain_id, plan_version=self.plan_version,
-                                              intent="", line="好了。", is_completion_remark=True))
+            released += held.pop(len(chain.steps) - 1, []) if held else []
+            self.held.pop(chain_id, None)
+            if self.closed:
+                # Narration policy: completion is voiced only after verification (after the
+                # chain's remaining spoken content, if any).
+                released.append(Segment(chain_id=chain_id, plan_version=self.plan_version,
+                                        line="好了。", is_completion_remark=True,
+                                        revision=len(chain.revisions)))
+        for seg in reversed(released):
+            self.queue.appendleft(seg)
+        return True
 
     def schedule_correction(self, request_index: int, sentence: str) -> None:
         self.pending_corrections.setdefault(request_index, []).append(sentence)
 
     def queue_retry(self, chain_id: str, intent: str, *, correction: str, failed_request: int,
-                    plan_version: int) -> bool:
-        """Forward repair: retry the action in the next request to be locked.
-
-        Dropped if the chain is no longer open or a newer plan superseded the one that
-        produced the failed request (the user changed their mind meanwhile).
-        """
+                    revision: int | None = None, step: int | None = None, min_request: int = 0) -> bool:
+        """Forward repair: retry the action no earlier than ``min_request`` (the earliest
+        correctable request). Dropped if the chain is no longer open, the verdict was about a
+        superseded intent or another step, or a newer instruction exists (admission control:
+        the chain is then capacity-skipped)."""
         chain = self.chains.get(chain_id)
-        if chain is None or chain.status != ChainStatus.OPEN or plan_version != self.plan_version:
+        if chain is None or chain.status != ChainStatus.OPEN or not self._matches(chain, revision, step):
+            return False
+        if self.latest_chain != chain_id:
+            chain.status = ChainStatus.CAPACITY_SKIPPED
+            self.events.capacity_skips.append((chain_id, len(chain.revisions)))
             return False
         self.queue.appendleft(Segment(chain_id=chain_id, plan_version=self.plan_version, intent=intent,
-                                      line="", correction=correction, retry_of=failed_request))
+                                      line="", correction=correction, retry_of=failed_request, step=step,
+                                      revision=len(chain.revisions), min_request=min_request))
         return True
 
+    # ------------------------------------------------------------ erasure
+    def purge(self, term: str) -> int:
+        """Erasure (§12): remove the term from all controller state that can reach a prompt."""
+        self.erased_terms.add(term)
+        n = 0
+        before = len(self.queue)
+        self.queue = deque(s for s in self.queue if term not in s.line and term not in s.action_text)
+        n += before - len(self.queue)
+        for cid, steps in list(self.held.items()):
+            for i, segs in list(steps.items()):
+                steps[i] = [s for s in segs if term not in s.line and term not in s.action_text]
+        for c in self.chains.values():
+            if term in c.final_intent:
+                c.final_intent = c.final_intent.replace(term, "[已删除]")
+                n += 1
+        self.memory_notes = [(u, x) for u, x in self.memory_notes if term not in x]
+        self.pending_corrections = {k: [x for x in v if term not in x] for k, v in self.pending_corrections.items()}
+        n += self.ledger.redact(term)
+        return n
+
     # ------------------------------------------------------------ script building
+    def _pop_segment(self, request_index: int) -> Segment | None:
+        for i, seg in enumerate(self.queue):
+            if seg.min_request <= request_index:
+                del self.queue[i]
+                return seg
+        return None
+
     def next_script(self, request_index: int) -> BlockScript:
-        seg = self.queue.popleft() if self.queue else None
+        seg = self._pop_segment(request_index)
         if seg is None:
             intent = self.listen_intent if self.listening else self.idle_intent
             seg = Segment(chain_id=None, plan_version=self.plan_version, intent=intent, line="")
+        chain = self.chains.get(seg.chain_id or "")
+        if chain is not None and chain.status not in (ChainStatus.OPEN, ChainStatus.COMPLIED):
+            seg = Segment(chain_id=None, plan_version=self.plan_version, intent=self.idle_intent,
+                          line=seg.line)  # chain closed meanwhile: keep the words, drop the binding
 
         action_phrase, cap_ids, checks = "", [], []
         line = seg.line
-        if seg.intent:
-            if self.mode == DirectorMode.OPEN_LOOP:
+        if not self.closed:
+            if seg.action_text:
+                action_phrase = seg.action_text
+            elif seg.intent:  # idle / listen filler: same phrase as A2
                 cap = self.manifest.by_intent(seg.intent)
-                action_phrase = cap.phrase if cap else seg.intent
+                action_phrase = cap.phrase if cap else ""
+        elif seg.intent:
+            res = self.manifest.decide(seg.intent)
+            if res.decision == Decision.EMIT and res.capability:
+                action_phrase = res.capability.phrase
+                cap_ids.append(res.capability.cap_id)
+                if seg.chain_id and res.capability.check_question:
+                    checks.append(CheckQuestion(qid=new_id("q"), text=res.capability.check_question,
+                                                kind="action"))
+            elif seg.chain_id is None:
+                action_phrase = ""  # filler intent not usable: no action
+            elif res.decision == Decision.DEGRADE and res.capability:
+                self.events.degradations.append((seg.chain_id, res.reason))
+                line = line or res.capability.degrade_to
+                self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
             else:
-                res = self.manifest.decide(seg.intent)
-                if res.decision == Decision.EMIT and res.capability:
-                    action_phrase = res.capability.phrase
-                    cap_ids.append(res.capability.cap_id)
-                    if seg.chain_id and res.capability.check_question:
-                        checks.append(CheckQuestion(qid=new_id("q"), text=res.capability.check_question,
-                                                    kind="action"))
-                elif res.decision == Decision.DEGRADE and res.capability:
-                    self.events.degradations.append((seg.chain_id or "", res.reason))
-                    line = line or res.capability.degrade_to
-                    self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
-                else:
-                    self.events.refusals.append((seg.chain_id or "", res.reason))
-                    line = line or "这个我现在做不到，不过我们可以聊聊别的。"
-                    self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
-        if line and self.mode == DirectorMode.CLOSED_LOOP:
+                self.events.refusals.append((seg.chain_id, res.reason))
+                line = line or "这个我现在做不到，不过我们可以聊聊别的。"
+                self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
+        if line and self.closed:
             checks.append(CheckQuestion(qid=new_id("q"), text="台词是否被完整、准确地说出？", kind="speech"))
         if seg.is_completion_remark and seg.chain_id:
-            self.events.completion_claims.append((seg.chain_id, request_index))
-        elif self.mode == DirectorMode.OPEN_LOOP and seg.chain_id and _claims_completion(line):
-            self.events.completion_claims.append((seg.chain_id, request_index))
+            self.events.completion_claims.append((seg.chain_id, request_index, seg.step))
+        elif not self.closed and seg.chain_id and _claims_completion(line):
+            self.events.completion_claims.append((seg.chain_id, request_index, seg.step))
 
         corrections = list(self.pending_corrections.pop(request_index, []))
         if seg.correction:
             corrections.append(seg.correction)
-        if self.mode == DirectorMode.CLOSED_LOOP:
+        if self.closed:
             bridge = self.ledger.bridging_note()
             if bridge:
                 corrections.append(bridge)
@@ -262,7 +441,9 @@ class Director:
                              corrections=corrections, checks=checks,
                              chain_ids=[seg.chain_id] if seg.chain_id else [],
                              capability_ids=cap_ids,
-                             provenance={"intent": seg.intent, "step": seg.step, "retry_of": seg.retry_of})
+                             provenance={"intent": seg.intent, "step": seg.step, "retry_of": seg.retry_of,
+                                         "revision": seg.revision,
+                                         "completion_remark": seg.is_completion_remark})
         if seg.chain_id and seg.chain_id in self.chains:
             self.chains[seg.chain_id].requests.append(request_index)
         self.ledger.record_request(request_index, action_phrase, line)
@@ -271,11 +452,12 @@ class Director:
     def _fail_chain(self, chain_id: str | None, status: ChainStatus) -> None:
         if chain_id and chain_id in self.chains and self.chains[chain_id].status == ChainStatus.OPEN:
             self.chains[chain_id].status = status
+            self._drop_chain_segments(chain_id)
 
 
 def _split_line(line: str, n: int = CHARS_PER_REQUEST) -> list[str]:
     """Split a spoken line into <= n-character pieces at punctuation where possible."""
-    line = line.strip()
+    line = (line or "").strip()
     if not line:
         return []
     out, cur = [], ""
@@ -291,10 +473,10 @@ def _split_line(line: str, n: int = CHARS_PER_REQUEST) -> list[str]:
             cur = piece
     if cur:
         out.append(cur)
-    return [x for x in out if re.search(r"[\w\u4e00-\u9fff]", x)]
+    return [x for x in out if re.search(r"[\w一-鿿]", x)]
 
 
-_COMPLETION = re.compile(r"(完了|好了|做完|喝完|已经|done|finished)")
+_COMPLETION = re.compile(r"(做完|喝完|吃完|写完|翻好|做好了|完成了|搞定|好了[。！!]?$|已经(做|喝|吃|写|翻|挥|放|拿|站|坐)|done|finished)")
 
 
 def _claims_completion(line: str) -> bool:

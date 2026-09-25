@@ -8,7 +8,7 @@ from pathlib import Path
 
 from live_agent.eval.runner import mock_factory, run_task
 from live_agent.eval.schema import load_session
-from live_agent.eval.scoring import score_session
+from live_agent.eval.scoring import ScoringConfig, score_session
 from live_agent.eval.tasks import load_suite
 from live_agent.llm import ScriptedLLM
 
@@ -31,7 +31,7 @@ def test_runner_produces_scorable_logs(tmp_path):
     factory = mock_factory(ROOT / "configs/persona_hanfu", speed=20.0, llm=ScriptedLLM(responder), p_default=1.0)
     path = asyncio.run(run_task(task, "A2", 0, factory=factory, speed=20.0, out_dir=tmp_path))
     session = load_session(path)
-    score = score_session(session)
+    score = score_session(session, ScoringConfig.diagnostic_config())  # judge-sourced: diagnostic only
     outcomes = [c.outcome.value for c in score.chains]
     assert outcomes == ["success"], outcomes
     types = {e["type"] for e in session.events}
