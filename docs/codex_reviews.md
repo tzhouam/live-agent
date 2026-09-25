@@ -310,3 +310,17 @@ first frame, before the evidence had been shown. **Verdict: not ready.**
 or the time the last required frame is shown. The correction enters the first request with P_j ≥ E + C. The k+1
 condition is (c+1)Δ + C ≤ R − Λ − σ. Worked example [derived]: with Λ + σ = 3.5 s, only block 0 with C ≤ 0.1 s can
 reach k+1, so k+2 is the usual case.
+
+### zh11: round 11 (v2.9, commit 715f92e)
+
+Model gpt-6-sol (rollout verified). zh10 **RESOLVED**. There is 1 major finding: deadline D is undefined for content,
+multi-step and changing-intent tasks. There is 1 minor finding: E assumes equal blocks. **Verdict: not ready.**
+**Resolution (v2.10, grep-verified).**
+- A preregistered D table, identical across conditions. The clock origin is the end of the user utterance that starts
+  or last revises the chain.
+  - Action/expression: 15 s.
+  - Content: 15 s to begin an on-topic spoken reply; correctness is judged separately.
+  - Multi-step: 15 s per step, counted from the previous step's compliance.
+  - Correction: 15 s, restarted at the revising utterance.
+- Near-real-time mode uses the same D.
+- The E formula is marked illustrative; the analysis uses measured last-frame presentation timestamps.
