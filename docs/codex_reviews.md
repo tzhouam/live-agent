@@ -269,3 +269,12 @@ promises E2 measurements, but E2 was gated on passing real-time requalification.
 **Resolution (v2.5, verified by grep):** if the end-of-M2 gate fails, E2/E5 still run under the near-real-time service
 rule and are labelled "near-real-time". The RQ1/RQ2/RQ4/RQ5 contrasts stay valid (shared substrate). Latency results
 are reported as measured, and no §8 real-time target is claimed. §1.2 and §6.4 are consistent.
+
+### zh7: round 7 (v2.5, commit 71386aa)
+
+Model gpt-6-sol (rollout verified). zh6 finding **RESOLVED**. Two new majors, with no blocking issue. **Verdict: not ready.**
+
+| # | Sev. | Issue | Disposition | Resolution (v2.6, grep-verified) |
+|---|---|---|---|---|
+| 1 | major | RQ3's H3a assumes a fixed 5 s cadence that the turn-based fallback lacks | **Accepted** | H3a applies only when qualified. Fallback runs test a separate queueing model (A + admission wait + full request time + I) on measured queue timestamps |
+| 2 | major | Capacity-driven skips hidden by final-intent scoring | **Accepted** | "Capacity skip" is separated from "user supersession". Capacity skips count as failures over all user instructions, and the skip rate is reported per condition |
