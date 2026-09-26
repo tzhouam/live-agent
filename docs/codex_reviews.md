@@ -429,7 +429,7 @@ Every finding was accepted. Fixed in commits e9f6546 and the one after it (164 t
 
 Real-stack verification is in `docs/implementation.md` (server path with erasure). Documented limits: no content-moderation model (audit = blocklist); cross-lingual paraphrases are not caught by the erasure sweep.
 
-### impl1d + impl2d: round 3 (commit a1d-prep, see git log)
+### impl1d + impl2d: round 3 (reviewed at commit e9f6546+1; fixes in bb65031)
 
 Model gpt-6-sol, verified.
 - **impl1d:** 13 of 24 prior findings RESOLVED or scoped, 11 PARTIAL, plus 5 new material findings (1 blocking: A1 chains never
