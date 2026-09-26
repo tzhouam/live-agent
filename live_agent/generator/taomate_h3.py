@@ -459,10 +459,12 @@ class TaoMateH3Generator(Generator):
         self._prompts.clear()
         self.request_extras.clear()
         keep = []
-        while not self._out.empty():  # drain everything; keep only sentinels / errors, in order
+        while not self._out.empty():  # drain everything; only the end-of-stream sentinel survives
             item = self._out.get_nowait()
-            if item is None or isinstance(item, Exception):
+            if item is None:
                 keep.append(item)
+            elif isinstance(item, Exception):
+                self.errors.append({"stale_after_reset": True, "message": str(item)})  # not re-raised later
         for item in keep:
             self._out.put_nowait(item)
         for role in (P.ROLE_TEACHER, P.ROLE_STUDENT):
@@ -540,8 +542,12 @@ class TaoMateH3Generator(Generator):
         """Rank pids reported by the workers (torchrun children write the payload files)."""
         out = []
         for info in self.worker_info.values():
-            out += [int(x) for x in info.get("pids", []) if str(x).isdigit()]
-        return out
+            for key in ("hello", "ready"):
+                msg = info.get(key) or {}
+                out += [int(x) for x in msg.get("pids", [])]
+                if msg.get("pid") is not None:
+                    out.append(int(msg["pid"]))
+        return sorted(set(out))
 
     @property
     def timings(self) -> list[RequestTiming]:

@@ -101,6 +101,8 @@ class StateLedger:
         """Interrupt case (proposal §10.5, option 3): content exists in generator state but was not shown."""
         if request_index not in self.generated_not_presented:
             self.generated_not_presented.append(request_index)
+        if self.bridge_request is not None and request_index == self.bridge_request:
+            self.bridge_request = None  # the bridge itself was cut: bridge again next time
 
     def apply_verified_action(self, intent: str) -> None:
         """Update prop/pose state after an action was *verified* on presented frames."""

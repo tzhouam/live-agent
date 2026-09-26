@@ -219,6 +219,13 @@ def condition_section(cond: str, sessions: list[SessionScore], n_boot: int = 400
     return L + [""]
 
 
+E2E_MODE = "browser"  # the only session mode that exercises the proposal's end-to-end input path
+
+
+class NonE2EError(ValueError):
+    """Sessions that bypass the end-to-end audio path cannot receive a primary E2 decision."""
+
+
 class PairingError(ValueError):
     """The preregistered pair set is incomplete or has duplicate keys."""
 
@@ -427,8 +434,15 @@ def repair_comparison(by_cond: dict[str, list[SessionScore]], n_boot: int = 4000
             L.append(f"| {cond} | excluded: {len(bad)} session(s) failing the RQ2 audit | | | |")
         if {r["arm"] for _, r in allp} != {"forward_correction", "repeat"}:
             continue
-        for name, keep in (("primary: withdrawal after assignment = failure", ("success", "failure", "withdrawn")),
-                           ("sensitivity: withdrawn excluded", ("success", "failure"))):
+        unobs = [(t, r) for t, r in allp if r["status"] == "insufficient_observation"]
+        if unobs:  # the primary row needs every randomised target observed: rerun first
+            L.append(f"| {cond} | primary: REFUSED, {len(unobs)} target request(s) not fully observed; rerun: "
+                     + ", ".join(f"{t} j={r['target_request']}" for t, r in unobs) + " | | | |")
+        rows = [("sensitivity (missing data): unobserved targets excluded; withdrawal = failure"
+                 if unobs else "primary: withdrawal after assignment = failure", ("success", "failure", "withdrawn")),
+                ("sensitivity: withdrawn excluded" + ("; unobserved targets excluded" if unobs else ""),
+                 ("success", "failure"))]
+        for name, keep in rows:
             rep = [(t, r) for t, r in allp if r["status"] in keep]
             if not rep:
                 continue
@@ -439,9 +453,6 @@ def repair_comparison(by_cond: dict[str, list[SessionScore]], n_boot: int = 4000
                 n_boot=n_boot,
             )
             L.append(f"| {cond} | {name} | {len(rep)} | {_f(r['estimate'], True)} | {_ci(r['lo'], r['hi'])} |")
-        n_miss = sum(r["status"] == "insufficient_observation" for _, r in allp)
-        if n_miss:
-            L.append(f"| {cond} | flagged: target request not observed (excluded, rerun) | {n_miss} | | |")
     if not L:
         return []
     out = ["## RQ2 repair: forward correction - repeat (earliest eligible request)", "",
@@ -464,6 +475,7 @@ def build_report(
     missing_rule: str = "rerun-required",
     allow_incomplete_pairs: bool = False,
     expected: set[tuple] | None = None,
+    allow_non_e2e: bool = False,
 ) -> str:
     """``pairs`` selects displayed comparisons (None = all preregistered ones present).
 
@@ -476,6 +488,11 @@ def build_report(
         raise ValueError(f"missing_rule must be one of {MISSING_RULES}")
     require_complete(sessions)
     diagnostic = any(s.diagnostic for s in sessions)
+    non_e2e = sorted({f"{s.session_id} (mode={s.mode})" for s in sessions if s.mode != E2E_MODE})
+    if non_e2e and not diagnostic and not allow_non_e2e:
+        raise NonE2EError(
+            f"{len(non_e2e)} session(s) did not use the end-to-end {E2E_MODE!r} path (TTS -> VAD/ASR -> client "
+            "playback); they cannot receive a primary E2 decision:\n  " + "\n  ".join(non_e2e[:50]))
     n_imputed = 0
     if missing_rule == "worst-case":
         n_imputed = sum(c.outcome.value == "insufficient_observation" for s in sessions for c in s.chains)
@@ -496,6 +513,10 @@ def build_report(
                "without an online judge (A1) cannot be compared here."), ""]
     else:
         L += [f"# {title}", ""]
+    if non_e2e and not diagnostic:
+        L += [(f"> **GENERATOR-PATH PILOT, not the end-to-end E2 result.** {len(non_e2e)} session(s) bypass "
+               f"the audio input path (mode other than {E2E_MODE!r}): recognition errors and input delay are "
+               "not measured."), ""]
     if missing_rule == "worst-case":
         L += [(f"> **SENSITIVITY ANALYSIS (worst-case missing-data rule), not the primary result.** "
                f"{n_imputed} chain(s) whose deadline window was not observed are counted as failures."), ""]
@@ -538,6 +559,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--expected-seeds", default=None,
                     help="registered seeds, e.g. 0-4; required for a primary comparison decision")
     ap.add_argument("--expected-tasks", default=None, help="comma-separated task ids (default: whole suite)")
+    ap.add_argument("--allow-non-e2e", action="store_true",
+                    help="allow simulation / generator_path sessions; the report is labelled GENERATOR-PATH PILOT")
     ap.add_argument("--n-boot", type=int, default=4000)
     ap.add_argument("-o", "--out", default=None)
     args = ap.parse_args(argv)
@@ -552,9 +575,13 @@ def main(argv: Sequence[str] | None = None) -> None:
                                    args.expected_tasks.split(",") if args.expected_tasks else None)
                     if args.expected_seeds else None)
         md = build_report(scores, pairs, n_boot=args.n_boot, missing_rule=args.missing_rule,
-                          allow_incomplete_pairs=args.allow_incomplete_pairs, expected=expected)
+                          allow_incomplete_pairs=args.allow_incomplete_pairs, expected=expected,
+                          allow_non_e2e=args.allow_non_e2e)
     except IncompleteAdjudicationError as e:
         print(f"error: {e}\n(use --source judge for a DIAGNOSTIC report)", file=sys.stderr)
+        raise SystemExit(2) from e
+    except NonE2EError as e:
+        print(f"error: {e}\n(--allow-non-e2e for a report labelled GENERATOR-PATH PILOT)", file=sys.stderr)
         raise SystemExit(2) from e
     except PairingError as e:
         print(f"error: {e}\n(rerun the missing trials, or --allow-incomplete-pairs for an EXPLORATORY report)",

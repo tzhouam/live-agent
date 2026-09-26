@@ -29,7 +29,13 @@ from live_agent.eval.adjudicate import (
     presented_segments,
     video_to_session,
 )
-from live_agent.eval.report import MIN_TASKS, PairingError, build_report, compare
+from live_agent.eval.report import (
+    MIN_TASKS,
+    NonE2EError,
+    PairingError,
+    build_report,
+    compare,
+)
 from live_agent.eval.schema import SchemaError, load_session, parse_session
 from live_agent.eval.scoring import (
     IncompleteAdjudicationError,
@@ -403,7 +409,8 @@ def test_repair_every_failure_point_with_preregistered_handling():
          arm_drawn=True, t=12.0, revision=0)
     L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=2, target_request=9,
          arm_drawn=True, t=13.0, revision=0)
-    L.verdict(19.0, chain="c1")  # no request field -> mapped through the presented chunk
+    L.verdict(19.0, chain="c1")
+    L.rverdict(3, "complied", chain="c1", t=19.0)  # repair-target verdict (assignment-time revision)
     L.new(1.0, chain="c2")
     _judge_fail(L, "c2", 1, 3, 9.5)
     L.ev(type="repair_assignment", chain_id="c2", arm="repeat", failure_request=1, target_request=3,
@@ -420,8 +427,11 @@ def test_repair_every_failure_point_with_preregistered_handling():
     assert s["repeat"] == {**s["repeat"], "n": 1, "k": 0, "n_withdrawn": 1, "n_insufficient_observation": 1,
                            "n_excl_withdrawn": 0}
     md = build_report([sc], n_boot=100)
-    assert "withdrawal after assignment = failure" in md and "sensitivity: withdrawn excluded" in md
-    assert "target request not observed (excluded, rerun)" in md
+    # an unobserved target blocks the primary RQ2 row (rerun); exclusion is only a labelled sensitivity row
+    assert "primary: REFUSED, 1 target request(s) not fully observed; rerun: T1 j=9" in md
+    assert "sensitivity (missing data): unobserved targets excluded" in md
+    assert "sensitivity: withdrawn excluded; unobserved targets excluded" in md
+    assert "| A2-rq2 | primary: withdrawal after assignment = failure" not in md
 
 
 # --------------------------------------------------------------------------- adjudication tool
@@ -443,12 +453,12 @@ def _exp(tasks: int, seeds: int, label: str = "c1") -> set[tuple]:
 
 
 def _session_file(tmp_path: Path, name: str, task_id: str, utts: list[tuple], extra=(), cond="A2",
-                  length=40.0) -> Path:
+                  length=40.0, mode="browser") -> Path:
     """utts: (t_end, text, action, label, ann_extra). Chunks of 1 s, presented back to back
     from t=0 (video time == session time), recorded length ``length``."""
     sid = f"{cond}-{task_id}-s0"
     recs = [{"type": "session", "session_id": sid, "condition": cond, "task_id": task_id, "seed": 0,
-             "mode": "simulation"}]
+             "mode": mode}]
     for i, (t_end, text, action, label, ann) in enumerate(utts):
         uid = f"{sid}:u{i}"
         recs.append({"type": "utterance", "uid": uid, "speaker": "user", "text": text,
@@ -928,7 +938,8 @@ def test_repair_withdrawal_rule_applies_before_success():
     L.new(0.0, chain="c1")
     L.ev(type="chunk_presented", request=3, chunk=0, t_start=18.0, t_end=23.0)
     L.ev(type="observation_end", t=40.0)
-    L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0)
+    L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0,
+         arm_drawn=True)
     L.withdraw(15.0, chain="c1")  # after the assignment
     L.verdict(19.0, chain="c1", source="judge")  # the locked target still played compliant content
     c = L.one(cfg=DIAG)
@@ -936,7 +947,8 @@ def test_repair_withdrawal_rule_applies_before_success():
     L2 = Log("A2", "T1", 0)
     L2.new(0.0, chain="c1")
     L2.withdraw(5.0, chain="c1")
-    L2.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0)
+    L2.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0,
+          arm_drawn=True)
     assert L2.one(cfg=DIAG).repairs[0]["status"] == "ineligible"
 
 
@@ -991,7 +1003,8 @@ def test_withdrawal_history_per_repair_point():
         L.new(0.0, chain="c1")
         L.ev(type="chunk_presented", request=3, chunk=0, t_start=18.0, t_end=23.0)
         L.ev(type="observation_end", t=60.0)
-        L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0)
+        L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0,
+             arm_drawn=True)
         L.withdraw(withdraw_t, chain="c1")
         if reopen_t is not None:
             L.revise(reopen_t, chain="c1")
@@ -1012,8 +1025,10 @@ def test_target_request_observed_only_if_all_chunks_presented():
         for i in chunks:
             L.ev(type="chunk_presented", request=3, chunk=i, t_start=18.0 + i, t_end=19.0 + i)
         L.ev(type="observation_end", t=60.0)
-        L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0)
+        L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0,
+             arm_drawn=True)
         L.verdict(None, chain="c1", label="not_complied")
+        L.rverdict(3, "not_complied")
         return L.one().repairs[0]["status"]
     assert run([0]) == "insufficient_observation"  # first chunk only
     assert run([0, 1]) == "failure"
@@ -1088,3 +1103,87 @@ def test_container_metadata_is_scanned_and_stripped(tmp_path):
     prepare([log], tmp_path / "ok")  # stripped, then scanned: passes
     (m,) = (tmp_path / "ok" / "media").iterdir()
     assert not any("A2" in v for v in container_metadata(m))
+
+
+# --------------------------------------------------------------------------- round 5 (impl2f)
+
+
+def _rq2_revised_log():
+    L = Log("A2-rq2", "T1", 0)
+    L.recs[0]["chunks_per_request"] = 1
+    L.new(0.0, chain="c1")
+    L.ev(type="chunk_presented", request=3, chunk=0, t_start=8.0, t_end=12.0)
+    L.ev(type="observation_end", t=60.0)
+    L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=6.0,
+         arm_drawn=True, revision=0)
+    L.revise(20.0, chain="c1")  # the user changes the request after the repair succeeded
+    L.verdict(None, chain="c1", label="not_complied", revision=1)  # final intent never done
+    return L
+
+
+def test_repair_scored_against_assignment_time_revision():
+    L = _rq2_revised_log()
+    assert L.one().repairs[0]["status"] == "unadjudicated"
+    L.rverdict(3, "complied", revision=1, t=9.0)  # a verdict for a different revision does not count
+    assert L.one().repairs[0]["status"] == "unadjudicated"
+    L.rverdict(3, "complied", revision=0, t=9.0)
+    c = L.one()
+    assert c.repairs[0]["status"] == "success" and c.outcome == Outcome.NEVER  # repair verdicts are not chain compliance
+
+
+def test_repair_target_items_and_merge(tmp_path):
+    utts = [(3.0, "跟我挥挥手吧。", "new", "c1", {"kind": "action"}),
+            (15.0, "哦对了，用左手挥。", "revision", "c1", {"kind": "action"})]
+    assign = {"type": "repair_assignment", "chain_id": "A2-rq2-E2-D01-s0:c1", "arm": "repeat", "failure_request": 0,
+              "target_request": 1, "t": 4.0, "arm_drawn": True, "revision": 0}
+    log = _session_file(tmp_path, "s", "E2-D01", utts, extra=[assign], cond="A2-rq2")
+    batch = tmp_path / "b"
+    items = _items(prepare([log], batch))
+    (rt,) = [i for i in items if i["type"] == "repair_target"]
+    assert rt["texts"] == ["跟我挥挥手吧。"] and rt["criteria"]["checks"] == ["手左右摆动至少一次"]  # revision 0
+    assert (rt["v_origin"], rt["v_end"]) == (5.0, 10.0)  # request 1's window
+    k = f"{rt['id']}/0"
+    with pytest.raises(LabelError, match="target window"):
+        merge(batch, [(_labels(tmp_path, "a", {k: {"label": "complied", "v_first": 12.0}}), "R1"),
+                      (_labels(tmp_path, "b", {k: {"label": "complied", "v_first": 6.0}}), "R2")])
+    short = {k: {"label": "not_complied", "v_watched": [[5.0, 8.0]]}}
+    r = merge(batch, [(_labels(tmp_path, "a", short), "R1"), (_labels(tmp_path, "b", short), "R2")])
+    assert "target window not fully watched" in r["unresolved"][k]
+    ok = {k: {"label": "complied", "v_first": 6.0}}
+    merge(batch, [(_labels(tmp_path, "a2", ok), "R1"), (_labels(tmp_path, "b2", ok), "R2")], replace=True)
+    (v,) = [e for e in load_session(log).of_type("verdict") if e.get("repair_request") is not None]
+    assert v["repair_request"] == 1 and v["revision"] == 0 and v["label"] == "complied"
+    assert score_session(load_session(log)).chains[0].repairs[0]["status"] == "success"
+
+
+def test_rq2_eligibility_uses_evidence_time():
+    L = Log("A2-rq2", "T1", 0)
+    L.new(0.0, chain="c1")
+    L.ev(type="chunk_presented", request=1, chunk=0, t_start=5.0, t_end=10.0)
+    L.ev(type="chunk_presented", request=3, chunk=0, t_start=15.0, t_end=20.0)
+    L.ev(type="observation_end", t=40.0)
+    L.withdraw(8.0, chain="c1")  # during request 1, before its verdict's evidence time
+    L.ev(type="verdict", source="judge", label="not_complied", chain_id="c1", request=1, chunk=0, t_evidence=9.5,
+         revision=0, earliest_correctable=3)
+    assert L.score().rq2_problems == []  # not open at evidence time: not eligible (chunk-0 start would say it was)
+
+
+def test_non_e2e_sessions_get_no_primary_decision(tmp_path, capsys):
+    L = Log(mode="generator_path")
+    L.new(0.0)
+    L.verdict(5.0)
+    with pytest.raises(NonE2EError, match="generator_path"):
+        build_report([L.score()], n_boot=50)
+    md = build_report([L.score()], n_boot=50, allow_non_e2e=True)
+    assert "GENERATOR-PATH PILOT, not the end-to-end E2 result" in md
+    L2 = Log(mode=None)
+    L2.recs[0].pop("mode")
+    L2.new(0.0)
+    L2.verdict(5.0)
+    with pytest.raises(NonE2EError):
+        build_report([L2.score()], n_boot=50)  # unknown mode: not end-to-end either
+    build_report([L.score(DIAG)], n_boot=50)  # diagnostic reports are already not results
+    p = _write_log(tmp_path / "g.jsonl", L.recs)
+    with pytest.raises(SystemExit) as e:
+        report.main([str(p)])
+    assert e.value.code == 2 and "--allow-non-e2e" in capsys.readouterr().err

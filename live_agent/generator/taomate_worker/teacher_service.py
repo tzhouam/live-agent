@@ -56,7 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     geometry = direct_5s_geometry(width=args.width, height=args.height)
     torch.cuda.synchronize()
-    loop.send({"type": P.READY, "load_s": time.time() - t_load,
+    pids = loop.rank_pids()  # collective: every rank reaches this line
+    loop.send({"type": P.READY, "pids": pids, "load_s": time.time() - t_load,
                "process_to_ready_s": time.time() - t_process, "memory": gather_memory()})
 
     previous_clean = None

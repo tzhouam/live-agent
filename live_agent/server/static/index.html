@@ -131,8 +131,9 @@ function render() {
         const idx = Math.min(q.frames.length - 1, Math.floor((t - q.start) / (q.end - q.start) * q.frames.length));
         g.drawImage(q.frames[idx], 0, 0, canvas.width, canvas.height);
         (q.painted = q.painted || new Set()).add(idx);  // frames actually shown (QC evidence)
+        q.lastPaint = performance.now();
       }
-      if (!q.endedSent && t >= q.end) { q.endedSent = true; send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.end), painted: Array.from(q.painted || [])}); }
+      if (!q.endedSent && t >= q.end) { q.endedSent = true; send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.end), painted: Array.from(q.painted || []), tp_last_paint: q.lastPaint}); }
     }
     queue = queue.filter(q => !q.endedSent);
   }

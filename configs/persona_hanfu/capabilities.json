@@ -19,7 +19,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否举起茶杯喝了一口茶？",
-   "degrade_to": "好，我喝口茶。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-01-turn_page",
@@ -38,7 +38,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否用手翻了一页书？",
-   "degrade_to": "好，我翻到下一页。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-02-wave",
@@ -108,7 +108,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否在微笑？",
-   "degrade_to": "（微笑）"
+   "degrade_to": "好呀。"
   },
   {
    "cap_id": "cap-06-put_down_book",
@@ -126,7 +126,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否合上书并放在桌上？",
-   "degrade_to": "好，先把书放下。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-07-pick_up_book",
@@ -143,7 +143,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否把书拿起来翻开？",
-   "degrade_to": "我把书拿起来。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-08-look_window",
@@ -177,7 +177,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否拿起茶壶倒茶？",
-   "degrade_to": "我给自己倒杯茶。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-10-eat_pastry",
@@ -195,7 +195,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否拿起点心咬了一口？",
-   "degrade_to": "嗯，味道不错。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-11-stand_up",
@@ -212,7 +212,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否站了起来？",
-   "degrade_to": "好，我站起来。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-12-bow",
@@ -314,7 +314,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否坐下？",
-   "degrade_to": "好，我坐下。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-18-wave_left",
@@ -331,7 +331,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否用左手朝镜头挥手？",
-   "degrade_to": "好，换左手。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-19-write_brush",
@@ -349,7 +349,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否拿起毛笔在纸上写字？",
-   "degrade_to": "我来写个字。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-20-show_writing",
@@ -366,7 +366,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否把写好字的纸举起给镜头看？",
-   "degrade_to": "你看，写好了。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-21-pick_up_fan",
@@ -383,7 +383,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否拿起团扇？",
-   "degrade_to": "我拿起扇子。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-22-fan_self",
@@ -401,7 +401,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否用团扇轻轻扇风？",
-   "degrade_to": "有点热，扇一扇。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-23-put_down_fan",
@@ -418,7 +418,7 @@
    "tvc_median_s": null,
    "side_effects": [],
    "check_question": "人物是否把团扇放回桌上？",
-   "degrade_to": "好，放下扇子。"
+   "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   }
  ]
 }

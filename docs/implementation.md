@@ -171,6 +171,21 @@ python3 -m pytest
   - Erasure is physical: `secure_delete`, `VACUUM` and WAL truncation with a raw-file check. `VACUUM` runs on the
     event loop inside an erasure; the session is quiesced then, but the cost grows with the database size.
 
+- **Round-5 additions:**
+  - Erasure stops playback before the storage work and runs the deletion off the event loop (`forget_async`).
+  - Recordings are deleted on erasure (the session is no longer recorded).
+  - QC calls time out after 8 s and abstain (a proposed target).
+  - Degrade and refuse lines state the capability decision. All 24 `degrade_to` lines were rewritten: several
+    promised the action ("好，我站起来。") or even claimed it ("你看，写好了。").
+  - Action-bearing lines allow intent wording only.
+  - Completion remarks are held while a barge-in decision is pending.
+  - The WebSocket session ends when the orchestrator stops on an error.
+  - Paint timestamps are measured by the client.
+  - Worker rank PIDs are gathered for the `/dev/shm` sweep.
+- **E2 primary decisions need the end-to-end path.** The report refuses a primary decision for `simulation` or
+  `generator_path` logs, because text is injected without TTS → VAD/ASR. A TTS-driven client (or human users) on
+  the browser path is required; no TTS model is part of this repo yet.
+
 ## Not yet verified
 
 - **E1:** a judge-only pilot ran (24 × 5 trials on TaoMate-H3, `docs/e1_pilot.md`). It showed the VLM judge failing

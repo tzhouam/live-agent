@@ -73,6 +73,7 @@ class OrchestratorConfig:
     text_encode_s: float = 0.06  # part of the correction chain C [measured locally, M0 teacher text encode]
     restart_decision_wait_s: float = 1.5  # after an interruption, wait this long for an in-flight decision
     loop_lag_log_s: float = 0.2  # log event-loop stalls longer than this (diagnostic)
+    qc_timeout_s: float = 8.0  # a check that takes longer abstains (verdict unknown) [proposed target]
     blocklist: tuple[str, ...] = ()  # operator term blocklist for the script audit (no moderation model)
     seed: int = 0
 
@@ -129,6 +130,7 @@ class Orchestrator:
         self._barge_gate.set()
         self._erase_lock = asyncio.Lock()
         self.chunk_end: dict[tuple[int, int], float] = {}
+        self.last_paint: dict[tuple[int, int], float] = {}
         self._fully_presented: set[int] = set()
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
@@ -363,12 +365,14 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ presentation acks
     def on_presented(self, request_index: int, chunk_index: int, t_start: float, t_end: float,
-                     painted: list[int] | None = None) -> None:
+                     painted: list[int] | None = None, t_last_paint: float | None = None) -> None:
         """Called by the transport when a chunk *finished* presenting (with its start/end times).
         ``painted``: indices of the chunk's frames the client actually displayed (None = all)."""
         if request_index in self.dropped:
             return  # late ack of interrupted content: not evidence
         self.painted[(request_index, chunk_index)] = painted
+        if t_last_paint is not None:
+            self.last_paint[(request_index, chunk_index)] = t_last_paint  # measured (client clock, mapped)
         if chunk_index == 0:
             self.sched.on_presented(request_index, t_start)
             self.director.ledger.mark_presented(request_index)
@@ -385,7 +389,7 @@ class Orchestrator:
             self.director.ledger.mark_fully_presented(request_index)
             if request_index in self.scripts:
                 self.director.on_request_presented(self.scripts[request_index],
-                                                   done=self._fully_presented | self.dropped)
+                                                   done=set(self._fully_presented))  # dropped != shown
             if self.cfg.qc_enabled:
                 self._spawn(self._run_checks(request_index, t_evidence=self._evidence_time(request_index, t_end)),
                             "qc")
@@ -406,9 +410,11 @@ class Orchestrator:
             idx = self.painted.get((k, ci))
             start, end = self.chunk_start.get((k, ci)), self.chunk_end.get((k, ci))
             ch = next((c for c in self.chunks.get(k, []) if c.chunk_index == ci), None)
+            if (k, ci) in self.last_paint:
+                return self.last_paint[(k, ci)]  # measured paint time of the last displayed frame
             if idx is None:
                 return end if end is not None else t_end
-            if idx and ch is not None and start is not None and ch.n_frames:
+            if idx and ch is not None and start is not None and ch.n_frames:  # estimate from index
                 return start + (max(idx) + 1) * ch.duration_s / ch.n_frames
         return t_end
 
@@ -497,11 +503,17 @@ class Orchestrator:
             if q.kind == "speech":
                 if self.speech_check is None:
                     continue
-                v = await asyncio.to_thread(self.speech_check.check, q, script.transcript, chunks, k, t_evidence)
+                call = asyncio.to_thread(self.speech_check.check, q, script.transcript, chunks, k, t_evidence)
             elif self.judge is not None:
-                v = await self.judge.judge(q, chunks, k, t_evidence)
+                call = self.judge.judge(q, chunks, k, t_evidence)
             else:
                 continue
+            try:
+                v = await asyncio.wait_for(call, timeout=self.cfg.qc_timeout_s)
+            except asyncio.TimeoutError:
+                # a stalled judge/ASR must not hold verification, repair or the session: abstain
+                v = Verdict(q.qid, k, VerdictLabel.UNKNOWN, 0.0, f"timeout after {self.cfg.qc_timeout_s} s",
+                            t_evidence, now())
             if k in self.dropped:
                 return
             if q.kind == "action":
@@ -650,7 +662,10 @@ class Orchestrator:
                 ack(report, target, ok=ok, detail=detail)
 
         try:
-            report = self.memory.forget(term)
+            # Stop what the viewer could still see or hear first, then do the (slow) storage work.
+            await self._drop_unpresented()
+            forget_async = getattr(self.memory, "forget_async", None)
+            report = await forget_async(term) if forget_async is not None else self.memory.forget(term)
             # Redact every erased value, not only the responder's keyword (e.g. "妹妹" names the fact,
             # "杭州" is its value); report.terms holds them in memory only.
             terms = sorted({term, *(getattr(report, "terms", None) or [])}, key=len, reverse=True)
@@ -681,8 +696,10 @@ class Orchestrator:
             recorder = getattr(self.transport, "recorder", None)
             if recorder is None:
                 acknowledge("recordings", True, "event log redacted; no media recording")
-            else:  # presented audio/video cannot be redacted by text replacement
-                acknowledge("recordings", False, f"media recording {getattr(recorder, 'path', '')} must be deleted")
+            else:  # presented audio/video cannot be redacted: delete the recording, stop recording
+                ok = await asyncio.to_thread(recorder.discard)
+                acknowledge("recordings", ok, f"recording {getattr(recorder, 'path', '')} deleted; "
+                            "session no longer recorded" if ok else "recording files remain")
         finally:
             complete = report is not None and getattr(report, "complete", True)
             if complete:

@@ -126,6 +126,15 @@ class CommandLoop:
 
         self.group = torch.distributed.new_group(backend="gloo")
 
+    def rank_pids(self) -> list[int]:
+        """Collective (all ranks): pids of every rank, so the adapter can remove their /dev/shm
+        payload files at shutdown."""
+        import torch
+
+        gathered: list[Any] = [None] * self.world
+        torch.distributed.all_gather_object(gathered, os.getpid(), group=self.group)
+        return [int(x) for x in gathered]
+
     # ------------------------------------------------------------------ rank 0 I/O
     def connect(self, **hello: Any) -> None:
         if self.rank != 0:

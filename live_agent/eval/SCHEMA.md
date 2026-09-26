@@ -24,7 +24,10 @@ headed DIAGNOSTIC.
  "mode": "simulation|generator_path|browser", "generator_seed": 123, "backbone": "taomate-h3"}
 ```
 Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must be
-`simulation`, `generator_path` or `browser`. `chunks_per_request` (int) is needed to decide
+`simulation`, `generator_path` or `browser`. Only `browser` sessions use the end-to-end input
+path (TTS → VAD/ASR → client playback). The primary report refuses any other mode, or a
+missing mode, with exit 2; `--allow-non-e2e` labels the whole report "GENERATOR-PATH
+PILOT, not the end-to-end E2 result". `chunks_per_request` (int) is needed to decide
 whether an RQ2 target request was fully observed. Other keys are free-form metadata.
 
 ## Events
@@ -36,7 +39,7 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
 | `lock` | `t`, `request` | `chain_ids`, `plan_version` | orchestrator (diagnostic; not needed for scoring) |
 | `chunk_presented` | `request`, `chunk`, `t_start`, `t_end` | `frame_hash` | client presentation ack |
 | `observation_end` | `t` (last presented media time of the session) | | runner |
-| `verdict` | `source` (`adjudicated`/`human`/`judge`), `label` (`complied`/`not_complied`/`unknown`), and `chain_id` **or** `claim_id` | `revision`, `step` (multistep, 0-based), `request`, `chunk`, `earliest_correctable` (judge `not_complied`: request j), `t_first_compliant`, `t_evidence`, `t_review_start`, `t_review_end`, `claim_t` (claim-level verdict), `onset_reviewed`, `t_onset`, `annotators`, `reconciliation` (`agreement`/`arbitration`), `batch`, `item`, `criteria_sha256`, `qid` | judge / adjudication tool |
+| `verdict` | `source` (`adjudicated`/`human`/`judge`), `label` (`complied`/`not_complied`/`unknown`), and `chain_id` **or** `claim_id` | `revision`, `step` (multistep, 0-based), `request`, `chunk`, `earliest_correctable` (judge `not_complied`: request j), `repair_request` + `revision` (an adjudicated RQ2 repair-target verdict), `t_first_compliant`, `t_evidence`, `t_review_start`, `t_review_end`, `claim_t` (claim-level verdict), `onset_reviewed`, `t_onset`, `annotators`, `reconciliation` (`agreement`/`arbitration`), `batch`, `item`, `criteria_sha256`, `qid` | judge / adjudication tool |
 | `rating` | `annotator`, `chain_id`, `label` | `role` (`primary`/`arbiter`), `kind` (`claim_sweep` for a swept claim), `step`, `revision`, `claim_t`, the same time fields as a verdict, `onset_none`, `review_ok`, `t_review_needed`, `batch`, `item` | adjudication tool (one annotator's independent label; kept for agreement statistics, **never scored**) |
 | `completion_claim` | `chain_id`, `t` | `source` (`system` (default) / `adjudicated`), `step`, `claim_id`, `request`, `text`, `batch`, `item` | orchestrator (`system`, diagnostic) / audio claim sweep (`adjudicated`, primary) |
 | `claim_sweep` | `source` (`adjudicated`) | `n_claims`, `annotators`, `reconciliation`, `t_review_end`, `batch`, `item` | adjudication tool: the session's recording was swept for audible completion claims (required per session in primary scoring) |
@@ -61,7 +64,8 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
 * **`repair_assignment`**: one per randomised eligible failure point, with `t` (assignment
   time), `arm_drawn: true` in `A2-rq2`, and `step` if any; `target_request` may be null.
 * **RQ2 eligibility (preregistered).** An eligible failure point is an online `judge`
-  verdict `not_complied` on a chain open at its evidence time (opened, not withdrawn, and
+  verdict `not_complied` on a chain open at its evidence time (`t_evidence`, not the judged
+  chunk's start) (opened, not withdrawn, and
   the verdict's `revision` equal to the one then in force), whose `earliest_correctable`
   request j exists and started presenting before `observation_end`. So judge
   `not_complied` verdicts must carry `request` and `earliest_correctable` (null if none).
@@ -124,6 +128,13 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   item also asks for the response onset: on-topic speech for content, the first meaningful
   spoken response otherwise (a time, or "none by the onset deadline"). Merge writes it as
   an adjudicated `speech_onset` and marks the verdict `onset_reviewed`.
+* **Repair-target items (RQ2)**: one per randomised (`arm_drawn`) repair assignment whose
+  target request j was presented. The window is request j's presented video, and the rater
+  sees the request **as of the assignment-time revision**: the user's lines up to that
+  revision and its criteria, or its step's criteria. "Done" needs a first-compliant frame
+  inside the window, and negative labels need the whole window watched. Merge writes an
+  adjudicated `verdict` with `repair_request` = j and `revision`. These verdicts are never
+  used as chain compliance.
 * **Claim sweep items**: one per session. The rater watches the **whole** recording
   without seeing the logged claims, marks every audible completion claim, chooses its
   referent request (and step), and judges it against the request as it stood at that
@@ -223,17 +234,22 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   `repair_assignment` each), analysed by assigned arm, including those on chains later
   withdrawn or excluded from the chain analysis. Only `arm_drawn` points in sessions
   passing the RQ2 audit enter the comparison. Status is decided in this order:
-  `ineligible` (the chain was not open at assignment time `t`: excluded);
+  `not_randomized` (no `arm_drawn`: descriptive only); `ineligible` (the chain was not
+  open at assignment time `t`: excluded);
   `withdrawn` (any withdrawal, from the chain's withdrawal history, at or after the
   assignment and before the target request finished presenting, even if a later revision
   reopened the chain: a failure in the primary row, excluded in a sensitivity row,
-  **whatever the target request showed**); `success` (a
-  `complied` verdict whose request, explicit or the presented chunk containing its
-  compliance time, is `target_request`); `insufficient_observation` (not **every** chunk,
+  **whatever the target request showed**); `success` (the adjudicated repair-target verdict
+  for (chain, j, assignment-time revision, step) is `complied`, so a later revision of the
+  chain cannot undo a repair; diagnostic mode without one falls back to a complied verdict
+  bound to that revision whose request is j); `insufficient_observation` (not **every** chunk,
   per `chunks_per_request`, of the target request was presented before `observation_end`,
   or that count is unknown: excluded, flagged for rerun);
-  `unadjudicated` (blocks the primary report); otherwise `failure`. The offset j−k is
-  reported.
+  `unadjudicated` (primary: no repair-target verdict; blocks the primary report); otherwise
+  `failure`. The offset j−k is reported. **The primary RQ2 row requires every matched point's
+  target to be fully observed.** Otherwise it is REFUSED and the targets to rerun are
+  listed, and the rows that exclude unobserved targets are shown as labelled missing-data
+  sensitivity analyses.
 * **TVC** (action chains): first compliant frame − origin, censored at 15 s.
   **TFMR** (every chain kind): first accepted `speech_onset` − origin, censored at 15 s.
   Primary uses the adjudicated meaningful-response onset.

@@ -41,7 +41,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from live_agent.memory.schema import Record
-from live_agent.memory.store import ErasureReport, MemoryStore, ScopeViolationError
+from live_agent.memory.store import (
+    ErasureInProgressError,
+    ErasureReport,
+    MemoryStore,
+    ScopeViolationError,
+)
 from live_agent.types import Utterance, new_id
 
 log = logging.getLogger("live_agent.memory_bridge")
@@ -90,6 +95,7 @@ class MemoryBridge:
         self._isolated: set[str] = set()  # empty tokens issued with isolated_context=True
         self._seen_scopes: set[str] = set()  # source scopes of everything recalled / ingested here
         self._t0 = self.store.clock()
+        self._deferred: list[Utterance] = []  # turns received while forget_async runs
         self.scope_violations: list[dict[str, Any]] = []
         self.on_erasure: list[Callable[[ErasureReport], Any]] = []
         self.store.register_purge_target("bridge_callbacks", self._erasure_hook)
@@ -114,6 +120,8 @@ class MemoryBridge:
         """Retrieval with record ids and a ``recall_id`` token (see module docstring); the ids
         are also remembered as this session's lineage superset."""
         self._check_mode(mode)
+        if self.store.erasing:  # nothing is recalled while an erasure runs
+            return RecallResult([], self.no_recall())
         res = self.store.retrieve(text, self._mode, user_id=self.user_id if self._mode == "private" else None,
                                   stream_id=self.stream_id, k=self.recall_k)
         out = []
@@ -158,6 +166,9 @@ class MemoryBridge:
     # ------------------------------------------------------------------ writes
 
     def on_user_utterance(self, utt: Utterance) -> None:
+        if self.store.erasing:  # ingested after the erasure finishes (forget_async)
+            self._deferred.append(utt)
+            return
         res = self.store.ingest_user_utterance(utt, user_id=self.user_id, stream_id=self.stream_id,
                                                mode=self._mode)
         for rec in [res.episode, *res.facts, res.generated_event]:
@@ -175,6 +186,8 @@ class MemoryBridge:
         was erased meanwhile.
         """
         self._check_mode(scope)
+        if self.store.erasing:
+            return self._violation(text, "erasure in progress", [])
         if lineage not in (None, "complete", "none"):
             raise ValueError("lineage must be None (unknown), 'complete' or 'none'")
         if recall_id is not None:
@@ -234,6 +247,25 @@ class MemoryBridge:
     def forget(self, term: str) -> ErasureReport:
         report = self.store.forget(term, self.user_id, reason="user_request",
                                    require=self.required_purge_targets)
+        for rid in report.deleted_ids:
+            self._recalled.pop(rid, None)
+            self._ingested.pop(rid, None)
+        return report
+
+    async def forget_async(self, term: str) -> ErasureReport:
+        """:meth:`forget` with the DB work in a worker thread (see ``MemoryStore.forget_async``).
+        While it runs, recall returns nothing, persona lines are not recorded and user turns
+        are deferred; deferred turns are ingested once the erasure has finished."""
+        try:
+            report = await self.store.forget_async(term, self.user_id, reason="user_request",
+                                                   require=self.required_purge_targets)
+        finally:
+            deferred, self._deferred = self._deferred, []
+            for utt in deferred:
+                try:
+                    self.on_user_utterance(utt)
+                except ErasureInProgressError:  # a concurrent erasure: keep it for the next one
+                    self._deferred.append(utt)
         for rid in report.deleted_ids:
             self._recalled.pop(rid, None)
             self._ingested.pop(rid, None)

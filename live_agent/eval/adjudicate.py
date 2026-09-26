@@ -34,6 +34,11 @@ Items:
   accepted only if the union of intervals the rater actually played covers the request
   through the applicable deadline (clipped to the recording end); otherwise the item is
   escalated, not accepted.
+* **repair_target** (RQ2): one per randomised repair assignment whose target request j was
+  presented. Raters judge only j's window, against the request as of the assignment-time
+  revision (its lines and criteria), so a later revision cannot undo a repair. Merge emits a
+  verdict with ``repair_request`` and ``revision``. The item type reveals that a session is
+  an RQ2 session, but not its arm.
 * **sweep**: one per session. The rater watches the whole recording (the logged claims are
   not shown), marks every audible completion claim, assigns its referent request (and step)
   and judges it against what was requested at that moment, citing evidence at or before the
@@ -342,6 +347,19 @@ function sweepItem(it, m){
   });
   m.innerHTML = h;
 }
+function repairItem(it, m){
+  const cur = L[it.id + "/0"] || {};
+  let h = "<div class=mut>" + it.id + " · request window · video " + it.v_origin.toFixed(1) + "–" + it.v_end.toFixed(1) +
+    " s</div>" + it.texts.map((t, i) => "<div>" + (i ? "then: " : "user: ") + t + "</div>").join("") +
+    "<div class=dl>Judge only this window (video " + it.v_origin.toFixed(1) + "–" + it.v_end.toFixed(1) +
+    " s), against the request as stated above.</div><div class=crit>" + crit(it.criteria, it.step) + "</div>";
+  h += ["complied", "not_complied", "unknown"].map(x =>
+    `<button class="${cur.label === x ? "sel" : ""}" onclick="set('${it.id}',0,'label','${x}')">${NAMES[x]}</button>`).join("") +
+    ` <button onclick="now('${it.id}',0,'v_first')">first compliant = now</button>` +
+    ` <span class=mut>${cur.v_first != null ? "first " + cur.v_first + " s " : ""}${
+      cur.v_watched ? "watched " + cur.v_watched.map(x => x[0] + "–" + x[1]).join(", ") + " s" : ""}</span>`;
+  m.innerHTML = h;
+}
 function render(){
   const root = document.getElementById("items"); const keep = {};
   document.querySelectorAll("video").forEach(v => keep[v.id] = v);
@@ -359,7 +377,7 @@ function render(){
       v.addEventListener("seeking", () => { p.last = null; }); }
     d.appendChild(v);
     const m = document.createElement("div"); m.className = "meta";
-    if (it.type === "sweep") sweepItem(it, m); else chainItem(it, m);
+    if (it.type === "sweep") sweepItem(it, m); else if (it.type === "repair_target") repairItem(it, m); else chainItem(it, m);
     d.appendChild(m); root.appendChild(d);
   });
 }
@@ -527,6 +545,36 @@ def prepare(logs: list[Path], out: Path, seed: int = 0, *, suite: Path | None = 
             key[iid] = {"type": "chain", "log": str(log.resolve()), "chain_id": c["chain_id"], "segments": segs,
                         "kind": c["kind"], "n_steps": c["n_steps"], "v_origin": v_origin, "v_len": v_len,
                         "origin": o, "deadline_s": D, "revision": c["revision"], "criteria_sha256": _sha(cr)}
+        # RQ2: one item per randomised repair target, judged against the intent as of the assignment
+        by_id = {c["chain_id"]: c for c in all_chains}
+        for ra in s.of_type("repair_assignment"):
+            c = by_id.get(ra["chain_id"])
+            tgt = ra.get("target_request")
+            if not ra.get("arm_drawn") or tgt is None or c is None or not c["origins"]:
+                continue
+            tc = [e for e in s.of_type("chunk_presented") if int(e["request"]) == int(tgt)]
+            if not tc:
+                continue  # never presented: the point is insufficiently observed (rerun)
+            ta = ra.get("t", ra.get("E"))
+            rev = (int(ra["revision"]) if ra.get("revision") is not None
+                   else max((i for i, o in enumerate(c["origins"]) if ta is None or o <= float(ta)), default=0))
+            rev = min(rev, len(c["anns"]) - 1)
+            cr = _criteria(tasks, s.task_id, c.get("label", c["chain_id"]), rev, c["anns"][rev])
+            said = [utt.get(a["uid"], {}).get("text", "") for a in s.of_type("chain_annotation")
+                    if a["chain_id"] == c["chain_id"] and float(utt.get(a["uid"], {}).get("t_end", 0.0)) <= c["origins"][rev]]
+            v0 = round(session_to_video(segs, min(float(e["t_start"]) for e in tc)), 2)
+            last = max(tc, key=lambda e: float(e["t_start"]))
+            v1 = round(min(session_to_video(segs, float(last["t_start"])) + float(last["t_end"])
+                           - float(last["t_start"]), v_len), 2)
+            iid = new_id()
+            st = ra.get("step")
+            items.append({"id": iid, "type": "repair_target", "video": rel, "kind": cr["kind"],
+                          "texts": [html.escape(t) for t in said], "n_steps": 1, "v_origin": v0, "v_end": v1,
+                          "v_len": round(v_len, 2), "criteria": cr, "step": st})
+            key[iid] = {"type": "repair_target", "log": str(log.resolve()), "chain_id": c["chain_id"],
+                        "segments": segs, "kind": cr["kind"], "n_steps": 1, "v_origin": v0, "v_end": v1,
+                        "v_len": v_len, "revision": rev, "repair_request": int(tgt), "step": st,
+                        "criteria_sha256": _sha(cr)}
         # one audio claim sweep per session: every request the persona could claim about
         refs, krefs = [], {}
         for j, c in enumerate(all_chains):
@@ -665,6 +713,29 @@ def _review_need(info: dict[str, Any], r: dict[str, Any], step: int,
     return need
 
 
+def _repair_to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str, where: str,
+                       step: int = 0) -> dict[str, Any]:
+    """A repair-target label: judged only inside the target request's window. "Done" needs
+    a first-compliant time inside the window; a negative label needs the window watched."""
+    segs = [tuple(x) for x in info["segments"]]
+    v0, v1, v_len = float(info["v_origin"]), float(info["v_end"]), float(info["v_len"])
+    label = lab.get("label")
+    if label not in VERDICT_LABELS:
+        raise LabelError(f"{where}: missing or bad label {label!r}")
+    r: dict[str, Any] = {"label": label, "annotator": annotator}
+    if lab.get("v_first") is not None:
+        r["t_first_compliant"] = video_to_session(segs, _check_v(lab["v_first"], v0, v1, "v_first (target window)", where))
+        r["t_evidence"] = r["t_first_compliant"]
+    elif label == "complied":
+        raise LabelError(f"{where}: 'done' needs v_first")
+    iv = _watched(lab, v_len, where)
+    r["_watched"] = r["v_watched"] = iv
+    r["review_ok"] = label == "complied" or covered(iv, v0, v1)
+    r["t_review_start"] = video_to_session(segs, v0)
+    r["t_review_end"] = video_to_session(segs, max([v0, *(b for _, b in iv)]))
+    return r
+
+
 def _sweep_to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str, where: str,
                       step: int = 0) -> dict[str, Any]:
     segs = [tuple(x) for x in info["segments"]]
@@ -720,7 +791,7 @@ def _load_ratings(path: Path, annotator: str, items: dict[str, Any]) -> dict[str
             errs.append(f"{annotator} {k}: step {step} out of range")
             continue
         try:
-            conv = _sweep_to_session if info["type"] == "sweep" else _to_session
+            conv = {"sweep": _sweep_to_session, "repair_target": _repair_to_session}.get(info["type"], _to_session)
             out[k] = conv(lab, info, annotator, f"{annotator} {k}", step)
         except (LabelError, ValueError) as e:
             errs.append(str(e))
@@ -732,7 +803,7 @@ def _load_ratings(path: Path, annotator: str, items: dict[str, Any]) -> dict[str
         by_item.setdefault(k.split("/")[0], []).append(k)
     for iid, ks in by_item.items():
         info = items[iid]
-        if info["type"] == "sweep":
+        if info["type"] != "chain":
             continue
         segs = [tuple(x) for x in info["segments"]]
         iv = _merge_iv([x for k in ks for x in out[k]["_watched"]])
@@ -980,6 +1051,42 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
                     v["t_evidence"] = x["t_evidence"]
                 emit(log, cl)
                 emit(log, v)
+            continue
+
+        if info["type"] == "repair_target":
+            base = {"chain_id": info["chain_id"], "batch": batch, "item": iid, "repair_request": info["repair_request"],
+                    "revision": info["revision"]}
+            if info.get("step") is not None:
+                base["step"] = info["step"]
+            for role, r in (("primary", a), ("primary", b), ("arbiter", c)):
+                if r is not None:
+                    emit(log, {"type": "rating", **base, "role": role,
+                               **{x: y for x, y in r.items() if y is not None and not x.startswith("_")}})
+            if a is None or b is None:
+                res["missing"].append(k)
+                continue
+            pairs_lab[0].append(a["label"])
+            pairs_lab[1].append(b["label"])
+            agree = a["review_ok"] and b["review_ok"] and a["label"] == b["label"] and (
+                a["label"] != "complied" or _close(a.get("t_first_compliant"), b.get("t_first_compliant"), tol_s))
+            if agree:
+                v, how, who = _combine(a, b), "agreement", [a["annotator"], b["annotator"]]
+                res["agreed"] += 1
+            elif c is not None and c["review_ok"]:
+                v, how, who = dict(c), "arbitration", [a["annotator"], b["annotator"], c["annotator"]]
+                res["arbitrated"] += 1
+            else:
+                short = [r["annotator"] for r in (a, b) if not r["review_ok"]]
+                res["unresolved"][k] = (f"target window not fully watched: {', '.join(short)}" if short
+                                        else "disagreement")
+                continue
+            ev = {"type": "verdict", "source": "adjudicated", **base, "label": v["label"], "annotators": who,
+                  "reconciliation": how, "criteria_sha256": info["criteria_sha256"],
+                  "t_review_start": v["t_review_start"], "t_review_end": v["t_review_end"]}
+            for x in ("t_first_compliant", "t_evidence"):
+                if v.get(x) is not None:
+                    ev[x] = v[x]
+            emit(log, ev)
             continue
 
         is_ms = info["kind"] == "multistep"

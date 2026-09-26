@@ -135,6 +135,7 @@ class Director:
         self.erased_terms: set[str] = set()
         self.interrupted: dict[str, Segment] = {}  # open chain -> its cut (dropped, unverified) segment
         self.awaiting_decision = False
+        self.deferred: list[Segment] = []
 
     @property
     def closed(self) -> bool:
@@ -156,7 +157,12 @@ class Director:
         ``memory_ids``: exactly the memories given to the responder for this decision (lineage)."""
         before = {id(x) for x in self.queue}
         self.awaiting_decision = False
+        deferred, self.deferred = self.deferred, []
         self._apply_decision(utt, d)
+        touched = {(d.get("target_chain") or "")} if d.get("relation") in ("revision", "withdrawal") else set()
+        for seg in reversed(deferred):
+            if seg.chain_id not in touched:
+                self.queue.appendleft(seg)
         for seg in self.queue:
             if id(seg) not in before:
                 seg.memory_ids = list(memory_ids) if memory_ids is not None else None
@@ -231,7 +237,13 @@ class Director:
         if self._declined_request(utt.text, kind, steps):
             kind, relation, refusal = TaskKind.ACTION, "new", "declined by responder (unsupported request)"
         for st in steps:
-            st["line"] = self._guard(st.get("line") or "")
+            original = st.get("line") or ""
+            st["line"] = self._guard(original)
+            if self.closed and st.get("intent") and original and (not st["line"] or _PERFECTIVE.search(st["line"])):
+                # an action-bearing line is spoken *before* the action is verified: only intent
+                # wording is allowed (no perfective 了/啦/过/光/完 markers)
+                self.events.narration_guards.append((st["line"], "好的。"))
+                st["line"] = "好的。"
         target = self.chains.get(d.get("target_chain") or "")
         if d.get("memory_note"):
             self.memory_notes.append((utt.uid, d["memory_note"]))
@@ -403,6 +415,11 @@ class Director:
                 released.append(Segment(chain_id=chain_id, plan_version=self.plan_version,
                                         line="好了。", is_completion_remark=True,
                                         revision=len(chain.revisions), memory_ids=[]))  # template
+        if self.awaiting_decision:
+            # a barge-in is waiting for its decision: hold the release (incl. any "好了。") until
+            # the decision is applied; if it revises/withdraws this chain the remark is dropped
+            self.deferred.extend(released)
+            return True
         for seg in reversed(released):
             self.queue.appendleft(seg)
         return True
@@ -449,6 +466,8 @@ class Director:
         n = 0
         before = len(self.queue)
         self.queue = deque(s for s in self.queue if term not in s.line and term not in s.action_text)
+        for sq in self.queue:
+            sq.correction = sq.correction.replace(term, "[已删除]")
         n += before - len(self.queue)
         for cid, steps in list(self.held.items()):
             for i, segs in list(steps.items()):
@@ -506,12 +525,13 @@ class Director:
             elif seg.chain_id is None:
                 action_phrase = ""  # filler intent not usable: no action
             elif res.decision == Decision.DEGRADE and res.capability:
+                # the spoken line states the capability decision (never the LLM's acceptance)
                 self.events.degradations.append((seg.chain_id, res.reason))
-                line = line or res.capability.degrade_to
+                line = res.capability.degrade_to or "这个动作我现在做不好，我换个方式回应你。"
                 self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
             else:
                 self.events.refusals.append((seg.chain_id, res.reason))
-                line = line or "这个我现在做不到，不过我们可以聊聊别的。"
+                line = "这个我现在做不到，不过我们可以聊聊别的。"
                 self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
         if line and self.closed:
             checks.append(CheckQuestion(qid=new_id("q"), text="台词是否被完整、准确地说出？", kind="speech"))
@@ -573,10 +593,12 @@ def _split_line(line: str, n: int = CHARS_PER_REQUEST) -> list[str]:
 # 「刚才那首歌你喜欢吗」: past-reference markers (刚才/刚刚/已经 ... 了), completive verb
 # complements (…完/…好了/…过了) and explicit completion words. Deliberately broad: a guarded line
 # loses a clause, a missed claim is a false completion.
+_PERFECTIVE = re.compile(r"[了啦过光完]")
+
 _COMPLETION = re.compile(
     r"(刚才|刚刚|方才|已经|完成|搞定|好了|[做喝吃写翻唱讲说画看读挥放拿站坐跳弹]完|"
     r"[做写画]好|[唱讲说看读]过了|把.{1,8}[喝吃写翻挥放拿收摆倒]了|"
-    r"[喝吃写翻挥放拿站坐鞠点摇]了(?![吗呢])|done|finished)")
+    r"[喝吃写翻挥放拿站坐鞠点摇]了(?![吗呢])|[喝吃]光|[了完好过光]啦|done|finished)")
 
 
 def _claims_completion(line: str) -> bool:

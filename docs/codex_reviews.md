@@ -461,3 +461,14 @@ Both verdicts: **not ready**. Every finding was accepted and fixed in the next c
 - **RQ2:** withdrawal history is kept per repair point, the audit matches points to assignments one-to-one, and a target counts as observed only when all its chunks were presented.
 - **Media:** stripped metadata is mandatory for primary batches, and container tags are scanned.
 - **Memory:** confirmation must restate the proposition; public empty-lineage lines are refused when private context was possible; persistent journals are removed; the raw-file check covers the erased text.
+
+### impl1f + impl2f: round 5
+
+Model gpt-6-sol, verified.
+- **impl1f:** 22 of 31 RESOLVED or scoped, 9 PARTIAL, plus 7 new findings (1 blocking: erasure did storage work before stopping playback).
+- **impl2f:** 6 of 10 RESOLVED, 1 PARTIAL, plus 4 new major findings.
+
+Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit (208 tests pass).
+- **Config bug found while fixing #35:** every capability's `degrade_to` line was an acceptance or completion phrase.
+- **#10 (audio input path):** handled by refusing primary E2 decisions for non-browser logs. The TTS-driven client is open.
+- **Pending:** the GPU re-check of the round-5 adapter change (rank-PID gather at worker start-up) is queued; GPUs 3–5 and 7 are held by another user.

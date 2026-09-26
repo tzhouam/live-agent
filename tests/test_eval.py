@@ -37,9 +37,9 @@ SUITE = ROOT / "eval" / "tasks" / "e2_committed.jsonl"
 class Log:
     """Tiny builder for session logs."""
 
-    def __init__(self, condition="A2", task_id="T1", seed=0, sid=None, sweep=True):
+    def __init__(self, condition="A2", task_id="T1", seed=0, sid=None, sweep=True, mode="browser"):
         self.recs = [{"type": "session", "session_id": sid or f"{condition}-{task_id}-{seed}",
-                      "condition": condition, "task_id": task_id, "seed": seed}]
+                      "condition": condition, "task_id": task_id, "seed": seed, "mode": mode}]
         if sweep:  # the session's recording was swept for audible completion claims
             self.recs.append({"type": "claim_sweep", "source": "adjudicated"})
         self.n = 0
@@ -85,6 +85,14 @@ class Log:
         self.recs.append({"type": "completion_claim", "source": "adjudicated", "chain_id": chain, "t": t, **kw})
         self.recs.append({"type": "verdict", "source": "adjudicated", "chain_id": chain, "claim_t": t,
                           "label": label, **kw})
+
+    def rverdict(self, request, label="complied", chain="c1", revision=0, t=None, **kw):
+        """Adjudicated repair-target verdict (RQ2) for target request ``request``."""
+        ev = {"type": "verdict", "source": "adjudicated", "chain_id": chain, "repair_request": request,
+              "revision": revision, "label": label, **kw}
+        if t is not None:
+            ev["t_first_compliant"] = ev["t_evidence"] = t
+        self.recs.append(ev)
 
     def ev(self, **kw):
         self.recs.append(kw)
@@ -333,17 +341,21 @@ def test_fcr_diagnostic_logged_claims():
 
 def test_repair_rate():
     L = Log()
+    L.recs[0]["chunks_per_request"] = 1
     L.new(0.0)
+    L.ev(type="chunk_presented", request=3, chunk=0, t_start=18.0, t_end=23.0)
     L.ev(type="repair_assignment", chain_id="c1", arm="forward_correction",
-         failure_request=1, target_request=3)
+         failure_request=1, target_request=3, arm_drawn=True)
     L.verdict(20.0, request=3)
+    assert L.one().repairs[0]["status"] == "unadjudicated"  # needs its own repair-target verdict
+    L.rverdict(3, "complied", t=20.0)
     c = L.one()
     assert c.repairs[0]["success"] and c.repairs[0]["offset"] == 2
     L2 = Log()
     L2.new(0.0)
     L2.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3)
     L2.verdict(25.0, request=4)
-    assert L2.one().repairs[0]["success"] is False
+    assert L2.one().repairs[0]["status"] == "not_randomized"
 
 
 def test_latencies():

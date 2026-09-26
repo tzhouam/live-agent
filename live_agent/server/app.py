@@ -124,8 +124,11 @@ class WSTransport:
             self._starts[key] = t
         elif msg["type"] == "chunk_end" and self.orchestrator is not None:
             painted = msg.get("painted")
+            t_paint = (self._to_server({"tp": msg["tp_last_paint"]}) if msg.get("tp_last_paint") is not None
+                       and self.clock_offset_s is not None else None)
             self.orchestrator.on_presented(key[0], key[1], self._starts.pop(key, t), t,
-                                           painted=[int(i) for i in painted] if painted is not None else None)
+                                           painted=[int(i) for i in painted] if painted is not None else None,
+                                           t_last_paint=t_paint)
 
 
 def build_app(args: argparse.Namespace) -> FastAPI:
@@ -240,8 +243,20 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
             worker = asyncio.create_task(handle_inputs())
             audio_end = now()
+            done = asyncio.create_task(orch.wait_done())
             while True:
-                msg = await ws.receive()
+                recv = asyncio.create_task(ws.receive())
+                await asyncio.wait({recv, done}, return_when=asyncio.FIRST_COMPLETED)
+                if not recv.done():  # the orchestrator stopped (fatal error or bounded run)
+                    recv.cancel()
+                    err = f"{type(orch.error).__name__}: {orch.error}" if orch.error else "session ended"
+                    try:
+                        await ws.send_text(json.dumps({"type": "error", "error": err}))
+                        await ws.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
+                msg = recv.result()
                 if msg.get("type") == "websocket.disconnect":
                     break
                 if msg.get("bytes") is not None:

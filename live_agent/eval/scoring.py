@@ -273,6 +273,7 @@ class SessionScore:
     sources: tuple[str, ...] = PRIMARY_SOURCES
     observation_end: float | None = None
     claim_sweep: bool = False  # an adjudicated audio claim sweep covers this session
+    mode: str | None = None  # header mode: only "browser" is the end-to-end E2 path
     rq2_problems: list[str] = field(default_factory=list)  # RQ2 audit (RQ2_CONDITIONS only)
 
 
@@ -509,20 +510,26 @@ def _target_completed(tgt: int | None, chunks: dict[tuple[int, int], dict[str, A
 
 def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, Any]],
             chunks: dict[tuple[int, int], dict[str, Any]], obs_end: float | None,
-            n_chunks: int | None = None, matched: bool = False) -> dict[str, Any]:
+            n_chunks: int | None = None, matched: bool = False,
+            rvs: list[dict[str, Any]] | None = None, cfg: ScoringConfig | None = None) -> dict[str, Any]:
     """One RQ2 failure point (preregistered handling), decided in this order:
 
+    * ``not_randomized``: no ``arm_drawn`` (descriptive only; never analysed or adjudicated);
     * ``ineligible``: the chain was not open at the assignment time ``t`` (else ``E``);
     * ``withdrawn``: a withdrawal at or after the assignment and before target request j
       finished presenting (withdrawal history: a later reopening by revision does not undo
       it): a repair failure in the primary analysis, excluded in a sensitivity row,
       whatever the target request showed;
-    * ``success``: a complied verdict (for the assigned step) whose request -- explicit
-      ``request``, else the presented chunk containing its compliance time -- is j;
+    * ``success``: the repair-target verdict for (chain, j, assignment-time revision, step)
+      is ``complied`` -- judged by blinded raters on request j's window against the intent
+      as of the assignment, so a later revision cannot undo it. Diagnostic mode without
+      such a verdict: a complied verdict bound to that revision whose request (explicit,
+      else the presented chunk containing its compliance time) is j;
     * ``insufficient_observation``: not every chunk of j was presented before
-      ``observation_end`` (or ``chunks_per_request`` is unknown): flagged, excluded, rerun;
-    * ``unadjudicated``: the chain lacks adjudication (the primary report refuses);
+      ``observation_end`` (or ``chunks_per_request`` is unknown): flagged, rerun;
+    * ``unadjudicated``: primary mode without a repair-target verdict (the report refuses);
     * ``failure``: otherwise."""
+    cfg = cfg or ScoringConfig()
     tgt = int(r["target_request"]) if r.get("target_request") is not None else None
     step = r.get("step")
 
@@ -531,18 +538,28 @@ def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, A
             return int(v["request"])
         return _request_at(v["_tc"], chunks) if v["_tc"] is not None else None
 
-    ok = tgt is not None and any(
-        v["label"] == "complied" and req(v) == tgt and (step is None or int(v.get("step", 0)) == int(step))
-        for v in vs
-    )
-    done_t = _target_completed(tgt, chunks, n_chunks, obs_end)
     ta = r.get("t", r.get("E"))
     ta = float(ta) if ta is not None else None
+    rev = int(r["revision"]) if r.get("revision") is not None else (ch.revision_at(ta) if ta is not None else None)
+    own = _pick_source([v for v in (rvs or []) if tgt is not None and int(v["repair_request"]) == tgt
+                        and (rev is None or v.get("revision") is None or int(v["revision"]) == rev)
+                        and _step(v.get("step")) == _step(step)], cfg.source_preference)
+    if own:
+        ok = own[-1]["label"] == "complied"
+    else:
+        ok = tgt is not None and any(
+            v["label"] == "complied" and req(v) == tgt and (step is None or int(v.get("step", 0)) == int(step))
+            and (rev is None or v.get("revision") is None or int(v["revision"]) == rev)
+            for v in vs
+        ) if cfg.diagnostic else False
+    done_t = _target_completed(tgt, chunks, n_chunks, obs_end)
     if ta is not None:
         withdrawn = any(w >= ta - _EPS and (done_t is None or w <= done_t + _EPS) for w in ch.withdrawals)
     else:
         withdrawn = ch.withdrawn
-    if ta is not None and not ch.open_at(ta):
+    if not r.get("arm_drawn"):
+        status = "not_randomized"
+    elif ta is not None and not ch.open_at(ta):
         status = "ineligible"
     elif withdrawn:
         status = "withdrawn"
@@ -550,7 +567,7 @@ def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, A
         status = "success"
     elif tgt is not None and done_t is None:
         status = "insufficient_observation"
-    elif outcome == Outcome.UNADJUDICATED:
+    elif not own and not cfg.diagnostic:
         status = "unadjudicated"
     else:
         status = "failure"
@@ -564,6 +581,7 @@ def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, A
         "success": status == "success",
         "arm_drawn": bool(r.get("arm_drawn")),
         "matched": matched,
+        "revision": rev,
     }
 
 
@@ -593,7 +611,8 @@ def rq2_audit(session: SessionLog, chains: dict[str, Chain],
         if v["source"] != "judge" or v["label"] != "not_complied" or v.get("request") is None:
             continue
         ch = chains.get(v.get("chain_id"))
-        t = _vtime(v, chunks)
+        # eligibility is defined at the verdict's evidence time (not the judged chunk's start)
+        t = float(v["t_evidence"]) if v.get("t_evidence") is not None else _vtime(v, chunks)
         if ch is None or t is None or not ch.open_at(t):
             continue
         rev = int(v["revision"]) if v.get("revision") is not None else None
@@ -665,7 +684,9 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
     for e in session.events:
         t = e["type"]
         if t == "verdict":
-            if e.get("claim_id") is not None:
+            if e.get("repair_request") is not None:  # repair-target verdict (RQ2), not chain compliance
+                put(e["chain_id"], "repair_verdict", e)
+            elif e.get("claim_id") is not None:
                 direct.setdefault(("id", e["claim_id"]), []).append(e)
             elif e.get("claim_t") is not None:
                 direct.setdefault(_claim_key(e["chain_id"], e["claim_t"]), []).append(e)
@@ -767,7 +788,9 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
         )
         # RQ2: every randomised failure point, whatever later happens to the chain
         for r in ev.get("repair_assignment", []):
-            rec.repairs.append(_repair(r, ch, rec.outcome, vs, chunks, obs_end, n_chunks, id(r) in rq2_matched))
+            rec.repairs.append(_repair(r, ch, rec.outcome, [dict(v, _tc=_vtime(v, chunks)) for v in all_v],
+                                       chunks, obs_end, n_chunks, id(r) in rq2_matched,
+                                       ev.get("repair_verdict", []), cfg))
         out.append(rec)
 
     # latencies
@@ -804,6 +827,7 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
         observation_end=obs_end,
         claim_sweep=any(e.get("source") == "adjudicated" for e in session.of_type("claim_sweep")),
         rq2_problems=rq2_probs,
+        mode=session.meta.get("mode"),
     )
 
 
@@ -819,8 +843,10 @@ def adjudication_gaps(sessions: list[SessionScore]) -> list[str]:
             if c.n_claims_unadjudicated:
                 gaps.append(f"{s.session_id} {c.chain_id}: {c.n_claims_unadjudicated} completion "
                             "claim(s) without a reconciled claim-level verdict")
-            if any(r["status"] == "unadjudicated" for r in c.repairs):
-                gaps.append(f"{s.session_id} {c.chain_id}: RQ2 failure point on an unadjudicated chain")
+            for r in c.repairs:
+                if r["status"] == "unadjudicated":
+                    gaps.append(f"{s.session_id} {c.chain_id}: RQ2 target request {r['target_request']} "
+                                f"(revision {r['revision']}) has no repair-target verdict")
     return gaps
 
 
@@ -880,6 +906,7 @@ def _repair_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
             "n_insufficient_observation": st.count("insufficient_observation"),
             "n_unadjudicated": st.count("unadjudicated"),
             "n_ineligible": st.count("ineligible"),
+            "n_not_randomized": st.count("not_randomized"),
             "n_excl_withdrawn": n - st.count("withdrawn"),
             "offsets": sorted(r["offset"] for r in rs if r["offset"] is not None)}
 

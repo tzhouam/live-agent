@@ -97,6 +97,8 @@ class Recorder:
 
     def write(self, chunk: Chunk) -> None:
         """Non-blocking: frames are encoded on a background thread (the caller is the playback loop)."""
+        if getattr(self, "disabled", False):
+            return
         import queue
         import threading
 
@@ -133,9 +135,34 @@ class Recorder:
             self._audio.append(np.asarray(chunk.audio, dtype=np.float32))
             self._sr = chunk.sample_rate
 
+    def discard(self) -> bool:
+        """Erasure: stop recording and delete everything written so far; later chunks are not
+        recorded. Returns True when no file of this recording remains."""
+        if hasattr(self, "_q"):
+            self._q.put(None)
+            self._thread.join()
+        if self._proc is not None:
+            try:
+                self._proc.stdin.close()
+            except OSError:
+                pass
+            self._proc.wait()
+        self._audio.clear()
+        self.disabled = True
+        paths = [self.path, self.path.with_suffix(".video.mp4"), self.path.with_suffix(".wav")]
+        for p in paths:
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+        return not any(p.exists() for p in paths)
+
     def close(self) -> None:
         import subprocess
         import wave
+
+        if getattr(self, "disabled", False):
+            return
 
         import numpy as np
 

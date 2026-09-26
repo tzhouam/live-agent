@@ -23,6 +23,7 @@ Invariants enforced here (not by callers):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -134,6 +135,10 @@ class ScopeViolationError(ValueError):
     """A write would widen visibility: e.g. a public record with a private input, a user
     fact in canon, or a record mixing two users' private scopes. Callers must not retry
     the write in a wider scope."""
+
+
+class ErasureInProgressError(RuntimeError):
+    """The store is blocked while :meth:`MemoryStore.forget_async` runs in a worker thread."""
 
 
 class ErasureIncompleteError(RuntimeError):
@@ -321,7 +326,8 @@ class _RateLimiter:
 
 
 class MemoryStore:
-    """Long-term memory for one deployment. Not thread-safe; use one instance per process."""
+    """Long-term memory for one deployment. Not thread-safe; use one instance per process
+    (``forget_async`` is the one operation that runs off-thread, on its own connection)."""
 
     def __init__(
         self,
@@ -342,6 +348,14 @@ class MemoryStore:
         self.path = str(path)
         self.embedder: Embedder = embedder or HashingEmbedder()
         self.extractor: Extractor = extractor or RuleExtractor()
+        # settings a worker connection (forget_async) must share
+        self._worker_config: dict[str, Any] = {
+            "embedder": self.embedder, "extractor": self.extractor, "clock": clock,
+            "echo_threshold": echo_threshold, "erase_sim_threshold": erase_sim_threshold,
+            "echo_lexical_floor": echo_lexical_floor, "viewer_rate": viewer_rate,
+            "viewer_max_len": viewer_max_len, "recency_tau_s": recency_tau_s, "weights": weights}
+        self._erasing = False
+        self._async_lock: asyncio.Lock | None = None
         self.clock = clock
         self.echo_threshold = echo_threshold
         # estimate (HashingEmbedder cosine), not calibrated: see forget()
@@ -437,6 +451,7 @@ class MemoryStore:
         commit: bool = True,
     ) -> Record:
         """Insert one record; computes ``source_scopes`` from its parents and embeds it."""
+        self._guard()
         validate_scope(scope)
         parents = [self._require(pid) for pid in dict.fromkeys(derived_from)]
         source_scopes = union_scopes(scope, parents)
@@ -540,6 +555,7 @@ class MemoryStore:
         return rec
 
     def _load(self, ids: Sequence[str]) -> list[Record]:
+        self._guard()
         if not ids:
             return []
         out: dict[str, Record] = {}
@@ -572,9 +588,11 @@ class MemoryStore:
         )
 
     def _ids(self, sql: str, params: Sequence[Any] = ()) -> list[str]:
+        self._guard()
         return [r[0] for r in self.db.execute(sql, params)]
 
     def _set_status(self, record_id: str, status: Status, **cols: Any) -> None:
+        self._guard()
         sets = ["status = ?"] + [f"{c} = ?" for c in cols]
         try:
             self.db.execute(
@@ -1039,10 +1057,12 @@ class MemoryStore:
     def _confirmation_binds(self, rec: Record, conf: Record, question_id: str | None) -> str | None:
         """Return the rule that binds ``conf`` to ``rec`` or None.
 
-        * "proposition": the turn restates the subject-predicate-value proposition: it
-          contains the value **and** a predicate cue (e.g. 住/live for ``lives_in``) **and** a
-          subject cue (我/I for the user; 妹妹/sister for ``user:<id>/sister``). A bare value
-          mention ("I visited Beijing") does not bind.
+        * "proposition": one clause of the turn (split on ，。；,;！？!? and 但/而/可是/并且/but/
+          and/whereas/although) restates the subject-predicate-value proposition: it contains
+          the value **and** a predicate cue (e.g. 住/live for ``lives_in``) **and** a subject
+          cue (我/I for the user; 妹妹/sister for ``user:<id>/sister``). A bare value mention
+          ("I visited Beijing") or cues spread over clauses ("我住在北京，我妹妹住在上海")
+          do not bind.
         * "answer": ``question_id`` is the persona line that asked about this record (a
           generated event derived from it, same session) and the turn is an affirmative
           answer and the first user turn after it.
@@ -1052,9 +1072,11 @@ class MemoryStore:
             return None
         nv = _norm(rec.value)
         text = conf.text
-        if (len(nv) >= 2 and nv in _norm(text) and _has_cue(text, _predicate_cues(rec.predicate))
-                and _has_cue(text, _subject_cues(rec.subject))):
-            return "proposition"
+        if len(nv) >= 2:
+            for clause in _clauses(text):  # all three cues must come from the same clause
+                if (nv in _norm(clause) and _has_cue(clause, _predicate_cues(rec.predicate))
+                        and _has_cue(clause, _subject_cues(rec.subject))):
+                    return "proposition"
         if question_id:
             q = self._require(question_id)
             if (q.kind == Kind.GENERATED_EVENT and rec.id in q.derived_from
@@ -1180,6 +1202,7 @@ class MemoryStore:
         """Scope-filter first (in SQL, on ``source_scopes``), then rank by
         relevance + recency + importance. Pending / stale / superseded records are excluded
         unless ``include_pending`` (which adds pending only)."""
+        self._guard()
         t0 = time.perf_counter()
         now = self.clock()
         filt, params = self._scope_filter_sql(mode, user_id, stream_id)
@@ -1396,6 +1419,76 @@ class MemoryStore:
         :meth:`ErasureReport.acknowledge`. ``report.complete`` is False until all of them
         acked ok; a hook error never un-deletes anything.
         """
+        hook_names = self._purge_hook_names()
+        report = self._forget_db(target, user_id, reason, regenerate=regenerate,
+                                 require=self._required_names(hook_names, require))
+        return self._run_purge_hooks(report, hook_names)
+
+    @property
+    def erasing(self) -> bool:
+        return self._erasing
+
+    def _guard(self) -> None:
+        if self._erasing:
+            raise ErasureInProgressError("memory store is blocked while an erasure runs")
+
+    async def forget_async(
+        self,
+        target: str | Record,
+        user_id: str,
+        reason: str = "user_request",
+        *,
+        regenerate: bool | Summarizer = True,
+        require: Iterable[str] = (),
+    ) -> ErasureReport:
+        """:meth:`forget` without blocking the event loop (VACUUM / checkpoint can be slow).
+
+        The database work runs in a worker thread on its **own** SQLite connection (opened
+        in that thread, same settings); this store is blocked meanwhile (any read / write
+        raises :class:`ErasureInProgressError`, so nothing can re-derive from data being
+        erased or hold a transaction that would stall VACUUM / the WAL checkpoint).
+        Purge hooks then run on the caller's (event-loop) thread. Same report semantics as
+        :meth:`forget`. Erasures are serialised. An in-memory DB (``:memory:``) cannot be
+        opened from another thread, so it is erased inline.
+        """
+        if self._async_lock is None:
+            self._async_lock = asyncio.Lock()
+        async with self._async_lock:
+            hook_names = self._purge_hook_names()
+            required = self._required_names(hook_names, require)
+            if self.path == ":memory:":
+                report = self._forget_db(target, user_id, reason, regenerate=regenerate, require=required)
+            else:
+                self._guard()
+                self.db.commit()  # this connection holds no transaction while the worker runs
+                mode = self.journal_mode
+                self._erasing = True
+                try:
+                    report = await asyncio.to_thread(self._forget_in_worker, target, user_id, reason,
+                                                     regenerate, required, mode)
+                finally:
+                    self._erasing = False
+            return self._run_purge_hooks(report, hook_names)
+
+    def _forget_in_worker(self, target: str | Record, user_id: str, reason: str,
+                          regenerate: bool | Summarizer, required: list[str], mode: str) -> ErasureReport:
+        worker = MemoryStore(self.path, journal_mode=mode if mode in ("persist", "truncate") else None,
+                             **self._worker_config)
+        try:
+            return worker._forget_db(target, user_id, reason, regenerate=regenerate, require=required)
+        finally:
+            worker.close()
+
+    def _purge_hook_names(self) -> list[tuple[str, Callable[[ErasureReport], Any]]]:
+        return [(_hook_name(h), h) for h in self.erasure_hooks] + list(self.purge_hooks.items())
+
+    def _required_names(self, hook_names: list[tuple[str, Any]], require: Iterable[str]) -> list[str]:
+        return list(dict.fromkeys([n for n, _ in hook_names] + sorted(self.required_purge_targets) + list(require)))
+
+    def _forget_db(self, target: str | Record, user_id: str, reason: str, *,
+                   regenerate: bool | Summarizer, require: Iterable[str]) -> ErasureReport:
+        """The database part of :meth:`forget` (cascade, delete, physical purge, verification,
+        ``memory_db`` ack); purge hooks are run by the caller."""
         priv = private_scope(user_id)
         seeds: list[Record] = []
         terms: set[str] = set()
@@ -1454,9 +1547,7 @@ class MemoryStore:
                 [(hashlib.sha256(i.encode()).hexdigest(), now, reason) for i in ids],
             )
             self._scrub_refs(set(ids))
-        hook_names = [(_hook_name(h), h) for h in self.erasure_hooks] + list(self.purge_hooks.items())
-        required = [MEMORY_DB_TARGET, *dict.fromkeys(
-            [n for n, _ in hook_names] + sorted(self.required_purge_targets) + list(require))]
+        required = [MEMORY_DB_TARGET, *dict.fromkeys(list(require))]
         if review:
             required.append(SIMILARITY_REVIEW_TARGET)
         report = ErasureReport(user_id=user_id, reason=reason, t=now, deleted_ids=ids, kinds=dict(kinds),
@@ -1476,6 +1567,10 @@ class MemoryStore:
         ok = v.ok and not physical
         report.acknowledge(MEMORY_DB_TARGET, ok, "verified (logical + raw file)" if ok
                            else f"residue: {v.hits[:10]}; physical purge: {physical or 'ok'}")
+        return report
+
+    def _run_purge_hooks(self, report: ErasureReport,
+                         hook_names: list[tuple[str, Callable[[ErasureReport], Any]]]) -> ErasureReport:
         for name, hook in hook_names:
             try:
                 ack = hook(report)
@@ -1487,7 +1582,7 @@ class MemoryStore:
                 continue  # the hook acknowledged through the report itself
             report.acknowledge(name, bool(ack), ack if isinstance(ack, str) else ("" if ack else "no ack"))
         if not report.complete:
-            log.error("erasure for %s incomplete; pending purge targets %s", hashlib.sha256(user_id.encode())
+            log.error("erasure for %s incomplete; pending purge targets %s", hashlib.sha256(report.user_id.encode())
                       .hexdigest()[:12], report.pending_targets)
         return report
 
@@ -1762,6 +1857,14 @@ def _subject_cues(subject: str | None) -> tuple[str, ...]:
         return _SELF_CUES
     rel = tail[1].split("/")[0]
     return _REL_CUES.get(rel, (rel,))
+
+
+_CLAUSE_SPLIT = re.compile(r"[，。；,;！？!?、\n]|但是|但|而且|并且|而|可是|不过|\bbut\b|\band\b|\bwhereas\b|\balthough\b|\bwhile\b",
+                           re.IGNORECASE)
+
+
+def _clauses(text: str) -> list[str]:
+    return [c for c in (x.strip() for x in _CLAUSE_SPLIT.split(text)) if c]
 
 
 def _has_cue(text: str, cues: Iterable[str]) -> bool:

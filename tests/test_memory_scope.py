@@ -13,6 +13,7 @@ from live_agent.memory import (
     CANON,
     SIMILARITY_REVIEW_TARGET,
     ClaimType,
+    ErasureInProgressError,
     Kind,
     MemoryStore,
     Provenance,
@@ -559,3 +560,87 @@ def test_raw_check_searches_erased_text_not_only_terms(tmp_path, monkeypatch):
     assert rep.terms == set()
     assert not rep.acks["memory_db"].ok and any("erased text" in h for h in rep.verification.file_hits)
     mem.close()
+
+
+# ---------------------------------------------------------------- round 5
+
+
+def test_confirmation_cues_must_share_one_clause(mem):
+    mem.record_generated_event("你妹妹住在北京吧", "sess", private_scope(U))
+    (e,) = mem.ingest_user_utterance(utt("我妹妹住在北京"), user_id=U).facts
+    assert e.status == Status.PENDING
+    for text in ("我住在北京，我妹妹住在上海", "我住在北京但我妹妹住在上海", "I live in 北京 and my sister lives in Shanghai"):
+        turn = mem.ingest_user_utterance(utt(text), user_id=U).episode
+        with pytest.raises(ValueError):
+            mem.confirm(e.id, turn.id)
+    ok = mem.ingest_user_utterance(utt("对。我妹妹住在北京，没错"), user_id=U).episode
+    assert mem.confirm(e.id, ok.id).status == Status.ACTIVE
+
+
+def _run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+@pytest.mark.parametrize("journal_mode", ["wal", "persist", "delete"])
+def test_forget_async_same_semantics_off_thread(tmp_path, journal_mode):
+    import asyncio
+    import threading
+
+    mem = MemoryStore(tmp_path / "a.sqlite", clock=Clock(), journal_mode=journal_mode)
+    b = bridge(mem, mode="private", required_purge_targets=("generator_state",))
+    b.on_user_utterance(utt("我妹妹住在巴黎"))
+    b.on_user_utterance(utt("我喜欢猫"))
+    hook_threads = []
+
+    def kv(report):
+        hook_threads.append(threading.get_ident())
+        return True
+
+    mem.register_purge_target("kv", kv)
+    real = mem._forget_in_worker
+    seen = {}
+    go = threading.Event()
+
+    def spy(*a):
+        seen["thread"] = threading.get_ident()
+        assert go.wait(10)  # hold the worker until the main thread has probed the blocked state
+        return real(*a)
+
+    mem._forget_in_worker = spy
+
+    async def main():
+        task = asyncio.create_task(b.forget_async("巴黎"))
+        await asyncio.sleep(0)
+        # while the worker runs, the store is blocked and the bridge degrades safely
+        while not seen:
+            await asyncio.sleep(0.001)
+        assert mem.erasing
+        assert b.recall_hits("猫", mode="private") == []
+        assert b.on_persona_line("x", session_id="sess", scope="private") is None
+        b.on_user_utterance(utt("我喜欢狗"))  # deferred, ingested afterwards
+        with pytest.raises(ErasureInProgressError):
+            mem.retrieve("猫", "private", user_id=U)
+        go.set()
+        return await task
+
+    main_thread = threading.get_ident()
+    rep = _run(main())
+    assert seen["thread"] != main_thread and hook_threads == [main_thread]
+    assert rep.acks["memory_db"].ok and rep.acks["kv"].ok and rep.pending_targets == ["generator_state"]
+    assert b.acknowledge_erasure(rep, "generator_state")
+    assert mem.verify_erasure(rep, raw_file=True).ok
+    for p in tmp_path.iterdir():
+        assert "巴黎".encode() not in p.read_bytes(), p
+    texts = {r[0] for r in mem.db.execute("SELECT text FROM records WHERE kind = 'episode'")}
+    assert {"我喜欢猫", "我喜欢狗"} <= texts and b._deferred == []
+    assert not mem.erasing
+    mem.close()
+
+
+def test_forget_async_in_memory_runs_inline(mem):
+    b = bridge(mem, mode="private", required_purge_targets=())
+    b.on_user_utterance(utt("I work at Acme"))
+    rep = _run(b.forget_async("Acme"))
+    assert rep.complete and rep.deleted_ids and mem.verify_erasure(rep).ok

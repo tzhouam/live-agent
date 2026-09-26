@@ -239,3 +239,30 @@ def test_barge_in_cannot_release_the_erasure_gate():
 
     erasure_gate, barge_gate = aio.run(main())
     assert not erasure_gate and barge_gate
+
+
+def test_degraded_or_refused_action_speaks_the_decision_not_the_acceptance():
+    d = make(TEA)
+    say(d, "喝口茶")
+    d.manifest.min_status = Status.CALIBRATED  # drink_tea is only documented -> refused at compile
+    s = d.next_script(0)
+    assert s.transcript != "好，我喝口茶。" and not s.action
+
+
+def test_action_lines_use_intent_wording_only():
+    d = make({"relation": "new", "kind": "action", "steps": [{"intent": "drink_tea", "line": "茶我喝光啦"}]})
+    say(d, "喝口茶")
+    assert d.next_script(0).transcript == "好的。"
+
+
+def test_completion_remark_deferred_while_barge_in_decision_pending():
+    wave = {"relation": "new", "kind": "action", "steps": [{"intent": "wave", "line": "好。"}]}
+    d = make(replies=[TEA, wave])
+    say(d, "喝口茶", "u1")
+    tea = next(iter(d.chains.values()))
+    d.next_script(0)
+    d.on_barge_in()
+    assert d.on_verified(tea.chain_id, "drink_tea", 0, 1.0, revision=0)
+    assert not any(x.is_completion_remark for x in d.queue)  # held while the decision is pending
+    say(d, "挥挥手", "u2", 2.0)
+    assert any(x.is_completion_remark for x in d.queue)  # released after an unrelated decision
