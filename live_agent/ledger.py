@@ -86,8 +86,10 @@ class StateLedger:
                 r.presented = True
         if request_index in self.generated_not_presented:
             self.generated_not_presented.remove(request_index)
+
+    def mark_fully_presented(self, request_index: int) -> None:
         if self.bridge_request is not None and request_index == self.bridge_request:
-            # the bridge has been shown: the divergence is reconciled
+            # the whole bridge request has been shown: the divergence is reconciled
             self.generated_not_presented.clear()
             self.bridge_request = None
 
@@ -132,11 +134,15 @@ class StateLedger:
         names what the viewer did not see (so later video does not silently continue from it)."""
         if not self.generated_not_presented or self.bridge_request is not None:
             return None
-        unseen = [r.action for r in self.unseen() if r.action]
-        if unseen:
-            return ("S1 did not do the following on screen and does not continue it: "
-                    + "; ".join(unseen) + ". S1 calmly returns to her previous posture and looks into the lens")
-        return "S1 calmly returns to her previous posture and looks into the lens"
+        acts = [r.action for r in self.unseen() if r.action]
+        said = [r.transcript for r in self.unseen() if r.transcript]
+        parts = []
+        if acts:
+            parts.append("S1 did not do the following on screen and does not continue it: " + "; ".join(acts))
+        if said:
+            parts.append("S1 did not say the following aloud and does not refer to it: " + " / ".join(said))
+        parts.append("S1 calmly returns to her previous posture and looks into the lens")
+        return ". ".join(parts)
 
     @staticmethod
     def drift_correction(attribute: str, correct: str, wrong: str | None = None) -> str:

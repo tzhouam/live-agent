@@ -261,8 +261,9 @@ class ErasureReport:
     verification: ErasureVerification | None = None
     swept_ids: list[str] = field(default_factory=list)  # derived artifacts deleted by the similarity sweep
     review_ids: list[str] = field(default_factory=list)  # similar user-origin records kept for review
-    # in-memory only (never persisted): embeddings of the erased content, for verification
+    # in-memory only (never persisted): embeddings and texts of the erased content, for verification
     query_vecs: Any = field(default=None, repr=False)
+    erased_texts: list[str] = field(default_factory=list, repr=False)
 
     def acknowledge(self, target: str, ok: bool = True, detail: str = "") -> None:
         if target not in self.required_targets:
@@ -330,7 +331,6 @@ class MemoryStore:
         extractor: Extractor | None = None,
         clock: Callable[[], float] = time.time,
         echo_threshold: float = 0.5,
-        confirm_threshold: float = 0.5,
         erase_sim_threshold: float = 0.5,
         journal_mode: str | None = None,
         echo_lexical_floor: float = 0.4,
@@ -344,8 +344,7 @@ class MemoryStore:
         self.extractor: Extractor = extractor or RuleExtractor()
         self.clock = clock
         self.echo_threshold = echo_threshold
-        # estimates (HashingEmbedder cosine), not calibrated: see confirm() / forget()
-        self.confirm_threshold = confirm_threshold
+        # estimate (HashingEmbedder cosine), not calibrated: see forget()
         self.erase_sim_threshold = erase_sim_threshold
         self.echo_lexical_floor = echo_lexical_floor
         self.viewer_max_len = viewer_max_len
@@ -979,11 +978,10 @@ class MemoryStore:
         conflicting user fact, and is linked into that fact's lineage.
 
         Binding rule (the turn must confirm *this* proposition, see :meth:`_confirmation_binds`):
-        either (a) the turn states it: it contains the record's value, or its embedding
-        cosine to the record's text + value is >= ``confirm_threshold`` (0.5, an estimate);
-        or (b) ``question_id`` names the persona line that asked about it (a generated
-        event derived from the record, same session) and the turn is an affirmative answer
-        and the first user turn after that question.
+        either (a) the turn restates it: value + predicate cue + subject cue; or (b)
+        ``question_id`` names the persona line that asked about it (a generated event
+        derived from the record, same session) and the turn is an affirmative answer and
+        the first user turn after that question.
         """
         rec = self._require(record_id)
         if rec.status != Status.PENDING:
@@ -1000,7 +998,7 @@ class MemoryStore:
             why = self._confirmation_binds(rec, conf, question_id)
             if why is None:
                 raise ValueError("confirming turn is not bound to this proposition "
-                                 "(no value / semantic match and no answered question)")
+                                 "(no subject+predicate+value restatement and no answered question)")
         else:
             raise ValueError("confirmation requires the user's confirming turn (episode id)")
         now = self.clock()
@@ -1039,20 +1037,29 @@ class MemoryStore:
         return self._require(rec.id)
 
     def _confirmation_binds(self, rec: Record, conf: Record, question_id: str | None) -> str | None:
-        """Return the rule that binds ``conf`` to ``rec`` ("value", "semantic", "answer") or None."""
+        """Return the rule that binds ``conf`` to ``rec`` or None.
+
+        * "proposition": the turn restates the subject-predicate-value proposition: it
+          contains the value **and** a predicate cue (e.g. 住/live for ``lives_in``) **and** a
+          subject cue (我/I for the user; 妹妹/sister for ``user:<id>/sister``). A bare value
+          mention ("I visited Beijing") does not bind.
+        * "answer": ``question_id`` is the persona line that asked about this record (a
+          generated event derived from it, same session) and the turn is an affirmative
+          answer and the first user turn after it.
+        Negated turns never bind.
+        """
         if _NEGATION.search(conf.text):
             return None
         nv = _norm(rec.value)
-        if len(nv) >= 2 and nv in _norm(conf.text):
-            return "value"
-        a, b = self.embedder.embed([conf.text, f"{rec.text} {rec.value or ''}"])
-        if float(a @ b) >= self.confirm_threshold:
-            return "semantic"
+        text = conf.text
+        if (len(nv) >= 2 and nv in _norm(text) and _has_cue(text, _predicate_cues(rec.predicate))
+                and _has_cue(text, _subject_cues(rec.subject))):
+            return "proposition"
         if question_id:
             q = self._require(question_id)
             if (q.kind == Kind.GENERATED_EVENT and rec.id in q.derived_from
                     and q.provenance.session_id == conf.provenance.session_id
-                    and q.provenance.timestamp <= conf.provenance.timestamp and _AFFIRM.search(conf.text)):
+                    and q.provenance.timestamp <= conf.provenance.timestamp and _AFFIRM.search(text)):
                 between = self._ids(
                     "SELECT id FROM records WHERE kind = 'episode' AND session_id = ? AND owner = ?"
                     " AND t >= ? AND t < ? AND id != ?",
@@ -1431,6 +1438,9 @@ class MemoryStore:
         for r in doomed:
             kinds[r.kind.value] += 1
         ids = [r.id for r in doomed]
+        # captured before deletion, held in memory only: the raw-file check searches for these bytes
+        erased_texts = sorted({x for r in doomed for x in (r.text, r.value or "", r.subject or "")
+                               if len(x.strip()) >= 2 and not x.startswith("user:")})
         with self.db:
             for i in range(0, len(ids), 500):
                 chunk = ids[i:i + 500]
@@ -1451,7 +1461,8 @@ class MemoryStore:
             required.append(SIMILARITY_REVIEW_TARGET)
         report = ErasureReport(user_id=user_id, reason=reason, t=now, deleted_ids=ids, kinds=dict(kinds),
                                sessions=sessions, terms=terms, required_targets=required,
-                               swept_ids=sorted(swept), review_ids=review, query_vecs=query_vecs)
+                               swept_ids=sorted(swept), review_ids=review, query_vecs=query_vecs,
+                               erased_texts=erased_texts)
         if regenerate and kinds.get(Kind.SUMMARY.value):
             summ = regenerate if not isinstance(regenerate, bool) else None
             for s in sorted(sessions):
@@ -1543,13 +1554,22 @@ class MemoryStore:
     def _physical_purge(self) -> str:
         """Make an erasure physical: commit, VACUUM (rebuilds the file; freed pages were
         already zeroed by ``secure_delete``), then in WAL mode checkpoint and TRUNCATE the
-        WAL so no old frame keeps erased bytes. Returns "" on success, else the problem."""
+        WAL so no old frame keeps erased bytes; in PERSIST / TRUNCATE journal mode switch
+        to DELETE and back so the old rollback journal file is removed. Returns "" on
+        success, else the problem."""
         if self.path == ":memory:":
             return ""
         try:
             self.db.commit()
             self.db.execute("VACUUM")
-            if self.journal_mode == "wal":
+            mode = self.journal_mode
+            if mode in ("persist", "truncate"):
+                self.db.execute("PRAGMA journal_mode = DELETE")
+                self.db.execute(f"PRAGMA journal_mode = {mode}")
+                journal = Path(self.path + "-journal")
+                if journal.exists() and journal.stat().st_size:
+                    return f"rollback journal not removed ({journal.stat().st_size} bytes)"
+            if mode == "wal":
                 busy, _, _ = self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 if busy:
                     return "wal checkpoint busy (another connection holds the WAL)"
@@ -1580,7 +1600,7 @@ class MemoryStore:
     def verify_erasure(self, report: ErasureReport, *, raw_file: bool = False) -> ErasureVerification:
         """Verify one :meth:`forget` result (its deleted ids incl. descendants, and its terms)."""
         return self.verify_erased(report.terms, report.user_id, deleted_ids=report.deleted_ids, raw_file=raw_file,
-                                  query_vecs=report.query_vecs)
+                                  query_vecs=report.query_vecs, erased_texts=report.erased_texts)
 
     def verify_erased(
         self,
@@ -1590,6 +1610,7 @@ class MemoryStore:
         deleted_ids: Iterable[str] = (),
         raw_file: bool = False,
         query_vecs: np.ndarray | None = None,
+        erased_texts: Iterable[str] = (),
     ) -> ErasureVerification:
         """Check that erased data is gone from every table.
 
@@ -1603,7 +1624,10 @@ class MemoryStore:
         * orphan index / embedding / edge rows; with ``raw_file`` (mandatory inside
           :meth:`forget`), the bytes of the DB file and its ``-wal`` / ``-journal``: a hit
           fails unless the term legitimately survives in a foreign / canon record (then it
-          is listed in ``foreign_hits``).
+          is listed in ``foreign_hits``). ``erased_texts`` (the erased records' text / value,
+          captured by :meth:`forget` before deletion) are searched in the files too, so an
+          erasure by record id is verified on its content; a hit fails unless some
+          surviving record still contains that exact text.
 
         * ``query_vecs`` (embeddings of the erased content, kept in memory on the report):
           surviving derived artifacts at or above ``erase_sim_threshold`` fail (``similar``);
@@ -1678,6 +1702,17 @@ class MemoryStore:
                 for name, blob in blobs.items():
                     if any(n in blob for n in needles):
                         (out.foreign_hits if legit else out.file_hits).append(f"file:{name}")
+            for t in dict.fromkeys(erased_texts):
+                if t in terms:
+                    continue
+                needle = t.encode("utf-8")
+                if not any(needle in blob for blob in blobs.values()):
+                    continue
+                survives = self.db.execute(
+                    "SELECT id FROM records WHERE instr(text, ?) > 0 OR instr(coalesce(value, ''), ?) > 0 LIMIT 1",
+                    [t, t]).fetchone()
+                (out.foreign_hits if survives else out.file_hits).append(
+                    f"file(erased text{'; still in ' + survives[0] if survives else ''})")
         return out
 
     def _record_has_term(self, hit: str, term: str) -> bool:
@@ -1692,6 +1727,52 @@ class MemoryStore:
 _AFFIRM = re.compile(r"^\W*(yes|yeah|yep|right|correct|exactly|sure|that'?s right|对|是的|是啊|是呀|没错|对的|嗯|确实|正确|当然)",
                      re.IGNORECASE)
 _NEGATION = re.compile(r"^\W*(no\b|nope|not\b|不|没有|别)|不对|不是|wrong|incorrect|isn'?t|don'?t", re.IGNORECASE)
+
+
+_PRED_CUES: dict[str, tuple[str, ...]] = {
+    "lives_in": ("住", "搬", "live", "lives", "living", "moved", "reside"),
+    "works_at": ("工作", "上班", "work", "works", "job"),
+    "favorite": ("最爱", "最喜欢", "favorite", "favourite"),
+    "likes": ("喜欢", "爱", "like", "likes", "love", "enjoy"),
+    "speaks": ("说", "讲", "会", "speak", "speaks"),
+    "name": ("叫", "名字", "name", "called"),
+    "age": ("岁", "age", "years old"),
+    "birthday": ("生日", "birthday", "born"),
+}
+_REL_CUES: dict[str, tuple[str, ...]] = {
+    "sister": ("妹妹", "姐姐", "姐妹", "sister", "sis"), "brother": ("哥哥", "弟弟", "brother"),
+    "mother": ("妈妈", "母亲", "妈", "mother", "mom", "mum"), "father": ("爸爸", "父亲", "爸", "father", "dad"),
+    "wife": ("老婆", "妻子", "wife"), "husband": ("老公", "丈夫", "husband"), "son": ("儿子", "son"),
+    "daughter": ("女儿", "daughter"), "friend": ("朋友", "friend"),
+    "boyfriend": ("男朋友", "boyfriend"), "girlfriend": ("女朋友", "girlfriend"),
+}
+_SELF_CUES = ("我", "i", "i'm", "me", "my", "mine")
+
+
+def _predicate_cues(predicate: str | None) -> tuple[str, ...]:
+    p = predicate or ""
+    key = "favorite" if p.startswith("favorite") else p
+    return _PRED_CUES.get(key, tuple(w for w in p.split("_") if len(w) >= 2))
+
+
+def _subject_cues(subject: str | None) -> tuple[str, ...]:
+    """``user:<id>`` -> self cues; ``user:<id>/sister`` -> relation cues."""
+    tail = (subject or "").split("/", 1)
+    if len(tail) == 1:
+        return _SELF_CUES
+    rel = tail[1].split("/")[0]
+    return _REL_CUES.get(rel, (rel,))
+
+
+def _has_cue(text: str, cues: Iterable[str]) -> bool:
+    low = text.lower()
+    for c in cues:
+        if c.isascii():
+            if re.search(rf"(?<![a-z']){re.escape(c)}(?![a-z])", low):
+                return True
+        elif c in text:
+            return True
+    return False
 
 
 def _norm(v: str | None) -> str:

@@ -529,7 +529,8 @@ def test_report_end_to_end(tmp_path):
                     L.verdict(None, label="not_complied")  # reviewed, never done: no time
                 L.ev(type="completion_claim", chain_id="c1", t=14.5)
                 scores.append(L.score())
-    md = build_report(scores, pairs=[("A2", "A1")], n_boot=500)
+    expected = {(f"T{t}", s, "c1") for t in range(12) for s in range(3)}  # registered pair set
+    md = build_report(scores, pairs=[("A2", "A1")], n_boot=500, expected=expected)
     assert "## Paired comparisons" in md and "| A2 - A1 | 36 |" in md
     assert "TVC (action chains)" in md and "FCR" in md
     assert "nan" not in md.lower().replace("n/a", "")

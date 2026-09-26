@@ -19,9 +19,12 @@
 Blinding: items are shuffled across sessions and conditions, carry random ids, and show only
 the user's instruction(s), the preregistered success criteria (checks / content rubric /
 per-step criteria, frozen from the task suite), the absolute deadlines, and the video. Media
-are delivered as independent files under random names (metadata stripped with ffmpeg when
-available; otherwise a hard link or copy, with a warning), never as symlinks, and the batch
-is scanned for condition names, session ids, task ids and source paths before hand-off.
+are delivered as independent files under random names, never as symlinks, with container
+metadata and chapters stripped by ffmpeg; for a primary batch stripping must succeed
+(``--allow-unstripped`` makes a DIAGNOSTIC batch whose merged events carry
+``diagnostic_batch`` and never enter primary scoring). Before hand-off the batch is scanned
+for condition names, session ids, task ids and source paths: file names, file bytes, and
+every container/stream/chapter tag (ffprobe).
 
 Items:
 * **chain**: one per effective chain (final intent; per step for multistep). Every chain
@@ -384,10 +387,11 @@ def _ffmpeg() -> str | None:
     return shutil.which("ffmpeg") or ("/usr/bin/ffmpeg" if Path("/usr/bin/ffmpeg").exists() else None)
 
 
-def deliver_media(src: Path, dst: Path) -> str | None:
-    """Put an independent file at dst (never a symlink). With ffmpeg: a stream copy with
-    container metadata and chapters stripped. Otherwise (or if ffmpeg fails): a hard link,
-    else a plain copy, and the returned warning says metadata was not stripped."""
+def deliver_media(src: Path, dst: Path, allow_unstripped: bool = False) -> str | None:
+    """Put an independent file at dst (never a symlink): an ffmpeg stream copy with
+    container metadata and chapters stripped. For a primary batch stripping must succeed
+    (``BlindingError`` otherwise). With ``allow_unstripped`` (diagnostic batches only) a
+    failed strip falls back to a hard link or plain copy and the returned warning says so."""
     ff = _ffmpeg()
     if ff:
         r = subprocess.run([ff, "-v", "error", "-y", "-i", str(src), "-map", "0", "-map_metadata", "-1",
@@ -396,15 +400,40 @@ def deliver_media(src: Path, dst: Path) -> str | None:
         if r.returncode == 0 and dst.exists() and dst.stat().st_size > 0:
             return None
         dst.unlink(missing_ok=True)
+    why = "ffmpeg failed" if ff else "no ffmpeg"
+    if not allow_unstripped:
+        raise BlindingError(f"{src.name}: container metadata could not be stripped ({why}); a primary "
+                            "adjudication batch needs stripped media (--allow-unstripped only for a DIAGNOSTIC batch)")
     try:
         os.link(src, dst)
         how = "hard link"
     except OSError:
         shutil.copyfile(src, dst)
         how = "copy"
-    msg = f"{dst.name}: delivered as a {how}; MP4 metadata NOT stripped ({'ffmpeg failed' if ff else 'no ffmpeg'})"
+    msg = f"{dst.name}: delivered as a {how}; MP4 metadata NOT stripped ({why}); DIAGNOSTIC batch"
     warnings.warn(msg, stacklevel=2)
     return msg
+
+
+def _ffprobe() -> str | None:
+    return shutil.which("ffprobe") or ("/usr/bin/ffprobe" if Path("/usr/bin/ffprobe").exists() else None)
+
+
+def container_metadata(path: Path) -> list[str] | None:
+    """Every container / stream / chapter tag value of a media file (ffprobe), or None if
+    ffprobe is unavailable or cannot read it."""
+    fp = _ffprobe()
+    if not fp:
+        return None
+    r = subprocess.run([fp, "-v", "error", "-show_format", "-show_streams", "-show_chapters", "-of", "json",
+                        str(path)], capture_output=True, check=False, text=True)
+    if r.returncode != 0:
+        return None
+    d = json.loads(r.stdout or "{}")
+    vals = []
+    for obj in [d.get("format", {}), *d.get("streams", []), *d.get("chapters", [])]:
+        vals += [f"{k}={v}" for k, v in (obj.get("tags") or {}).items()]
+    return vals
 
 
 def check_blinded(batch_dir: Path, tokens: Sequence[str], conditions: Sequence[str]) -> None:
@@ -416,6 +445,11 @@ def check_blinded(batch_dir: Path, tokens: Sequence[str], conditions: Sequence[s
     cond_re = [re.compile(r"(?<![\w-])" + re.escape(c) + r"(?![\w-])") for c in sorted(set(conditions)) if c]
     problems = []
     for f in sorted(b.rglob("*")):
+        if f.suffix.lower() in (".mp4", ".m4v", ".mov", ".webm", ".mkv") and f.is_file() and not f.is_symlink():
+            meta = container_metadata(f)  # tag values: condition names are searched here too
+            for m in meta or []:
+                if any(t in m for t in toks) or any(r.search(m) for r in cond_re):
+                    problems.append(f"{f.relative_to(b)}: container metadata {m!r}")
         rel = str(f.relative_to(b))
         if f.is_symlink():
             problems.append(f"{rel}: symlink")
@@ -441,7 +475,7 @@ def check_blinded(batch_dir: Path, tokens: Sequence[str], conditions: Sequence[s
 
 
 def prepare(logs: list[Path], out: Path, seed: int = 0, *, suite: Path | None = DEFAULT_SUITE,
-            key_path: Path | None = None) -> Path:
+            key_path: Path | None = None, allow_unstripped: bool = False) -> Path:
     key_path = Path(key_path) if key_path else default_key_path(out)
     _check_key_outside(out, key_path)
     tasks = {t.task_id: t for t in load_suite(suite)} if suite else {}
@@ -469,7 +503,7 @@ def prepare(logs: list[Path], out: Path, seed: int = 0, *, suite: Path | None = 
         v_len = recorded_length(segs)
         media = out / "media" / f"{secrets.token_hex(4)}.mp4"  # random name: the file name would unblind
         media.parent.mkdir(exist_ok=True)
-        w = deliver_media(video, media)
+        w = deliver_media(video, media, allow_unstripped)
         if w:
             media_warnings.append(w)
         rel = os.path.relpath(media, out)
@@ -521,8 +555,9 @@ def prepare(logs: list[Path], out: Path, seed: int = 0, *, suite: Path | None = 
     (out / "index.html").write_text(page, encoding="utf-8")
     check_blinded(out, tokens, conditions)
     key_path.parent.mkdir(parents=True, exist_ok=True)
-    key_path.write_text(json.dumps({"batch": batch, "items": key, "media_warnings": media_warnings}, indent=1),
-                        encoding="utf-8")
+    key_path.write_text(json.dumps({"batch": batch, "items": key, "media_warnings": media_warnings,
+                                    "diagnostic_batch": bool(media_warnings),
+                                    "metadata_scanned": _ffprobe() is not None}, indent=1), encoding="utf-8")
     return out / "index.html"
 
 
@@ -897,7 +932,11 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
     pairs_lab: tuple[list[str], list[str]] = ([], [])
     keys = sorted({f"{i}/{s}" for i, inf in items.items() for s in range(int(inf["n_steps"]))})
 
+    diag = bool(key.get("diagnostic_batch"))
+
     def emit(log: str, ev: dict[str, Any]) -> None:
+        if diag:  # media delivered unstripped: primary scoring ignores these events
+            ev["diagnostic_batch"] = True
         per_log.setdefault(log, []).append(ev)
 
     for k in keys:
@@ -1006,6 +1045,9 @@ def main() -> None:
     a.add_argument("--key", type=Path, default=None, help="key path (default <out>.key/key.json)")
     a.add_argument("--suite", type=Path, default=DEFAULT_SUITE)
     a.add_argument("--seed", type=int, default=0)
+    a.add_argument("--allow-unstripped", action="store_true",
+                   help="DIAGNOSTIC batch: deliver media even if metadata stripping fails; its labels never "
+                        "enter primary scoring")
     b = sub.add_parser("merge")
     b.add_argument("batch_dir", type=Path)
     b.add_argument("ratings", nargs=2, type=_rating_arg, help="two LABELS.json:ANNOTATOR")
@@ -1016,7 +1058,8 @@ def main() -> None:
                    help="atomically replace this batch's previously merged adjudication")
     args = p.parse_args()
     if args.cmd == "prepare":
-        print(prepare(args.logs, args.out, args.seed, suite=args.suite, key_path=args.key))
+        print(prepare(args.logs, args.out, args.seed, suite=args.suite, key_path=args.key,
+                      allow_unstripped=args.allow_unstripped))
     else:
         print(json.dumps(merge(args.batch_dir, args.ratings, arbiter=args.arbiter, key_path=args.key,
                                tol_s=args.tol, replace=args.replace), indent=1))

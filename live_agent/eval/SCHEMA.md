@@ -24,7 +24,8 @@ headed DIAGNOSTIC.
  "mode": "simulation|generator_path|browser", "generator_seed": 123, "backbone": "taomate-h3"}
 ```
 Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must be
-`simulation`, `generator_path` or `browser`. Other keys are free-form metadata.
+`simulation`, `generator_path` or `browser`. `chunks_per_request` (int) is needed to decide
+whether an RQ2 target request was fully observed. Other keys are free-form metadata.
 
 ## Events
 
@@ -44,7 +45,7 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
 | `speech_onset` | `t`, `on_topic` (`true`/`false`/`null`) | `source` (`script` (default) / `adjudicated` / `human`), `chain_id` (**required for the onset to count toward a chain**), `request` | runner (`script`) / adjudication tool (`adjudicated`) |
 | `visual_ack` | `t`, `uid` (the utterance acknowledged) | `kind` (`reaction_clip`/`freeze`) | client |
 | `playback_stop` | `t` | `reason` | client |
-| `repair_assignment` | `chain_id`, `arm` (`forward_correction`/`repeat`), `failure_request` (k), `target_request` (j = earliest request with P_j ≥ E + C) | `t` (assignment time), `arm_drawn` (bool: the arm was randomised), `step`, `E`, `C`, `actual_request` | orchestrator (RQ2: arm randomised per eligible failure point, condition `A2-rq2`) |
+| `repair_assignment` | `chain_id`, `arm` (`forward_correction`/`repeat`), `failure_request` (k), `target_request` (j = earliest request with P_j ≥ E + C) | `t` (assignment time), `revision` (of the chain's intent at the failure), `arm_drawn` (bool: the arm was randomised), `step`, `E`, `C`, `actual_request` | orchestrator (RQ2: arm randomised per eligible failure point, condition `A2-rq2`) |
 
 ## Contract the runner must satisfy
 
@@ -64,9 +65,12 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
   the verdict's `revision` equal to the one then in force), whose `earliest_correctable`
   request j exists and started presenting before `observation_end`. So judge
   `not_complied` verdicts must carry `request` and `earliest_correctable` (null if none).
-  In `A2-rq2` sessions every eligible point needs an assignment with the same chain and
-  `failure_request`, and every assignment needs `arm_drawn: true`. A session that fails
-  this audit is excluded from RQ2 and listed.
+  In `A2-rq2` sessions eligible points and assignments must match **one-to-one** on
+  (chain, revision, step, `failure_request`, `target_request` = `earliest_correctable`).
+  An eligible point without an assignment, an assignment matching no eligible point, a
+  duplicate assignment, a missing `revision`, or `arm_drawn` not true is an audit failure;
+  such a session is excluded from RQ2 and listed. The arm comparison uses only matched,
+  randomised points.
 * **`speech_onset`** from the runner has `source: "script"` and `on_topic: null`: the line
   was scripted for that chain and `t` is the energy-based audio onset in the presented
   chunk. Nobody has verified it is on topic, so it **never** passes the content onset
@@ -101,10 +105,15 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
   the batch directory; the key (`item → log, chain, condition`) goes to
   `<batch>.key/key.json` or `--key`, **never inside the batch**. Media are independent
   files under random names: a stream copy with container metadata and chapters stripped
-  by ffmpeg, else a hard link or plain copy with a warning (`media_warnings` in the key);
-  never a symlink. `check_blinded` then scans every delivered file name and byte for
-  session ids, task ids, log names and source paths, and text files and names for
-  condition names, and refuses the batch on any hit.
+  by ffmpeg, never a symlink. For a primary batch stripping must succeed; `prepare
+  --allow-unstripped` makes a **DIAGNOSTIC** batch (hard link or copy, `media_warnings`
+  and `diagnostic_batch` in the key) whose merged events all carry `diagnostic_batch:
+  true` and are dropped by primary scoring. `check_blinded` then refuses the batch if any
+  of these contains a session id, task id, log name or source path:
+  * any delivered file name or file byte;
+  * any container, stream or chapter tag read with ffprobe, which is also checked for
+    condition names;
+  * text files and file names, which are also checked for condition names.
 * **Request items**: one per effective chain (final intent; per step for multistep).
   Each shows the preregistered criteria frozen from the task suite
   (`eval/tasks/e2_committed.jsonl`: action `checks`, content `rubric` and duration, each
@@ -214,12 +223,15 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
   `repair_assignment` each), analysed by assigned arm, including those on chains later
   withdrawn or excluded from the chain analysis. Only `arm_drawn` points in sessions
   passing the RQ2 audit enter the comparison. Status is decided in this order:
-  `ineligible` (the chain was already withdrawn at assignment time `t`: excluded);
-  `withdrawn` (withdrawn at or after assignment: a failure in the primary row, excluded
-  in a sensitivity row, **whatever the target request later showed**); `success` (a
+  `ineligible` (the chain was not open at assignment time `t`: excluded);
+  `withdrawn` (any withdrawal, from the chain's withdrawal history, at or after the
+  assignment and before the target request finished presenting, even if a later revision
+  reopened the chain: a failure in the primary row, excluded in a sensitivity row,
+  **whatever the target request showed**); `success` (a
   `complied` verdict whose request, explicit or the presented chunk containing its
-  compliance time, is `target_request`); `insufficient_observation` (the target
-  request was not fully presented before `observation_end`: excluded, flagged for rerun);
+  compliance time, is `target_request`); `insufficient_observation` (not **every** chunk,
+  per `chunks_per_request`, of the target request was presented before `observation_end`,
+  or that count is unknown: excluded, flagged for rerun);
   `unadjudicated` (blocks the primary report); otherwise `failure`. The offset j−k is
   reported.
 * **TVC** (action chains): first compliant frame − origin, censored at 15 s.
@@ -236,10 +248,16 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
   over the preregistered family size (a member not run counts as p = 1), with a decision
   column and a Bonferroni simultaneous CI. `--compare` only selects displayed rows. Pairs
   outside the families are exploratory: unadjusted, no decision.
-  * **Complete pair set:** every (task, seed, chain label) must be present in both
-    conditions, and duplicate keys are always an error. Otherwise the report exits 2
-    and lists the missing keys. `--allow-incomplete-pairs` instead shows that comparison
-    as EXPLORATORY, with no p-value and no decision.
+  * **Registered pair set:** `--suite` + `--expected-seeds` (+ optional
+    `--expected-tasks`) define it: every (task, seed, chain label) whose final intent in
+    the suite is not withdrawn. Both conditions must contain exactly that set. The report
+    exits 2 and lists the keys when:
+    * no set is registered;
+    * a key is missing from either condition, even from both;
+    * a key lies outside the set.
+
+    Duplicate keys are always an error. `--allow-incomplete-pairs` instead shows that
+    comparison as EXPLORATORY, with no p-value and no decision.
   * **Minimum clusters:** below `MIN_TASKS` = 10 independent task clusters (*proposed
     target*), the p-value and decision are suppressed ("no inference").
   * Suppressed family members count as p = 1 in Holm.

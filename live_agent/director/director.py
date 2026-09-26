@@ -134,6 +134,7 @@ class Director:
         self.memory_notes: list[tuple[str, str]] = []  # (utterance id, note)
         self.erased_terms: set[str] = set()
         self.interrupted: dict[str, Segment] = {}  # open chain -> its cut (dropped, unverified) segment
+        self.awaiting_decision = False
 
     @property
     def closed(self) -> bool:
@@ -154,6 +155,7 @@ class Director:
         """Apply a decision to the plan (the caller may first discard a superseded decision).
         ``memory_ids``: exactly the memories given to the responder for this decision (lineage)."""
         before = {id(x) for x in self.queue}
+        self.awaiting_decision = False
         self._apply_decision(utt, d)
         for seg in self.queue:
             if id(seg) not in before:
@@ -372,6 +374,7 @@ class Director:
         self.plan_version += 1
         self.queue = deque(s for s in self.queue if s.chain_id is not None and not s.is_completion_remark)
         self.listening = True
+        self.awaiting_decision = True  # old-plan segments stay ineligible until the next decision
 
     # ------------------------------------------------------------ verdict feedback
     def on_verified(self, chain_id: str, intent: str, request_index: int, t: float, *,
@@ -407,14 +410,17 @@ class Director:
     def schedule_correction(self, request_index: int, sentence: str) -> None:
         self.pending_corrections.setdefault(request_index, []).append(sentence)
 
-    def on_request_presented(self, script: BlockScript) -> None:
+    def on_request_presented(self, script: BlockScript, done: set[int] | None = None) -> None:
         """Open loop (A1): no QC closes a chain, so a chain is closed as PRESENTED (unverified)
-        once its last planned segment has been presented. Lifecycle only, not compliance."""
+        once no segment is pending and every request it was locked into has been fully presented
+        (or dropped). Lifecycle only, not compliance."""
         if self.closed:
             return
+        done = done or set()
         for cid in script.chain_ids:
             c = self.chains.get(cid)
-            if c is not None and c.status == ChainStatus.OPEN and not self._unexecuted(cid):
+            if c is not None and c.status == ChainStatus.OPEN and not self._unexecuted(cid) \
+                    and all(r in done for r in c.requests):
                 c.status = ChainStatus.PRESENTED
 
     def queue_retry(self, chain_id: str, intent: str, *, correction: str, failed_request: int,
@@ -458,6 +464,8 @@ class Director:
 
     # ------------------------------------------------------------ script building
     def _pop_segment(self, request_index: int) -> Segment | None:
+        if self.awaiting_decision:
+            return None  # after a barge-in only a listening filler until the new decision lands
         # A repair reserved for exactly this request takes the slot before anything else.
         for i, seg in enumerate(self.queue):
             if seg.retry_of is not None and seg.min_request == request_index:

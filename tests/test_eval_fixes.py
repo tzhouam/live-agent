@@ -7,6 +7,8 @@ preregistered Holm families, RQ2 per failure point, blinded media, immutable bat
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +21,7 @@ from live_agent.eval.adjudicate import (
     LabelError,
     MergeConflictError,
     check_blinded,
+    container_metadata,
     covered,
     default_key_path,
     merge,
@@ -38,6 +41,7 @@ from live_agent.eval.scoring import (
 )
 
 DIAG = ScoringConfig.diagnostic_config()
+SUITE = Path(__file__).resolve().parents[1] / "eval" / "tasks" / "e2_committed.jsonl"
 
 
 # --------------------------------------------------------------------------- finding 1
@@ -355,7 +359,7 @@ def test_families_are_fixed_and_compare_only_selects_display():
     by = {}
     for s in ss:
         by.setdefault(s.condition, []).append(s)
-    md = "\n".join(compare(by, n_boot=300))
+    md = "\n".join(compare(by, n_boot=300, expected=_exp(12, 3)))
     assert "Family: primary (H1a)** (m = 1; tested: 1)" in md
     assert "Family: secondary (H1c ablations)** (m = 4; tested: 1)" in md
     row = next(x for x in md.splitlines() if x.startswith("| A2 - A2-noqc |"))
@@ -363,7 +367,7 @@ def test_families_are_fixed_and_compare_only_selects_display():
     p, p_adj = float(cells[6]), float(cells[7])
     assert p_adj == pytest.approx(min(1.0, 4 * p))  # family size 4 even though 1 was run
     assert "reject H0" in "\n".join(x for x in md.splitlines() if x.startswith("| A2 - A1 |"))
-    md2 = "\n".join(compare(by, display=[("A2", "A2-noqc"), ("A2-noqc", "A1")], n_boot=300))
+    md2 = "\n".join(compare(by, display=[("A2", "A2-noqc"), ("A2-noqc", "A1")], n_boot=300, expected=_exp(12, 3)))
     assert "| A2 - A1 |" not in md2 and row in md2
     assert "Exploratory (not preregistered" in md2 and "| A2-noqc - A1 |" in md2
 
@@ -379,21 +383,34 @@ def test_fcr_and_claim_coverage_get_task_clustered_cis():
 # --------------------------------------------------------------------------- NEW-8: RQ2
 
 
+def _judge_fail(L, chain, k, j, t, rev=0):
+    L.ev(type="verdict", source="judge", label="not_complied", chain_id=chain, request=k, t_evidence=t,
+         revision=rev, earliest_correctable=j)
+
+
 def test_repair_every_failure_point_with_preregistered_handling():
     L = Log("A2-rq2", "T1", 0)
+    L.recs[0]["chunks_per_request"] = 2
     L.new(0.0, chain="c1")
-    L.ev(type="chunk_presented", request=3, chunk=0, t_start=18.0, t_end=23.0)
+    for k, t0 in ((1, 5.0), (3, 18.0)):
+        L.ev(type="chunk_presented", request=k, chunk=0, t_start=t0, t_end=t0 + 2.5)
+        L.ev(type="chunk_presented", request=k, chunk=1, t_start=t0 + 2.5, t_end=t0 + 5.0)
+    L.ev(type="chunk_presented", request=9, chunk=0, t_start=37.0, t_end=39.5)  # chunk 1 never presented
     L.ev(type="observation_end", t=40.0)
+    _judge_fail(L, "c1", 1, 3, 9.0)
+    _judge_fail(L, "c1", 2, 9, 12.0)
     L.ev(type="repair_assignment", chain_id="c1", arm="forward_correction", failure_request=1, target_request=3,
-         arm_drawn=True, t=12.0)
+         arm_drawn=True, t=12.0, revision=0)
     L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=2, target_request=9,
-         arm_drawn=True, t=13.0)
+         arm_drawn=True, t=13.0, revision=0)
     L.verdict(19.0, chain="c1")  # no request field -> mapped through the presented chunk
     L.new(1.0, chain="c2")
-    L.withdraw(20.0, chain="c2")
+    _judge_fail(L, "c2", 1, 3, 9.5)
     L.ev(type="repair_assignment", chain_id="c2", arm="repeat", failure_request=1, target_request=3,
-         arm_drawn=True, t=12.0)
+         arm_drawn=True, t=12.0, revision=0)
+    L.withdraw(20.0, chain="c2")  # before request 3 finished presenting (23 s)
     sc = L.score()
+    assert sc.rq2_problems == []
     c1 = next(c for c in sc.chains if c.chain_id == "c1")
     assert [r["status"] for r in c1.repairs] == ["success", "insufficient_observation"]
     c2 = next(c for c in sc.chains if c.chain_id == "c2")
@@ -408,6 +425,21 @@ def test_repair_every_failure_point_with_preregistered_handling():
 
 
 # --------------------------------------------------------------------------- adjudication tool
+
+
+FFMPEG = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+
+
+def _tiny_mp4(path: Path, **meta: str) -> Path:
+    """A real (tiny) MP4 so that metadata stripping can run; optional container tags."""
+    tags = [x for k, v in meta.items() for x in ("-metadata", f"{k}={v}")]
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.2",
+                    "-c:v", "mpeg4", *tags, str(path)], check=True)
+    return path
+
+
+def _exp(tasks: int, seeds: int, label: str = "c1") -> set[tuple]:
+    return {(f"T{t}", s, label) for t in range(tasks) for s in range(seeds)}
 
 
 def _session_file(tmp_path: Path, name: str, task_id: str, utts: list[tuple], extra=(), cond="A2",
@@ -429,7 +461,7 @@ def _session_file(tmp_path: Path, name: str, task_id: str, utts: list[tuple], ex
     recs.append({"type": "observation_end", "t": length})
     recs += list(extra)
     p = _write_log(tmp_path / f"{name}.jsonl", recs)
-    p.with_suffix(".mp4").write_bytes(b"\0not-a-real-mp4")
+    _tiny_mp4(p.with_suffix(".mp4"))
     return p
 
 
@@ -760,8 +792,8 @@ def _paired_sessions(conds, tasks, seeds=2, drop=()):
 def test_incomplete_pair_set_blocks_decision_unless_allowed(tmp_path, capsys):
     ss = _paired_sessions(("A1", "A2"), 12, drop={("A1", 3, 1)})
     with pytest.raises(PairingError, match="missing in A1"):
-        build_report(ss, n_boot=100)
-    md = build_report(ss, n_boot=100, allow_incomplete_pairs=True)
+        build_report(ss, n_boot=100, expected=_exp(12, 2))
+    md = build_report(ss, n_boot=100, allow_incomplete_pairs=True, expected=_exp(12, 2))
     row = next(x for x in md.splitlines() if x.startswith("| A2 - A1 |"))
     assert "EXPLORATORY: 1 pair key(s) missing" in row and "reject" not in row
     # CLI: exit 2
@@ -781,16 +813,16 @@ def test_duplicate_pair_keys_rejected_even_when_incomplete_allowed():
     ss = _paired_sessions(("A1", "A2"), 12)
     ss.append(ss[0])  # the same A1 session twice
     with pytest.raises(PairingError, match="duplicate"):
-        build_report(ss, n_boot=100, allow_incomplete_pairs=True)
+        build_report(ss, n_boot=100, allow_incomplete_pairs=True, expected=_exp(12, 2))
 
 
 def test_no_inference_below_min_tasks():
     assert MIN_TASKS == 10
-    md = build_report(_paired_sessions(("A1", "A2"), 5, seeds=4), n_boot=200)
+    md = build_report(_paired_sessions(("A1", "A2"), 5, seeds=4), n_boot=200, expected=_exp(5, 4))
     row = next(x for x in md.splitlines() if x.startswith("| A2 - A1 |"))
     assert "no inference: 5 < 10 task clusters" in row and "reject" not in row
     assert "MIN_TASKS = 10" in md
-    md = build_report(_paired_sessions(("A1", "A2"), 10), n_boot=200)
+    md = build_report(_paired_sessions(("A1", "A2"), 10), n_boot=200, expected=_exp(10, 2))
     assert "reject H0" in next(x for x in md.splitlines() if x.startswith("| A2 - A1 |"))
 
 
@@ -915,18 +947,144 @@ def test_rq2_audit_eligible_failures_and_arm_drawn():
     L.ev(type="chunk_presented", request=3, chunk=0, t_start=15.0, t_end=20.0)
     L.ev(type="observation_end", t=40.0)
     L.verdict(20.0)
-    # eligible: online not_complied on an open chain, earliest correctable request 3 presented
-    L.ev(type="verdict", source="judge", label="not_complied", chain_id="c1", request=1, t_evidence=9.0,
-         revision=0, earliest_correctable=3)
-    # not eligible: j never presented before observation_end
-    L.ev(type="verdict", source="judge", label="not_complied", chain_id="c1", request=2, t_evidence=12.0,
-         revision=0, earliest_correctable=9)
+    _judge_fail(L, "c1", 1, 3, 9.0)  # eligible
+    _judge_fail(L, "c1", 2, 9, 12.0)  # not eligible: j never presented before observation_end
     sc = L.score()
-    assert len(sc.rq2_problems) == 1 and "k=1" in sc.rq2_problems[0]
-    L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=9.5)
+    assert len(sc.rq2_problems) == 1 and "('c1', 0, None, 1, 3)" in sc.rq2_problems[0]
+    L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=9.5,
+         revision=0)
     sc = L.score()
     assert sc.rq2_problems == ["assignment c1 k=1: arm not randomised (arm_drawn)"]
     md = build_report([sc], n_boot=50)
     assert "RQ2 audit failures" in md and "excluded: 1 session(s)" in md
     L.recs[-1]["arm_drawn"] = True
     assert L.score().rq2_problems == []
+
+
+# --------------------------------------------------------------------------- round 4 (impl2e)
+
+
+def test_pairs_checked_against_the_registered_set():
+    ss = _paired_sessions(("A1", "A2"), 12, drop={("A1", 3, 1), ("A2", 3, 1)})  # both omit the same key
+    build_report(ss, n_boot=100, expected=_exp(12, 2) - {("T3", 1, "c1")})  # fine if that key is not registered
+    with pytest.raises(PairingError, match=r"missing in A1: \('T3', 1, 'c1'\)"):
+        build_report(ss, n_boot=100, expected=_exp(12, 2))
+    with pytest.raises(PairingError, match="outside the registered set"):
+        build_report(_paired_sessions(("A1", "A2"), 12), n_boot=100, expected=_exp(11, 2))
+    with pytest.raises(PairingError, match="no registered pair set"):
+        build_report(_paired_sessions(("A1", "A2"), 12), n_boot=100)
+    md = build_report(_paired_sessions(("A1", "A2"), 12), n_boot=100, allow_incomplete_pairs=True)
+    assert "EXPLORATORY: no registered pair set" in md
+
+
+def test_expected_pairs_from_suite():
+    from live_agent.eval.report import expected_pairs, parse_seeds
+    assert parse_seeds("0-2,5") == [0, 1, 2, 5]
+    e = expected_pairs(SUITE, [0, 1], tasks=["E2-A01", "E2-D04"])
+    assert e == {("E2-A01", 0, "c1"), ("E2-A01", 1, "c1"), ("E2-D04", 0, "c2"), ("E2-D04", 1, "c2")}  # D04 c1 withdrawn
+
+
+def test_withdrawal_history_per_repair_point():
+    def run(withdraw_t, reopen_t=None):
+        L = Log("A2", "T1", 0)
+        L.recs[0]["chunks_per_request"] = 1
+        L.new(0.0, chain="c1")
+        L.ev(type="chunk_presented", request=3, chunk=0, t_start=18.0, t_end=23.0)
+        L.ev(type="observation_end", t=60.0)
+        L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0)
+        L.withdraw(withdraw_t, chain="c1")
+        if reopen_t is not None:
+            L.revise(reopen_t, chain="c1")
+        L.verdict(19.0, chain="c1", source="judge")
+        return L.one(cfg=DIAG).repairs[0]["status"]
+    assert run(15.0, reopen_t=16.0) == "withdrawn"  # reopened later: the point is still withdrawn
+    assert run(30.0, reopen_t=31.0) == "success"  # withdrawn only after the target finished
+    assert run(5.0, reopen_t=8.0) == "success"  # reopened before the assignment: open at t
+    assert run(5.0) == "ineligible"
+
+
+def test_target_request_observed_only_if_all_chunks_presented():
+    def run(chunks, header=2):
+        L = Log("A2", "T1", 0)
+        if header:
+            L.recs[0]["chunks_per_request"] = header
+        L.new(0.0, chain="c1")
+        for i in chunks:
+            L.ev(type="chunk_presented", request=3, chunk=i, t_start=18.0 + i, t_end=19.0 + i)
+        L.ev(type="observation_end", t=60.0)
+        L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0)
+        L.verdict(None, chain="c1", label="not_complied")
+        return L.one().repairs[0]["status"]
+    assert run([0]) == "insufficient_observation"  # first chunk only
+    assert run([0, 1]) == "failure"
+    assert run([0, 1], header=None) == "insufficient_observation"  # chunks_per_request unknown
+
+
+def test_rq2_one_to_one_match():
+    def base():
+        L = Log("A2-rq2", "T1", 0)
+        L.new(0.0, chain="c1")
+        L.ev(type="chunk_presented", request=1, chunk=0, t_start=5.0, t_end=10.0)
+        L.ev(type="chunk_presented", request=3, chunk=0, t_start=15.0, t_end=20.0)
+        L.ev(type="observation_end", t=40.0)
+        L.verdict(20.0)
+        _judge_fail(L, "c1", 1, 3, 9.0)
+        return L
+
+    def assign(L, **kw):
+        L.ev(**{"type": "repair_assignment", "chain_id": "c1", "arm": "repeat", "failure_request": 1,
+                "target_request": 3, "t": 9.5, "revision": 0, "arm_drawn": True, **kw})
+
+    L = base()
+    assign(L)
+    sc = L.score()
+    assert sc.rq2_problems == [] and sc.chains[0].repairs[0]["matched"]
+    L = base()
+    assign(L)
+    assign(L, arm="forward_correction")  # duplicate
+    assert any("duplicate" in p for p in L.score().rq2_problems)
+    L = base()
+    assign(L)
+    assign(L, failure_request=2, target_request=4)  # arm_drawn but no eligible failure behind it
+    probs = L.score().rq2_problems
+    assert any("matches no eligible failure" in p for p in probs)
+    L = base()
+    assign(L, target_request=4)  # wrong target request: not a match
+    probs = L.score().rq2_problems
+    assert any("has no matching" in p for p in probs) and any("matches no eligible" in p for p in probs)
+    L = base()
+    assign(L, revision=1)
+    assert any("has no matching" in p for p in L.score().rq2_problems)
+
+
+def test_primary_batch_requires_stripped_metadata(tmp_path, monkeypatch):
+    import live_agent.eval.adjudicate as adj
+    log = _session_file(tmp_path, "s", "E2-A01", [(3.0, "请喝口茶吧。", "new", "c1", {"kind": "action"})])
+    monkeypatch.setattr(adj, "_ffmpeg", lambda: None)
+    with pytest.raises(BlindingError, match="could not be stripped"):
+        prepare([log], tmp_path / "b")
+    items = _items(prepare([log], tmp_path / "d", allow_unstripped=True))
+    key = json.loads(default_key_path(tmp_path / "d").read_text())
+    assert key["diagnostic_batch"] and key["media_warnings"]
+    ch = next(i for i in items if i["type"] == "chain")
+    sw = next(i for i in items if i["type"] == "sweep")
+    lab = {f"{ch['id']}/0": {"v_onset": 4.0, "label": "complied", "v_first": 8.0}, f"{sw['id']}/0": SWEEP_NONE}
+    merge(tmp_path / "d", [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
+    s = load_session(log)
+    assert all(e.get("diagnostic_batch") for e in s.events if e.get("batch"))
+    assert score_session(s).chains[0].outcome == Outcome.UNADJUDICATED  # primary ignores the batch
+    diag = ScoringConfig.diagnostic_config(("adjudicated",))
+    assert score_session(s, diag).chains[0].outcome == Outcome.SUCCESS
+
+
+def test_container_metadata_is_scanned_and_stripped(tmp_path):
+    b = tmp_path / "b" / "media"
+    b.mkdir(parents=True)
+    _tiny_mp4(b / "x.mp4", comment="A2")  # a bare condition name in container metadata
+    with pytest.raises(BlindingError, match="container metadata"):
+        check_blinded(tmp_path / "b", [], ["A2"])
+    log = _session_file(tmp_path, "s", "E2-A01", [(3.0, "请喝口茶吧。", "new", "c1", {"kind": "action"})])
+    _tiny_mp4(log.with_suffix(".mp4"), title="A2", comment=log.stem)
+    prepare([log], tmp_path / "ok")  # stripped, then scanned: passes
+    (m,) = (tmp_path / "ok" / "media").iterdir()
+    assert not any("A2" in v for v in container_metadata(m))

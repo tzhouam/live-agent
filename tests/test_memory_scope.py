@@ -486,3 +486,76 @@ def test_wal_checkpoint_blocked_by_reader_fails_closed(tmp_path):
     reader.rollback()
     reader.close()
     mem.close()
+
+
+# ---------------------------------------------------------------- round 4
+
+
+def test_value_mention_alone_does_not_confirm(mem):
+    mem.record_generated_event("你妹妹住在北京吧", "sess", private_scope(U))
+    (e,) = mem.ingest_user_utterance(utt("我妹妹住在北京"), user_id=U).facts
+    assert e.status == Status.PENDING and e.echo
+    for text in ("I visited 北京 last year", "我去过北京", "我住在北京"):  # value only / wrong subject
+        turn = mem.ingest_user_utterance(utt(text), user_id=U).episode
+        with pytest.raises(ValueError):
+            mem.confirm(e.id, turn.id)
+    ok = mem.ingest_user_utterance(utt("对，我妹妹确实住北京"), user_id=U).episode
+    assert mem.confirm(e.id, ok.id).status == Status.ACTIVE
+    # English: subject + predicate + value
+    b = mem.record_inference("sister works at Acme", user_id=U, derived_from=[], subject="user/sister",
+                             predicate="works_at", value="Acme")
+    for text in ("Acme is great", "I work at Acme"):
+        with pytest.raises(ValueError):
+            mem.confirm(b.id, mem.ingest_user_utterance(utt(text), user_id=U).episode.id)
+    yes = mem.ingest_user_utterance(utt("Yes, my sister works at Acme"), user_id=U).episode
+    assert mem.confirm(b.id, yes.id).value == "Acme"
+
+
+def test_public_empty_token_refused_when_private_context_possible(mem):
+    pub = bridge(mem, mode="public")
+    assert pub.private_context_risk() == []
+    ok = pub.on_persona_line("大家好", session_id="live", scope="public", recall_id=pub.no_recall())
+    assert ok is not None and ok.meta["lineage"] == "none"
+    # the same user has a private conversation meanwhile: the responder may carry it
+    priv = bridge(mem, mode="private")
+    priv.on_user_utterance(utt("我妹妹住在巴黎"))
+    assert pub.private_context_risk()
+    assert pub.on_persona_line("她妹妹住在巴黎", session_id="live", scope="public",
+                               recall_id=pub.no_recall()) is None
+    assert "private context" in pub.scope_violations[-1]["reason"]
+    # an explicit isolated-context token (no memory notes in the responder context) is accepted
+    g = pub.on_persona_line("欢迎", session_id="live", scope="public",
+                            recall_id=pub.no_recall(isolated_context=True))
+    assert g is not None and g.scope == public_scope(S)
+    # tokens with public hits carry their own verified lineage and are unaffected
+    mem.ingest_viewer_chat("大家好呀", "v1", S)
+    res = pub.recall_hits("大家好", mode="public")
+    assert pub.on_persona_line("嗨", session_id="live", scope="public", recall_id=res.recall_id) is not None
+    # a private bridge that recalled private data reports the risk too
+    priv.recall_hits("巴黎", mode="private")
+    assert any(r.startswith("private:") for r in priv.private_context_risk())
+
+
+@pytest.mark.parametrize("journal_mode", ["persist", "truncate", "delete", "wal"])
+def test_erasure_by_id_is_physical_in_every_journal_mode(tmp_path, journal_mode):
+    mem = MemoryStore(tmp_path / "j.sqlite", clock=Clock(), journal_mode=journal_mode)
+    ep = mem.ingest_user_utterance(utt("今天和小芳去了西湖边的咖啡馆"), user_id=U).episode  # no fact, no term
+    mem.ingest_user_utterance(utt("我喜欢猫"), user_id=U)
+    rep = mem.forget(ep.id, U)  # by id: terms are empty
+    assert rep.terms == set() and ep.text in rep.erased_texts
+    assert rep.acks["memory_db"].ok, rep.acks["memory_db"].detail
+    journal = tmp_path / "j.sqlite-journal"
+    assert not journal.exists() or journal.stat().st_size == 0
+    for p in tmp_path.iterdir():
+        assert "西湖边的咖啡馆".encode() not in p.read_bytes(), p
+    mem.close()
+
+
+def test_raw_check_searches_erased_text_not_only_terms(tmp_path, monkeypatch):
+    mem = MemoryStore(tmp_path / "p.sqlite", clock=Clock(), journal_mode="persist")
+    ep = mem.ingest_user_utterance(utt("今天和小芳去了西湖边的咖啡馆"), user_id=U).episode
+    monkeypatch.setattr(mem, "_physical_purge", lambda: "")  # the bytes are left behind
+    rep = mem.forget(ep.id, U)
+    assert rep.terms == set()
+    assert not rep.acks["memory_db"].ok and any("erased text" in h for h in rep.verification.file_hits)
+    mem.close()

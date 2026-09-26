@@ -121,8 +121,15 @@ class Orchestrator:
         self._tasks: list[asyncio.Task] = []
         self._aux: set[asyncio.Task] = set()
         self._stop = asyncio.Event()
-        self._ready = asyncio.Event()  # cleared while an erasure quiesces locking
+        # Lock gates with single owners: an erasure's gate can only be released by that erasure
+        # (fail closed); a barge-in's gate only by that barge-in.
+        self._ready = asyncio.Event()  # erasure gate
         self._ready.set()
+        self._barge_gate = asyncio.Event()
+        self._barge_gate.set()
+        self._erase_lock = asyncio.Lock()
+        self.chunk_end: dict[tuple[int, int], float] = {}
+        self._fully_presented: set[int] = set()
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -236,7 +243,8 @@ class Orchestrator:
             # Never run more than two requests ahead of presentation (bounded backlog).
             while k >= 2 and not self._resolved(k - 2) and not self._stop.is_set():
                 await asyncio.sleep(0.01)
-            await self._ready.wait()  # erasure in progress
+            await self._ready.wait()  # erasure in progress (only the erasure releases it)
+            await self._barge_gate.wait()
             if k == self.sched.restart and k > 0:
                 # After an interruption nothing is playing: a short wait for the in-flight decision
                 # avoids spending the first 5-s request on a filler (listen) segment.
@@ -246,6 +254,8 @@ class Orchestrator:
                     await asyncio.sleep(0.01)
             if self._stop.is_set():
                 return
+            if not self._ready.is_set():
+                continue  # an erasure started while waiting: re-check the gates
             for tm in self.gen.timings:  # refresh: t_done etc. arrive after the last chunk
                 self.sched.observe_timing(tm)
             script = self.director.next_script(k)
@@ -271,7 +281,7 @@ class Orchestrator:
                 # decision; template / verified lines (no memory input) get an empty token.
                 token = script.provenance.get("recall_id")
                 if token is None and script.provenance.get("memory_ids") == [] and hasattr(self.memory, "no_recall"):
-                    token = self.memory.no_recall()
+                    token = self._no_recall()  # template / verified line: no memory input
                 try:
                     rec = self.memory.on_persona_line(script.transcript, session_id=self.cfg.session_id,
                                                       scope=self.cfg.scope, recall_id=token, request_index=k)
@@ -364,14 +374,18 @@ class Orchestrator:
             self.director.ledger.mark_presented(request_index)
         self.presented[request_index].add(chunk_index)
         self.chunk_start[(request_index, chunk_index)] = t_start
+        self.chunk_end[(request_index, chunk_index)] = t_end
         self.last_presented_end = max(self.last_presented_end or t_end, t_end)
         self.log.emit(EventType.CHUNK_PRESENTED, t_start, request_index=request_index,
                       chunk_index=chunk_index, t_end=t_end)
         self._maybe_onset(request_index, chunk_index, t_start)
         if len(self.presented[request_index]) == self.n_chunks and request_index not in self._checked:
             self._checked.add(request_index)
+            self._fully_presented.add(request_index)
+            self.director.ledger.mark_fully_presented(request_index)
             if request_index in self.scripts:
-                self.director.on_request_presented(self.scripts[request_index])
+                self.director.on_request_presented(self.scripts[request_index],
+                                                   done=self._fully_presented | self.dropped)
             if self.cfg.qc_enabled:
                 self._spawn(self._run_checks(request_index, t_evidence=self._evidence_time(request_index, t_end)),
                             "qc")
@@ -379,16 +393,24 @@ class Orchestrator:
                 self._evict(request_index)
         self._maybe_finish()
 
+    def _no_recall(self):
+        try:
+            return self.memory.no_recall(isolated_context=True)
+        except TypeError:
+            return self.memory.no_recall()
+
     def _evidence_time(self, k: int, t_end: float) -> float:
-        """E = presentation time of the last *painted* frame of the request (nominal end if the
-        client does not report painted frames)."""
-        last = self.n_chunks - 1
-        idx = self.painted.get((k, last))
-        ch = next((c for c in self.chunks.get(k, []) if c.chunk_index == last), None)
-        start = self.chunk_start.get((k, last))
-        if not idx or ch is None or start is None or not ch.n_frames:
-            return t_end
-        return start + (max(idx) + 1) * ch.duration_s / ch.n_frames
+        """E = presentation time of the last *painted* frame of the request, searched backwards
+        over all chunks (a chunk without painted-frame reports counts as shown to its end)."""
+        for ci in range(self.n_chunks - 1, -1, -1):
+            idx = self.painted.get((k, ci))
+            start, end = self.chunk_start.get((k, ci)), self.chunk_end.get((k, ci))
+            ch = next((c for c in self.chunks.get(k, []) if c.chunk_index == ci), None)
+            if idx is None:
+                return end if end is not None else t_end
+            if idx and ch is not None and start is not None and ch.n_frames:
+                return start + (max(idx) + 1) * ch.duration_s / ch.n_frames
+        return t_end
 
     def _maybe_onset(self, k: int, ci: int, t_start: float) -> None:
         """Speech onset / completion claim time = presentation time of the first audible audio
@@ -540,12 +562,12 @@ class Orchestrator:
         can be locked in between; decisions still in flight become stale (input epoch)."""
         t = now() if t is None else t
         self._input_epoch += 1
-        self._ready.clear()
+        self._barge_gate.clear()
         try:
             self.director.on_barge_in()
             await self._drop_unpresented()
         finally:
-            self._ready.set()
+            self._barge_gate.set()  # never touches the erasure gate
         self.log.emit(EventType.PLAYBACK_STOP, now(), t_speech_onset=t, dropped=sorted(self.dropped))
         self._maybe_finish()
 
@@ -581,7 +603,9 @@ class Orchestrator:
             else:
                 memories, memory_ids = self.memory.recall(utt.text, mode=self.cfg.scope), None
         elif self.memory and hasattr(self.memory, "no_recall"):
-            recall_id = self.memory.no_recall()  # nothing recalled for a forget request
+            # nothing recalled for a forget request; the responder prompt then contains no memory
+            # (the director never injects memory notes), so the context is isolated
+            recall_id = self._no_recall()
         if self.memory:
             self.memory.on_user_utterance(utt)
         decision = await self.director.decide(utt, memories)
@@ -610,6 +634,10 @@ class Orchestrator:
         return decision
 
     async def _erase(self, term: str) -> bool:
+        async with self._erase_lock:  # erasures are serialized; each owns the erasure gate
+            return await self._erase_locked(term)
+
+    async def _erase_locked(self, term: str) -> bool:
         """Erasure (proposal §12): quiesce locking, memory cascade, purge controller state and
         stored prompts, drop unpresented content, restart the generator from canon. Fails closed:
         an incomplete memory erasure is logged as an ERROR."""

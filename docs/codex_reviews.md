@@ -442,3 +442,22 @@ scoring denominator". The E2 denominator comes from ground-truth chain annotatio
 script or annotator), independent of the director's classification (`runner.convert`, `scoring.score_session`), so
 a misclassified request is scored as a failure, not dropped. No code change for that point, but the declined-request
 heuristic remains. All other items are fixed (182 tests pass): see the commit message.
+
+### impl1e + impl2e: round 4
+
+Model gpt-6-sol, verified.
+- **impl1e:** 21 of 29 RESOLVED or scoped, 6 PARTIAL, plus 2 new findings (1 blocking: the erasure and barge-in shared an unowned lock gate).
+- **impl2e:** 4 of 6 RESOLVED, 2 PARTIAL, plus 6 new major findings.
+
+Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit (200+ tests pass):
+- **Lock gates:** each gate has a single owner, and erasures are serialized.
+- **A1 lifecycle:** a chain closes only after every request it was locked into has been fully presented.
+- **Shared memory:** undeliverable messages are disposed of; dead-writer files are swept; reset drains the whole queue.
+- **Bridge:** it names unseen speech as well as actions and is reconciled only when the bridge request is fully presented.
+- **Barge-in:** old-plan segments stay ineligible until the new decision lands.
+- **Evidence time:** taken from the last painted frame across all chunks.
+- **Repair offset:** reworded as the observed mock-run value.
+- **Pairing:** pairs are checked against the registered expected set.
+- **RQ2:** withdrawal history is kept per repair point, the audit matches points to assignments one-to-one, and a target counts as observed only when all its chunks were presented.
+- **Media:** stripped metadata is mandatory for primary batches, and container tags are scanned.
+- **Memory:** confirmation must restate the proposition; public empty-lineage lines are refused when private context was possible; persistent journals are removed; the raw-file check covers the erased text.

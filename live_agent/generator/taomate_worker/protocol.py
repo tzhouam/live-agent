@@ -168,6 +168,32 @@ def sweep_shm(pids: list[int]) -> int:
     return n
 
 
+def sweep_dead_shm() -> int:
+    """Remove payload files whose writer process no longer exists (rank processes are not all
+    known to the adapter; after shutdown every writer is dead, and live sessions are untouched)."""
+    import glob
+    import re as _re
+
+    n = 0
+    for path in glob.glob(os.path.join(SHM_DIR, "la-taomate-*-*.npy")):
+        m = _re.search(r"la-taomate-(\d+)-", os.path.basename(path))
+        if not m:
+            continue
+        try:
+            os.kill(int(m.group(1)), 0)
+            continue  # writer alive
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            continue  # another user's live process
+        try:
+            os.unlink(path)
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
 def from_shm(value: Any) -> Any:
     """Adapter side: load (and delete) a payload written by ``to_shm``."""
 

@@ -168,6 +168,9 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
                      "C": d.get("chain_cost_s")}
                 if d.get("step") is not None:
                     r["step"] = d["step"]
+                rev = gt_revision(d.get("chain_id", ""), d.get("revision"))
+                if rev is not None:
+                    r["revision"] = rev  # same numbering as the judge verdict's revision
                 carried = [j for j, sc in sorted(orch.scripts.items())
                            if sc.provenance.get("retry_of") == k and d.get("chain_id") in sc.chain_ids]
                 r["actual_request"] = carried[0] if carried else None  # the request that carried it
@@ -213,7 +216,8 @@ async def run_task(task: Task, condition: str, seed: int, *, factory, speed: flo
     if orch.error is not None:
         raise RuntimeError(f"{condition}/{task.task_id}: session failed: {orch.error}")
     header = dict(session_id=f"{condition}-{task.task_id}-s{seed}", condition=condition,
-                  task_id=task.task_id, seed=seed, mode=mode, backbone=orch.gen.info.name)
+                  task_id=task.task_id, seed=seed, mode=mode, backbone=orch.gen.info.name,
+                  chunks_per_request=orch.gen.info.chunks_per_request)
     gseed = getattr(orch.gen, "seed", None)  # the session's effective seed (SessionView sets the backend's)
     with SessionLogWriter(path, **header, **({"generator_seed": gseed} if gseed is not None else {})) as w:
         for ev in convert(orch, user_events, t0=t0, speed=speed):

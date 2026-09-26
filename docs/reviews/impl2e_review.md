@@ -1,0 +1,27 @@
+1. **PARTIAL — blocking, impl2d #1; `live_agent/eval/report.py`, `_check_pairs`.** It catches keys missing from one condition, but if A1 and A2 both omit the same preregistered task, seed, or chain, it can still issue an H1a decision. Check both conditions against the registered expected pair set before inference.
+
+2. **RESOLVED — major, impl2d #2; `scoring.py`, `_score_chain`; `adjudicate.py`, `_review_need`.** An early step is nonqualifying, and its later deadline must be observed before an order failure is accepted.
+
+3. **RESOLVED — major, impl2d #3; `adjudicate.py`, `prepare` and `merge`; `scoring.py`, `score_session`.** Every effective chain now requires an adjudicated meaningful-response onset or an explicit none decision.
+
+4. **RESOLVED — major, impl2d #4; `adjudicate.py`, `_reconcile_sweep`.** Claim matching is one-to-one and includes the intent revision.
+
+5. **PARTIAL — major, impl2d #5; `scoring.py`, `_repair`.** Withdrawal takes precedence when the chain ends withdrawn. If a user withdraws after assignment and later reopens the chain by revision, `Chain.withdrawn` is false and the withdrawal is missed. Retain withdrawal history and apply the assignment-time rule to each repair point.
+
+6. **RESOLVED — major, impl2d #6; `memory/store.py`, `_physical_purge` and `forget`.** WAL truncation and raw-file verification now precede the `memory_db` acknowledgement. A separate physical-erasure gap remains below.
+
+**New findings**
+
+7. **Major — `scoring.py`, `rq2_problems`; `report.py`, `repair_comparison`.** The RQ2 audit checks that eligible failures have assignments, but accepts extra or duplicate assignments. An `arm_drawn: true` assignment with no matching failure verdict can enter the arm comparison and alter its estimated effect. Require a one-to-one match, including chain, revision, step, failure request, and target request; reject unmatched assignments.
+
+8. **Major — `scoring.py`, `_repair`.** A target request with only its first chunk presented is treated as fully observed because `ends` contains one chunk ending before `observation_end`. With no success verdict, the repair becomes a failure instead of an insufficiently observed point. Verify completion of the whole target request before assigning failure.
+
+9. **Major — `adjudicate.py`, `deliver_media` and `check_blinded`.** If ffmpeg is unavailable or fails, `prepare` delivers an unstripped MP4. The binary scan checks identifiers but not condition names, so metadata containing only `A1` or `A2` can reach raters. Require successful metadata stripping for a primary adjudication batch, or verify all container metadata before delivery.
+
+10. **Major — `memory/store.py`, `_confirmation_binds`.** A pending echo that says “my sister lives in Beijing” can be activated by a later user turn saying “I visited Beijing”: the value substring alone binds the confirmation. Require confirmation of the subject–predicate–value proposition, or an affirmative answer to its linked question.
+
+11. **Major — `memory/store.py`, `record_generated_event`; `memory_bridge.py`, `no_recall`.** A public line can be written with `lineage="none"` or a `no_recall` token without proving that its text was formed solely from public or canon inputs. If a caller carries a private fact from an earlier context, that line becomes publicly retrievable. Bind public output to an isolated public context and tracked input scopes; do not accept an empty-lineage assertion as proof.
+
+12. **Major — `memory/store.py`, `forget`, `_physical_purge`, and `verify_erased`.** `journal_mode="persist"` is accepted, but the purge does not truncate its journal. Erasing an episode by record ID can leave `terms` empty, so the mandatory raw-file check scans for no content and can acknowledge physical erasure while old journal bytes remain. Remove or truncate persistent journals and verify the erased record’s text, not only its value or query term.
+
+**Verdict: not ready.**

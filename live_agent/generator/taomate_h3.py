@@ -287,11 +287,12 @@ class TaoMateH3Generator(Generator):
 
     def _post(self, role: str, message: dict[str, Any]) -> None:
         if self._loop is None or self._loop.is_closed():
+            P.discard_shm(message)  # cannot be delivered: do not leave its payload behind
             return
         try:
             self._loop.call_soon_threadsafe(self._on_message, role, message)
         except RuntimeError:  # loop closed between the check and the call
-            pass
+            P.discard_shm(message)
 
     def _send(self, role: str, message: dict[str, Any]) -> None:
         channel = self._channels.get(role)
@@ -457,11 +458,13 @@ class TaoMateH3Generator(Generator):
         # erasure does not leave erased content in adapter memory; queued stale output is discarded.
         self._prompts.clear()
         self.request_extras.clear()
-        while not self._out.empty():
+        keep = []
+        while not self._out.empty():  # drain everything; keep only sentinels / errors, in order
             item = self._out.get_nowait()
             if item is None or isinstance(item, Exception):
-                self._out.put_nowait(item)
-                break
+                keep.append(item)
+        for item in keep:
+            self._out.put_nowait(item)
         for role in (P.ROLE_TEACHER, P.ROLE_STUDENT):
             self._send(role, {"type": P.RESET, "session": self._session})
 
@@ -528,6 +531,7 @@ class TaoMateH3Generator(Generator):
         if self._listener is not None:
             self._listener.close()
         P.sweep_shm(pids + list(self._worker_pids()))
+        P.sweep_dead_shm()  # files of any rank process that no longer exists
         self._out.put_nowait(None)
         if cancelled is not None:
             raise cancelled

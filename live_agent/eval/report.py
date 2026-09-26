@@ -25,6 +25,7 @@ import math
 import sys
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 
 from live_agent.eval import stats
 from live_agent.eval.schema import load_session
@@ -41,6 +42,7 @@ from live_agent.eval.scoring import (
     score_session,
     summarize,
 )
+from live_agent.eval.tasks import load_suite
 
 # Preregistered comparison families (proposal §5 RQ1 / §7.2). Difference = A - B.
 PRIMARY_FAMILY: tuple[tuple[str, str], ...] = (("A2", "A1"),)  # H1a
@@ -51,6 +53,7 @@ H1C_FAMILY: tuple[tuple[str, str], ...] = (  # H1c ablations: each is expected t
     ("A2", "A2-nocorrection"),
 )
 MISSING_RULES = ("rerun-required", "worst-case")  # preregistered; see build_report
+DEFAULT_SUITE = Path(__file__).resolve().parents[2] / "eval" / "tasks" / "e2_committed.jsonl"
 MIN_TASKS = 10  # *proposed target*: fewest independent task clusters for any inferential decision
 FAMILIES: dict[str, tuple[tuple[str, str], ...]] = {
     "primary (H1a)": PRIMARY_FAMILY,
@@ -230,12 +233,43 @@ def _pair_keys(ss: list[SessionScore]) -> tuple[dict[tuple, ChainOutcome], list[
     return keyed, sorted(k for k, n in seen.items() if n > 1)
 
 
-def pair_problems(by_cond: dict[str, list[SessionScore]], a: str, b: str) -> dict[str, list]:
-    """Duplicate pair keys (in either condition) and keys present in only one condition."""
+def expected_pairs(suite: str | Path, seeds: Iterable[int], tasks: Iterable[str] | None = None) -> set[tuple]:
+    """The registered pair set: every (task, seed, chain label) whose final intent in the
+    task suite is not withdrawn, for the registered seeds (and tasks, if restricted)."""
+    keep = set(tasks) if tasks is not None else None
+    out = set()
+    for t in load_suite(suite):
+        if keep is not None and t.task_id not in keep:
+            continue
+        for label, it in t.final_intents().items():
+            if it is not None:
+                out |= {(t.task_id, int(s), label) for s in seeds}
+    return out
+
+
+def parse_seeds(spec: str) -> list[int]:
+    """'0-4' or '0,1,2' (or a mix: '0-2,5')."""
+    out: list[int] = []
+    for part in spec.split(","):
+        a, _, b = part.strip().partition("-")
+        out += list(range(int(a), int(b) + 1)) if b else [int(a)]
+    return out
+
+
+def pair_problems(by_cond: dict[str, list[SessionScore]], a: str, b: str,
+                  expected: set[tuple] | None = None) -> dict[str, list]:
+    """Duplicate pair keys (in either condition); keys missing from either condition
+    relative to the registered pair set (or, without one, relative to the other condition);
+    and keys outside the registered set."""
     ca, da = _pair_keys(by_cond[a])
     cb, db = _pair_keys(by_cond[b])
-    return {"duplicate": [(a, k) for k in da] + [(b, k) for k in db],
-            "missing": [(b, k) for k in sorted(set(ca) - set(cb))] + [(a, k) for k in sorted(set(cb) - set(ca))]}
+    ref = expected if expected is not None else set(ca) | set(cb)
+    out = {"duplicate": [(a, k) for k in da] + [(b, k) for k in db],
+           "missing": [(a, k) for k in sorted(ref - set(ca))] + [(b, k) for k in sorted(ref - set(cb))],
+           "unexpected": []}
+    if expected is not None:
+        out["unexpected"] = [(c, k) for c, keys in ((a, ca), (b, cb)) for k in sorted(set(keys) - expected)]
+    return out
 
 
 def _paired(by_cond: dict[str, list[SessionScore]], a: str, b: str, n_boot: int,
@@ -263,21 +297,31 @@ def _paired(by_cond: dict[str, list[SessionScore]], a: str, b: str, n_boot: int,
 
 
 def _check_pairs(by_cond: dict[str, list[SessionScore]], pairs: Iterable[tuple[str, str]],
-                 allow_incomplete: bool) -> dict[tuple[str, str], int]:
-    """Raise PairingError on duplicate keys, and on missing pairs unless allowed; returns
-    the number of missing keys per pair."""
+                 allow_incomplete: bool, expected: set[tuple] | None = None) -> dict[tuple[str, str], str]:
+    """Check each comparison against the registered pair set. Duplicate keys always raise
+    PairingError. No registered set, missing keys, or keys outside the set raise unless
+    ``allow_incomplete``; returns the reason a comparison is exploratory, per pair."""
     missing, errs = {}, []
     for a, b in pairs:
         if a not in by_cond or b not in by_cond:
             continue
-        pr = pair_problems(by_cond, a, b)
+        pr = pair_problems(by_cond, a, b, expected)
         if pr["duplicate"]:
             errs.append(f"{a} - {b}: duplicate pair keys " + "; ".join(f"{c} {k}" for c, k in pr["duplicate"][:20]))
+        why = []
+        if expected is None:
+            why.append("no registered pair set")
         if pr["missing"]:
-            missing[(a, b)] = len(pr["missing"])
+            why.append(f"{len(pr['missing'])} pair key(s) missing")
+        if pr["unexpected"]:
+            why.append(f"{len(pr['unexpected'])} key(s) outside the registered set")
+        if why:
+            missing[(a, b)] = "; ".join(why)
             if not allow_incomplete:
-                errs.append(f"{a} - {b}: {len(pr['missing'])} (task, seed, chain) key(s) missing: "
-                            + "; ".join(f"missing in {c}: {k}" for c, k in pr["missing"][:20]))
+                errs.append(f"{a} - {b}: " + "; ".join(why) + ": "
+                            + "; ".join([f"missing in {c}: {k}" for c, k in pr["missing"][:20]]
+                                        + [f"unexpected in {c}: {k}" for c, k in pr["unexpected"][:10]]
+                                        + (["pass --suite and --expected-seeds"] if expected is None else [])))
     if errs:
         raise PairingError("the preregistered pair set is not complete:\n  " + "\n  ".join(errs))
     return missing
@@ -289,6 +333,7 @@ def compare(
     n_boot: int = 4000,
     alpha: float = 0.05,
     allow_incomplete_pairs: bool = False,
+    expected: set[tuple] | None = None,
 ) -> list[str]:
     """Preregistered families, Holm over the preregistered family size. ``display``
     (default: every family member present) only selects the rows shown; it never changes
@@ -302,7 +347,7 @@ def compare(
     display = list(display) if display is not None else None
     fam_pairs = {p for fam in FAMILIES.values() for p in fam}
     extra = [tuple(p) for p in (display or []) if tuple(p) not in fam_pairs]
-    missing = _check_pairs(by_cond, [*fam_pairs, *extra], allow_incomplete_pairs)
+    missing = _check_pairs(by_cond, [*fam_pairs, *extra], allow_incomplete_pairs, expected)
     L = ["## Paired comparisons (instruction-level success; cluster = task)", "",
          (f"Families are fixed before data collection; Holm is applied over the preregistered "
           f"family size (alpha = {alpha}); family members not run count as p = 1. "
@@ -317,7 +362,7 @@ def compare(
             if r is None:
                 return "not tested"
             if p in missing:
-                return f"EXPLORATORY: {missing[p]} pair key(s) missing"
+                return f"EXPLORATORY: {missing[p]}"
             if r["n_tasks"] < MIN_TASKS:
                 return f"no inference: {r['n_tasks']} < {MIN_TASKS} task clusters"
             return ""
@@ -360,7 +405,7 @@ def compare(
         L.append("")
     if missing:
         L.append("Incomplete pair sets (allowed explicitly; EXPLORATORY): "
-                 + "; ".join(f"{a}-{b}: {n} missing" for (a, b), n in missing.items()))
+                 + "; ".join(f"{a}-{b}: {n}" for (a, b), n in missing.items()))
     L.append("\nH1a target (*proposed target*, §8): A2 - A1 >= +10 pp with the paired CI excluding 0.")
     return L + [""]
 
@@ -377,7 +422,7 @@ def repair_comparison(by_cond: dict[str, list[SessionScore]], n_boot: int = 4000
         bad = [s for s in ss if s.rq2_problems]
         flagged += [f"{s.session_id}: {p}" for s in bad for p in s.rq2_problems]
         allp = [(c.task_id, r) for s in ss if not s.rq2_problems for c in s.chains for r in c.repairs
-                if r["arm_drawn"]]
+                if r["arm_drawn"] and r["matched"]]  # only one-to-one matched, randomised points
         if bad:
             L.append(f"| {cond} | excluded: {len(bad)} session(s) failing the RQ2 audit | | | |")
         if {r["arm"] for _, r in allp} != {"forward_correction", "repeat"}:
@@ -418,6 +463,7 @@ def build_report(
     n_boot: int = 4000,
     missing_rule: str = "rerun-required",
     allow_incomplete_pairs: bool = False,
+    expected: set[tuple] | None = None,
 ) -> str:
     """``pairs`` selects displayed comparisons (None = all preregistered ones present).
 
@@ -466,7 +512,7 @@ def build_report(
                  f"{_ci(*stats.wilson(sm['n_success'], sm['n_effective']))} | "
                  f"{sm['n_insufficient_observation']} |")
     L.append("")
-    L += compare(by_cond, pairs, n_boot=n_boot, allow_incomplete_pairs=allow_incomplete_pairs)
+    L += compare(by_cond, pairs, n_boot=n_boot, allow_incomplete_pairs=allow_incomplete_pairs, expected=expected)
     L += repair_comparison(by_cond, n_boot=n_boot)
     for cond, ss in sorted(by_cond.items()):
         L += condition_section(cond, ss, n_boot=n_boot)
@@ -488,6 +534,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--allow-incomplete-pairs", action="store_true",
                     help="show comparisons with missing (task, seed, chain) pairs as EXPLORATORY (no decision) "
                          "instead of refusing")
+    ap.add_argument("--suite", default=str(DEFAULT_SUITE), help="task suite defining the registered pair set")
+    ap.add_argument("--expected-seeds", default=None,
+                    help="registered seeds, e.g. 0-4; required for a primary comparison decision")
+    ap.add_argument("--expected-tasks", default=None, help="comma-separated task ids (default: whole suite)")
     ap.add_argument("--n-boot", type=int, default=4000)
     ap.add_argument("-o", "--out", default=None)
     args = ap.parse_args(argv)
@@ -498,8 +548,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     scores = [score_session(load_session(p), cfg) for p in args.logs]
     pairs = [tuple(p.split(":", 1)) for p in args.compare] if args.compare else None
     try:
+        expected = (expected_pairs(args.suite, parse_seeds(args.expected_seeds),
+                                   args.expected_tasks.split(",") if args.expected_tasks else None)
+                    if args.expected_seeds else None)
         md = build_report(scores, pairs, n_boot=args.n_boot, missing_rule=args.missing_rule,
-                          allow_incomplete_pairs=args.allow_incomplete_pairs)
+                          allow_incomplete_pairs=args.allow_incomplete_pairs, expected=expected)
     except IncompleteAdjudicationError as e:
         print(f"error: {e}\n(use --source judge for a DIAGNOSTIC report)", file=sys.stderr)
         raise SystemExit(2) from e

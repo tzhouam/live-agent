@@ -55,7 +55,7 @@ python3 -m live_agent.eval.adjudicate --help   # prepare (criteria frozen from t
                                                # <batch>.key/, outside the annotator's folder) and merge
                                                # (two raters + optional arbiter; only reconciled verdicts
                                                # are appended; unresolved items listed)
-python3 -m live_agent.eval.report <logs> -o report.md              # primary: exits 2 if any chain/claim unadjudicated
+python3 -m live_agent.eval.report <logs> --expected-seeds 0-4 -o report.md  # primary: exits 2 on any adjudication/observation/pairing gap
 python3 -m live_agent.eval.report <logs> --source judge -o diag.md # labelled DIAGNOSTIC
 
 # E1 calibration
@@ -126,9 +126,11 @@ python3 -m pytest
     - The judge's frame encoding moved off the event loop.
     - A chain whose request was cut by barge-in now counts as unexecuted (capacity skip, or resumed).
 - **E2 dry run (simulation):** 54 sessions (A1/A2/A2-repeat × 6 tasks × 3 seeds, mock generator and judge,
-  real LLM). The pipeline scores end to end. The repair offset j−k is always 2 with 5 s requests (the
-  failure is known only after the full request is presented, and request k+1 is already locked), so most
-  repaired chains finish after the 15 s action deadline. This is a structural property to report.
+  real LLM). The pipeline scores end to end. The repair offset j−k was 2 in every repair of this mock run
+  (the failure is known only after the full request is presented, and request k+1 was already locked), so most
+  repaired chains finished after the 15 s action deadline. This is the observed mock-run offset, not a structural
+  constant: larger correction cost, lock timing or stalls can push the earliest correctable request to k+3 or
+  later. The distribution on the measured path is reported per run (`repair_assignment.target_request`).
 
 ## Known deviations and scope limits (after Codex impl1/impl2)
 

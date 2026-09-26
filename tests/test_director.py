@@ -186,7 +186,9 @@ def test_open_loop_chains_close_when_presented():
              mode=DirectorMode.OPEN_LOOP)
     say(d, "挥挥手")
     s = d.next_script(0)
-    d.on_request_presented(s)
+    d.on_request_presented(s, done=set())  # locked but not fully presented: stays open
+    assert next(iter(d.chains.values())).status == ChainStatus.OPEN
+    d.on_request_presented(s, done={0})
     assert next(iter(d.chains.values())).status == ChainStatus.PRESENTED
     assert not d._open_chains()
 
@@ -209,3 +211,31 @@ def test_repeat_arm_retry_carries_original_line():
                          line=s0.transcript)
     again = d.next_script(1)
     assert again.transcript == s0.transcript and again.action == s0.action
+
+
+def test_old_plan_segments_wait_for_the_new_decision_after_barge_in():
+    wave = {"relation": "new", "kind": "action", "steps": [{"intent": "wave", "line": "好。"}]}
+    d = make(replies=[TEA, wave])
+    say(d, "喝口茶", "u1")
+    d.on_barge_in()
+    filler = d.next_script(0)  # decision not yet applied: no old-plan segment, only listening
+    assert not filler.chain_ids and "listening" in filler.action
+    say(d, "挥挥手", "u2", 1.0)
+    assert "waves" in d.next_script(1).action
+
+
+def test_barge_in_cannot_release_the_erasure_gate():
+    import asyncio as aio
+
+    from live_agent.generator.mock import MockGenerator
+    from live_agent.orchestrator import Orchestrator
+    from live_agent.sim import SimClient
+
+    async def main():
+        orch = Orchestrator(MockGenerator(speed=50.0), make(TEA), LockScheduler(), SimClient(speed=50.0))
+        orch._ready.clear()  # an erasure holds its gate
+        await orch.on_speech_start()
+        return orch._ready.is_set(), orch._barge_gate.is_set()
+
+    erasure_gate, barge_gate = aio.run(main())
+    assert not erasure_gate and barge_gate

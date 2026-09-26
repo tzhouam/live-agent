@@ -16,6 +16,12 @@ Scope rules (review findings 12/13, round 2):
 
   - A **public** line is stored only with a valid token of this bridge and no private
     input; caller-asserted ``lineage`` / ``source_ids`` without a token are refused.
+  - A public line from an **empty** token (``no_recall()``) is refused if a private
+    context was possible (:meth:`MemoryBridge.private_context_risk`: a private scope was
+    recalled / ingested through this bridge, or a private record of this user was written
+    to the store since the bridge was created), unless the token was issued with
+    ``no_recall(isolated_context=True)`` -- the orchestrator's assertion that the
+    responder's context for that decision held no memory notes.
   - A **private** line without a token keeps the earlier behaviour: ``lineage="complete"``
     with ``source_ids`` is accepted as given; otherwise (unknown) the line is linked to
     every memory recalled and every turn ingested this session (a conservative superset,
@@ -81,6 +87,9 @@ class MemoryBridge:
         self._recalled: dict[str, None] = {}
         self._ingested: dict[str, None] = {}
         self._recalls: dict[str, tuple[str, ...]] = {}  # recall token -> ids handed out under it
+        self._isolated: set[str] = set()  # empty tokens issued with isolated_context=True
+        self._seen_scopes: set[str] = set()  # source scopes of everything recalled / ingested here
+        self._t0 = self.store.clock()
         self.scope_violations: list[dict[str, Any]] = []
         self.on_erasure: list[Callable[[ErasureReport], Any]] = []
         self.store.register_purge_target("bridge_callbacks", self._erasure_hook)
@@ -113,15 +122,35 @@ class MemoryBridge:
             out.append(RecallHit(h.record.id, h.record.text, t,
                                  f"[{t.get('kind')}/{t.get('claim_type')}/{t.get('status', 'active')}] {h.record.text}"))
             self._recalled[h.record.id] = None
+            self._seen_scopes |= h.record.source_scopes
         token = new_id("recall")
         self._recalls[token] = tuple(h.id for h in out)
         return RecallResult(out, token)
 
-    def no_recall(self) -> str:
-        """Token for a decision made without any recalled memory (lineage "none")."""
+    def no_recall(self, *, isolated_context: bool = False) -> str:
+        """Token for a decision made without any recalled memory (lineage "none").
+
+        ``isolated_context=True`` asserts that the responder's context for this decision
+        held no memory notes at all (fresh context); see :meth:`private_context_risk` for
+        when a public session needs it."""
         token = new_id("recall")
         self._recalls[token] = ()
+        if isolated_context:
+            self._isolated.add(token)
         return token
+
+    def private_context_risk(self) -> list[str]:
+        """Why a responder context in this session might carry this user's private data:
+        a private scope among the records recalled / ingested through this bridge, or a
+        private record of this user written to the store since this bridge was created
+        (e.g. a concurrent private session of the same user). Empty = none observed."""
+        why = sorted(s for s in self._seen_scopes if s.startswith("private:"))
+        n = self.store.db.execute(
+            "SELECT count(*) FROM records WHERE owner = ? AND scope LIKE 'private:%' AND created_at >= ?",
+            [self.user_id, self._t0]).fetchone()[0]
+        if n:
+            why.append(f"{n} private record(s) of this user written during this session")
+        return why
 
     def recall(self, text: str, *, mode: str) -> list[str]:
         return [h.rendered for h in self.recall_hits(text, mode=mode)]
@@ -134,6 +163,7 @@ class MemoryBridge:
         for rec in [res.episode, *res.facts, res.generated_event]:
             if rec is not None:
                 self._ingested[rec.id] = None
+                self._seen_scopes |= rec.source_scopes
 
     def on_persona_line(self, text: str, *, session_id: str, scope: str, recall_id: str | None = None,
                         source_ids: Iterable[str] | None = None, lineage: str | None = None,
@@ -177,6 +207,12 @@ class MemoryBridge:
         parents = self.store.existing_ids(handed)
         if len(parents) != len(handed):
             return self._violation(text, "source memory no longer exists (erased)", sorted(set(handed) - set(parents)))
+        if self._mode == "public" and not handed and recall_id not in self._isolated:
+            risk = self.private_context_risk()
+            if risk:
+                return self._violation(text, "public line with empty lineage while private context was possible "
+                                       f"({'; '.join(risk)}); pass no_recall(isolated_context=True) only if the "
+                                       "responder context held no memory notes", [])
         uid = self.user_id if self._mode == "private" else None
         unreadable = [r.id for r in self.store._load(parents)
                       if not self.store.scope_readable(r.source_scopes, self._mode, uid, self.stream_id)]

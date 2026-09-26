@@ -1,0 +1,41 @@
+## Round-3 findings in scope
+
+1. **PARTIAL — major, `director.py:on_request_presented`.** A1 chains now close, but can close when their final segment is *locked*, before it is presented. Track outstanding presented segments before setting `PRESENTED`.
+2. **PARTIAL — major, `taomate_h3.py:_post/_worker_pids`.** Stale shared-memory payloads are discarded on the normal stale-message path, but shutdown can still leave rank-created files. Dispose of messages that cannot be posted and track rank PIDs for the final sweep.
+3. **RESOLVED — `orchestrator.py:_repair`.** The repeat arm retains the failed request’s action and spoken line.
+4. **PARTIAL — major, `ledger.py:bridging_note/mark_presented`.** The bridge names unseen actions but omits unseen speech and clears divergence after the bridge’s first chunk. Retain it until the bridge is fully presented and reconcile both.
+5. **RESOLVED — `taomate_h3.py:close`.** Cancellation proceeds through worker termination and resource closure.
+6. **RESOLVED — `orchestrator.py:stop/_maybe_finish`.** Bounded runs drain pending QC.
+7. **RESOLVED — `director.py:on_verified`.** Verdicts are bound to revision and step.
+8. **RESOLVED, scoped — `director.py`.** Multistep action gating is present; content chains remain outside the online-loop pilot claim.
+9. **RESOLVED — `orchestrator.py:_erase`.** Retained script corrections are redacted; the remaining stale-media issue is item 2.
+10. **RESOLVED — `orchestrator.py:on_speech_start`.** Barge-in changes the plan and pauses locking before its first await.
+11. **RESOLVED — `orchestrator.py:_lock_loop`.** Timing samples are refreshed before estimating the next lock.
+12. **RESOLVED — `orchestrator.py:_lock_loop`.** `LOCK` now records `retry_of`.
+13. **RESOLVED, scoped — `docs/implementation.md`.** The missing moderation gate and pre-play ASR are disclosed.
+14. **RESOLVED — `director.py:_claims_completion`.** The cited ordinary completion phrase is covered.
+15. **RESOLVED — `server/app.py:handle_inputs`.** ASR and LLM work do not block the WebSocket receive loop.
+16. **RESOLVED — `director.py:_admit`.** Displaced unexecuted chains generate capacity skips.
+17. **RESOLVED — `director.py:_declined_request`.** The primary denominator uses task annotations independently of this heuristic, as recorded in the review log.
+18. **RESOLVED — `director.py` open-loop mode.** A1 writes its own action phrase and line.
+19. **RESOLVED, scoped — `docs/implementation.md`.** The action-chain pilot limit is explicit.
+20. **RESOLVED — `SessionView.chunks`.** Reset epochs filter queued stale chunks.
+21. **RESOLVED — `taomate_h3.py:start/close`.** Partial-start cleanup and cancellation cleanup are present.
+22. **RESOLVED, scoped — `server/app.py:WSTransport`.** Clock mapping is implemented; its accuracy is disclosed as unmeasured.
+23. **RESOLVED, scoped — `docs/implementation.md`.** JPEG/PCM transport is disclosed and excluded from M1 qualification.
+24. **RESOLVED for wording — `docs/implementation.md`.** The short-run throughput claim is qualified. `docs/m0_measurements.md` was not inlined, so its figures cannot be independently checked.
+25. **PARTIAL — major, `orchestrator.py:_lock_loop`, `director.py:on_barge_in`.** Stale LLM decisions no longer end the restart wait, but its 1.5-second timeout can still lock a queued old-plan segment before the new utterance is processed. Keep old segments ineligible until that decision arrives; a timeout may lock a listening-only segment.
+26. **RESOLVED — `orchestrator.py:_on_user_utterance`.** Client-stamped utterance end is retained through processing.
+27. **PARTIAL — major, `orchestrator.py:_evidence_time`.** If the final chunk has no painted frames while earlier chunks pass the 50% threshold, evidence time falls back to that chunk’s nominal end, not the last displayed frame. Use timestamps for the last required painted frame across all chunks.
+28. **PARTIAL — major, `taomate_h3.py:reset/close`.** Normal stale replies are cleaned, but `reset()` stops draining at an exception queued ahead of old `Chunk` objects, and shutdown does not reliably sweep rank-created files. Drain every queued item and close the shutdown paths in item 2.
+29. **RESOLVED — `orchestrator.py:_evict`.** Decoded media is evicted after presentation and QC.
+
+## New blocking or major findings
+
+30. **Blocking — `orchestrator.py:_erase` and `on_speech_start`.** Both control the same `_ready` event without ownership. While erasure awaits generator reset, another `speech_start` can run its `finally` block and set `_ready`, allowing the lock loop to submit a request before erasure is confirmed. This breaks fail-closed erasure. Serialize interruption and erasure, or use a quiescence state that only the erasure owner can release.
+
+31. **Major — `docs/implementation.md`, “E2 dry run”.** Calling repair offset `j−k = 2` a *structural property* overstates the evidence. Full-request QC makes `k+1` unavailable in that run, but the proposal explicitly allows `k+3` or later when correction cost, locking, or stalls increase. Label `2` as the observed mock-run offset and report the distribution on the measured path.
+
+No additional blocking or major finding was established for capability gating or H3 prompt compilation from the inlined material.
+
+**Verdict: not ready.**
