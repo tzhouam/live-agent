@@ -73,6 +73,7 @@ class OrchestratorConfig:
     text_encode_s: float = 0.06  # part of the correction chain C [measured locally, M0 teacher text encode]
     restart_decision_wait_s: float = 1.5  # after an interruption, wait this long for an in-flight decision
     loop_lag_log_s: float = 0.2  # log event-loop stalls longer than this (diagnostic)
+    loop_stack_s: float = 0.15  # the watchdog captures the loop thread's stack after this long
     qc_timeout_s: float = 8.0  # a check that takes longer abstains (verdict unknown) [proposed target]
     blocklist: tuple[str, ...] = ()  # operator term blocklist for the script audit (no moderation model)
     seed: int = 0
@@ -211,12 +212,20 @@ class Orchestrator:
         def watchdog() -> None:
             import time as _t
 
+            captured_for = None
             while not self._stop.is_set():
-                _t.sleep(0.1)
-                if now() - beat[0] > 0.5 and not stacks:
-                    frame = sys._current_frames().get(loop_thread)
+                _t.sleep(0.02)
+                stalled_since = beat[0]
+                if now() - stalled_since > self.cfg.loop_stack_s and captured_for != stalled_since:
+                    captured_for = stalled_since  # one stack per stall
+                    frames = sys._current_frames()
+                    frame = frames.get(loop_thread)
                     if frame is not None:
-                        stacks.append("".join(traceback.format_stack(frame)[-8:]))
+                        # other threads too: a C extension holding the GIL elsewhere also stalls the loop
+                        others = [f"[thread {tid}]\n" + "".join(traceback.format_stack(f)[-3:])
+                                  for tid, f in frames.items() if tid not in (loop_thread, threading.get_ident())]
+                        stacks.append("".join(traceback.format_stack(frame)[-8:]) + "\n--- other threads ---\n"
+                                      + "\n".join(others)[-3000:])
 
         threading.Thread(target=watchdog, daemon=True).start()
         while not self._stop.is_set():
@@ -619,7 +628,8 @@ class Orchestrator:
             self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["check_after_deadline"])
             self._drain_director_events(now())
             return
-        actions = [q for q in script.checks if q.kind == "action"]
+        actions = [q for q in script.checks if q.kind == "action"] if self.judge is not None else []
+        # (no judge configured: no online action control; only the step deadline applies)
         speech = [q for q in script.checks if q.kind == "speech"]
         # 1) Action checks first: they alone drive control (verification, next step, repair).
         action_verdicts: list[Verdict] = []

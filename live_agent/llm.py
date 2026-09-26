@@ -83,3 +83,40 @@ def frame_to_data_url(frame: np.ndarray, *, fmt: str = "JPEG", quality: int = 85
     buf = io.BytesIO()
     Image.fromarray(frame).save(buf, format=fmt, quality=quality)
     return f"data:image/{fmt.lower()};base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+class RuleResponder(ScriptedLLM):
+    """CPU-only stand-in for the responder LLM (demo / smoke runs without model servers).
+
+    Maps an utterance to the responder JSON contract by keyword: a capability alias found in the
+    text becomes an action step, "忘掉/忘记 X" becomes a forget request, anything else a short chat
+    reply. It is deliberately simple — for running the stack, not for evaluation.
+    """
+
+    def __init__(self, manifest) -> None:
+        import json as _json
+        import re as _re
+
+        aliases = []
+        for c in manifest.caps.values():
+            for a in [c.intent, *getattr(c, "aliases", [])]:
+                if a and _re.search(r"[\u4e00-\u9fff]", a):
+                    aliases.append((a, c.intent, c.phrase))
+        aliases.sort(key=lambda x: -len(x[0]))  # longest alias first
+
+        def fn(messages):
+            text = messages[-1]["content"]
+            closed = "intent" in messages[0]["content"]  # A2 prompt lists intents; A1 asks for actions
+            m = _re.search(r"(?:忘掉|忘记|忘了|删掉|删除)(?:我)?(.{1,8}?)(?:的事|住在哪|吧|。|$)", text)
+            if m and m.group(1).strip():
+                return _json.dumps({"relation": "chat", "kind": "memory", "forget_term": m.group(1).strip(),
+                                    "steps": [{"intent": "", "line": ""}]}, ensure_ascii=False)
+            for alias, intent, phrase in aliases:
+                if alias in text:
+                    step = {"intent": intent, "line": f"好，我{alias}。"} if closed else \
+                        {"action": phrase, "line": f"好，我{alias}。"}
+                    return _json.dumps({"relation": "new", "kind": "action", "steps": [step]}, ensure_ascii=False)
+            return _json.dumps({"relation": "chat", "kind": "chat",
+                                "steps": [{"intent": "", "line": "嗯，我在听，你接着说。"}]}, ensure_ascii=False)
+
+        super().__init__(fn)

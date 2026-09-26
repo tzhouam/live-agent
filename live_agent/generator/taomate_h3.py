@@ -288,6 +288,15 @@ class TaoMateH3Generator(Generator):
             except (EOFError, OSError, TypeError):  # TypeError: connection closed under us
                 self._post(role, {"type": "disconnected"})
                 return
+            if message.get("type") == P.CHUNK:
+                # load the ~40 MB /dev/shm payload here, on this reader thread: done in the event-loop
+                # callback it stalled the loop ~0.2-0.4 s per chunk (found by the stall watchdog)
+                try:
+                    message["video"] = P.from_shm(message.get("video"))
+                    message["audio"] = P.from_shm(message.get("audio"))
+                except Exception as e:  # noqa: BLE001 - reported on the loop as a fatal adapter error
+                    P.discard_shm(message)
+                    message["shm_error"] = str(e)
             self._post(role, message)
 
     def _post(self, role: str, message: dict[str, Any]) -> None:
@@ -362,10 +371,14 @@ class TaoMateH3Generator(Generator):
                 timing.t_student_start = self._mono(message["t"])
         elif kind == P.CHUNK:
             t_ready = now()
-            try:
+            if message.get("shm_error"):  # missing/corrupt payload (loaded on the reader thread): fatal
+                self._fail({"role": role, "type": P.ERROR,
+                            "message": f"chunk payload unreadable: {message['shm_error']}"})
+                return
+            try:  # no-op when the reader thread already loaded the arrays (from_shm is idempotent)
                 message["video"] = P.from_shm(message.get("video"))
                 message["audio"] = P.from_shm(message.get("audio"))
-            except Exception as e:  # noqa: BLE001 - missing/corrupt payload: fatal, surfaced to chunks()
+            except Exception as e:  # noqa: BLE001
                 P.discard_shm(message)
                 self._fail({"role": role, "type": P.ERROR, "message": f"chunk payload unreadable: {e}"})
                 return

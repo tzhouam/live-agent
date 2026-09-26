@@ -150,7 +150,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
     async def _startup() -> None:
         from live_agent.llm import OpenAICompatLLM
 
-        await OpenAICompatLLM(args.llm_url, args.llm_model).warmup()  # SDK lazy imports, off the session path
+        if args.llm_url != "scripted":
+            await OpenAICompatLLM(args.llm_url, args.llm_model).warmup()  # SDK lazy imports, off the session path
         # Heavy generators are started once and shared (reset per session); the mock is per session.
         if args.generator != "mock":
             gen = make_generator(args)
@@ -190,8 +191,13 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         try:
             from live_agent.llm import OpenAICompatLLM
 
-            llm = OpenAICompatLLM(args.llm_url, args.llm_model)
             manifest = CapabilityManifest.load(cfg_dir / "capabilities.json")
+            if args.llm_url == "scripted":  # CPU-only demo: rule-based responder, no model server
+                from live_agent.llm import RuleResponder
+
+                llm = RuleResponder(manifest)
+            else:
+                llm = OpenAICompatLLM(args.llm_url, args.llm_model)
             if args.dev_allow_uncalibrated:
                 manifest.min_status = Status.DOCUMENTED
             ledger = StateLedger.from_config(cfg_dir / "canon.json")
@@ -201,7 +207,11 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             sched = LockScheduler(SchedulerConfig(request_s=generator.info.request_seconds,
                                                   lambda_prior_s=args.lambda_prior))
             judge = speech = None
-            if args.vlm_url:
+            if args.vlm_url == "mock":  # demo only: simulated verdicts (p=0.8), never a measurement
+                from live_agent.qc.judge import MockJudge
+
+                judge = MockJudge(p_default=0.8)
+            elif args.vlm_url:
                 from live_agent.qc.judge import VLMJudge
 
                 judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model), k=8, contrast=True)
@@ -216,7 +226,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
             log_dir = Path(args.log_dir)
             log_dir.mkdir(parents=True, exist_ok=True)
-            orch = Orchestrator(generator, director, sched, transport, judge=judge, corrector=ForwardCorrector(llm),
+            orch = Orchestrator(generator, director, sched, transport, judge=judge, corrector=ForwardCorrector(None if args.llm_url == "scripted" else llm),
                                 speech_check=speech, memory=make_memory(args, hello, session_id, mode),
                                 log=EventLog(log_dir / f"{session_id}.jsonl"),
                                 cfg=OrchestratorConfig(session_id=session_id, scope=mode,
