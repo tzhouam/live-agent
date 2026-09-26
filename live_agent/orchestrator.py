@@ -145,6 +145,7 @@ class Orchestrator:
         self._input_epoch = 0  # bumped by every barge-in; decisions from older epochs are discarded
         self.painted: dict[tuple[int, int], list[int] | None] = {}  # client-reported painted frame indices
         self._decisions_at_interrupt = 0
+        self._locking: int | None = None
 
     @property
     def n_chunks(self) -> int:
@@ -260,6 +261,7 @@ class Orchestrator:
                 continue  # an erasure started while waiting: re-check the gates
             for tm in self.gen.timings:  # refresh: t_done etc. arrive after the last chunk
                 self.sched.observe_timing(tm)
+            self._locking = k  # from popping the segment until the lock is recorded
             script = self.director.next_script(k)
             self._audit(script)
             prompt = compile_prompt(script, first_request=(k == 0))
@@ -268,6 +270,7 @@ class Orchestrator:
             await self.gen.submit(k, prompt)
             self.sched.on_lock(k, t)
             self.next_lock = k + 1
+            self._locking = None
             self.log.emit(EventType.LOCK, t, request_index=k, plan_version=script.plan_version,
                           lambda_est=self.sched.lambda_estimate(), planned_lock=tl,
                           action=script.action, transcript=script.transcript,
@@ -322,10 +325,12 @@ class Orchestrator:
 
     def _drain_director_events(self, t: float) -> None:
         ev = self.director.events
+        rev = lambda cid: len(self.director.chains[cid].revisions) if cid in self.director.chains else None  # noqa: E731
         for chain_id, reason in self._drain(ev.refusals):
-            self.log.emit(EventType.REFUSAL, t, chain_id=chain_id, reason=reason)
+            self.log.emit(EventType.REFUSAL, t, chain_id=chain_id, reason=reason, revision=rev(chain_id))
         for chain_id, reason in self._drain(ev.degradations):
-            self.log.emit(EventType.REFUSAL, t, chain_id=chain_id, reason=reason, degraded=True)
+            self.log.emit(EventType.REFUSAL, t, chain_id=chain_id, reason=reason, degraded=True,
+                          revision=rev(chain_id))
         for chain_id, revision in self._drain(ev.capacity_skips):
             self.log.emit(EventType.CAPACITY_SKIP, t, chain_id=chain_id, revision=revision)
         for original, cleaned in self._drain(ev.narration_guards):
@@ -402,6 +407,18 @@ class Orchestrator:
             return self.memory.no_recall(isolated_context=True)
         except TypeError:
             return self.memory.no_recall()
+
+    def _chain_deadline(self, script: BlockScript) -> float | None:
+        """Wall-clock deadline of the chain this request serves (action D = 15 s from its origin)."""
+        c = self.director.chains.get(script.chain_ids[0]) if script.chain_ids else None
+        return None if c is None else c.clock_origin + 15.0
+
+    def _qc_budget(self, script: BlockScript) -> float:
+        """A check may use at most qc_timeout_s, and no more than what is left of the chain's
+        deadline (min 1 s, so a late check still yields a logged — if untimely — verdict)."""
+        d = self._chain_deadline(script)
+        remaining = self.cfg.qc_timeout_s if d is None else d - now()
+        return max(1.0, min(self.cfg.qc_timeout_s, remaining))
 
     def _evidence_time(self, k: int, t_end: float) -> float:
         """E = presentation time of the last *painted* frame of the request, searched backwards
@@ -508,11 +525,12 @@ class Orchestrator:
                 call = self.judge.judge(q, chunks, k, t_evidence)
             else:
                 continue
+            budget = self._qc_budget(script)
             try:
-                v = await asyncio.wait_for(call, timeout=self.cfg.qc_timeout_s)
+                v = await asyncio.wait_for(call, timeout=budget)
             except asyncio.TimeoutError:
                 # a stalled judge/ASR must not hold verification, repair or the session: abstain
-                v = Verdict(q.qid, k, VerdictLabel.UNKNOWN, 0.0, f"timeout after {self.cfg.qc_timeout_s} s",
+                v = Verdict(q.qid, k, VerdictLabel.UNKNOWN, 0.0, f"timeout after {budget:.2f} s",
                             t_evidence, now())
             if k in self.dropped:
                 return
@@ -521,7 +539,9 @@ class Orchestrator:
             self.log.emit(EventType.VERDICT, v.t_verdict, request_index=k, qid=v.qid, kind=q.kind,
                           label=v.label.value, confidence=v.confidence, rationale=v.rationale,
                           t_evidence=t_evidence, source="online_monitor", chain_ids=script.chain_ids,
-                          revision=revision, step=step)
+                          revision=revision, step=step, qc_budget_s=budget,
+                          after_deadline=self._chain_deadline(script) is not None
+                          and v.t_verdict > self._chain_deadline(script))
             self.director.ledger.record_verdict(k, v.qid, v.label.value)
         intent = script.provenance.get("intent", "")
         for chain_id in script.chain_ids:
@@ -551,7 +571,11 @@ class Orchestrator:
                                    corrections=[sentence] if sentence else []))
         cost = (now() - t_evidence) + self.cfg.text_encode_s
         self._chain_costs.append(cost)
-        j = self.sched.earliest_correctable(t_evidence, cost, self.next_lock)
+        # The correction is ready *now*, so every request not yet locked is eligible: the earliest
+        # correctable request is the next lock opportunity (the one being locked right now, if a
+        # lock is in progress, is already fixed). The planned-time formula is logged for reference.
+        j_planned = self.sched.earliest_correctable(t_evidence, cost, self.next_lock)
+        j = self.next_lock + (1 if self._locking == self.next_lock else 0)
         # REPEAT arm = the original instruction unchanged (same action and line); GRADIENT arm =
         # same action plus the forward correction, no repeated line. The LOCK of the carrying
         # request logs its exact prompt and retry_of.
@@ -562,7 +586,8 @@ class Orchestrator:
                                            line=script.transcript if mode == CorrectionMode.REPEAT else "")
         self.log.emit(EventType.REPAIR, now(), request_index=script.request_index,
                       chain_id=chain_id, mode=mode.value, correction=sentence, queued=queued,
-                      earliest_correctable=j, next_unlocked=self.next_lock, chain_cost_s=cost,
+                      earliest_correctable=j, earliest_correctable_planned=j_planned,
+                      next_unlocked=self.next_lock, chain_cost_s=cost,
                       compile_s=now() - t0, step=script.provenance.get("step"),
                       revision=script.provenance.get("revision"), t_evidence=t_evidence,
                       arm_drawn=self.cfg.correction_mode == CorrectionMode.RANDOMIZED)
@@ -593,7 +618,7 @@ class Orchestrator:
                     cut.append(self.scripts[k])
                 self.dropped.add(k)
                 self._claims.pop(k, None)  # a claim that is never heard is not a claim
-                self.director.ledger.mark_generated_not_presented(k)
+                self.director.ledger.mark_generated_not_presented(k, partially_shown=bool(self.presented.get(k)))
         self.director.on_interrupted(cut)
         self._decisions_at_interrupt = self._decisions
         await self.transport.stop_playback()

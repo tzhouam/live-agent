@@ -266,3 +266,41 @@ def test_completion_remark_deferred_while_barge_in_decision_pending():
     assert not any(x.is_completion_remark for x in d.queue)  # held while the decision is pending
     say(d, "挥挥手", "u2", 2.0)
     assert any(x.is_completion_remark for x in d.queue)  # released after an unrelated decision
+
+
+def test_validate_refusal_never_speaks_acceptance():
+    d = make({"relation": "new", "kind": "action", "steps": [{"intent": "fly", "line": "好，我飞起来！"}]})
+    say(d, "你飞起来")
+    s = d.next_script(0)
+    assert "飞起来" not in s.transcript and "做不到" in s.transcript
+
+
+def test_completion_guard_covers_chat_lines():
+    d = make({"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "茶被我喝净了，你呢？"}]})
+    say(d, "你喝茶了吗")
+    s = d.next_script(0)
+    assert "喝净" not in s.transcript and d.events.narration_guards
+
+
+def test_verification_during_pending_decision_keeps_chain_revisable():
+    rev = {"relation": "revision", "target_chain": None, "kind": "action", "steps": [{"intent": "wave", "line": "好。"}]}
+    d = make(replies=[TEA])
+    say(d, "喝口茶", "u1")
+    tea = next(iter(d.chains.values()))
+    d.next_script(0)
+    d.on_barge_in()
+    d.on_verified(tea.chain_id, "drink_tea", 0, 1.0, revision=0)
+    assert tea.status == ChainStatus.OPEN and tea in d._open_chains()  # still revisable
+    rev["target_chain"] = tea.chain_id
+    d.llm = ScriptedLLM(lambda m: json.dumps(rev))
+    say(d, "不对，挥挥手", "u2", 2.0)
+    assert tea.status == ChainStatus.OPEN and len(tea.revisions) == 1  # stale verification dropped
+    assert not any(x.is_completion_remark for x in d.queue)
+
+
+def test_partially_shown_request_is_not_claimed_unsaid():
+    d = make(TEA)
+    d.ledger.record_request(3, "she lifts the teacup", "好，我喝口茶。")
+    d.ledger.mark_generated_not_presented(3, partially_shown=True)
+    note = d.ledger.bridging_note()
+    assert "did not say" not in note and "mid-way" in note

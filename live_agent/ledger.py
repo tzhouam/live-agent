@@ -46,6 +46,7 @@ class StateLedger:
         self.history: list[RequestState] = []
         self.generated_not_presented: list[int] = []  # requests generated but never shown
         self.bridge_request: int | None = None  # request carrying the bridge (divergence kept until shown)
+        self.partially_shown: set[int] = set()
 
     # ---------------------------------------------------------------- canon
     @property
@@ -91,16 +92,20 @@ class StateLedger:
         if self.bridge_request is not None and request_index == self.bridge_request:
             # the whole bridge request has been shown: the divergence is reconciled
             self.generated_not_presented.clear()
+            self.partially_shown.clear()
             self.bridge_request = None
 
     def unseen(self) -> list[RequestState]:
         """Generated-but-unpresented requests (their action and speech exist in generator state)."""
         return [r for r in self.history if r.request_index in self.generated_not_presented]
 
-    def mark_generated_not_presented(self, request_index: int) -> None:
-        """Interrupt case (proposal §10.5, option 3): content exists in generator state but was not shown."""
+    def mark_generated_not_presented(self, request_index: int, partially_shown: bool = False) -> None:
+        """Interrupt case (proposal §10.5, option 3): content exists in generator state but was not
+        (fully) shown. ``partially_shown``: some chunks were already seen/heard."""
         if request_index not in self.generated_not_presented:
             self.generated_not_presented.append(request_index)
+        if partially_shown:
+            self.partially_shown.add(request_index)
         if self.bridge_request is not None and request_index == self.bridge_request:
             self.bridge_request = None  # the bridge itself was cut: bridge again next time
 
@@ -136,13 +141,18 @@ class StateLedger:
         names what the viewer did not see (so later video does not silently continue from it)."""
         if not self.generated_not_presented or self.bridge_request is not None:
             return None
-        acts = [r.action for r in self.unseen() if r.action]
-        said = [r.transcript for r in self.unseen() if r.transcript]
+        unseen = [r for r in self.unseen() if r.request_index not in self.partially_shown]
+        cut = [r for r in self.unseen() if r.request_index in self.partially_shown]
+        acts = [r.action for r in unseen if r.action]
+        said = [r.transcript for r in unseen if r.transcript]
         parts = []
         if acts:
             parts.append("S1 did not do the following on screen and does not continue it: " + "; ".join(acts))
         if said:
             parts.append("S1 did not say the following aloud and does not refer to it: " + " / ".join(said))
+        if cut:  # partly seen/heard: which part is unknown at text level, so only stop it
+            parts.append("S1 stops what she was doing mid-way ("
+                         + "; ".join(r.action or "speaking" for r in cut) + ") and does not finish it")
         parts.append("S1 calmly returns to her previous posture and looks into the lens")
         return ". ".join(parts)
 

@@ -32,8 +32,8 @@ Items:
   spoken response otherwise, or an explicit "none by the onset deadline". A "not done" /
   "cannot tell" / "none" label (or a multistep step seen only before its predecessor) is
   accepted only if the union of intervals the rater actually played covers the request
-  through the applicable deadline (clipped to the recording end); otherwise the item is
-  escalated, not accepted.
+  through the applicable deadline (clipped to the recording end); otherwise the item stays
+  unresolved and must be relabelled (the arbiter never replaces an insufficient review).
 * **repair_target** (RQ2): one per randomised repair assignment whose target request j was
   presented. Raters judge only j's window, against the request as of the assignment-time
   revision (its lines and criteria), so a later revision cannot undo a repair. Merge emits a
@@ -884,10 +884,8 @@ def _reconcile_sweep(a: dict, b: dict, c: dict | None, tol: float) -> tuple[list
     each audible claim is accepted at most once. A claim heard by one rater and not by the
     arbiter is dropped; a claim both raters heard but labelled differently needs the arbiter."""
     arb = c if c is not None and c["review_ok"] else None
-    if not (a["review_ok"] and b["review_ok"]):
-        if arb is None:
-            return None, "", "incomplete review of the recording"
-        return [dict(x, _how="arbitration") for x in arb["claims"]], "arbitration", ""
+    if not (a["review_ok"] and b["review_ok"]):  # the arbiter never replaces an insufficient primary review
+        return None, "", "incomplete review of the recording: relabel"
     cand = sorted((abs(x["t"] - y["t"]), i, j) for i, x in enumerate(a["claims"]) for j, y in enumerate(b["claims"])
                   if _ref(x) == _ref(y) and abs(x["t"] - y["t"]) <= tol)
     ua, ub, pairs = set(), set(), []
@@ -966,8 +964,9 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
 
     Every independent rating becomes a ``rating`` event. One reconciled ``verdict`` (source
     ``adjudicated``) per item/step is written only when both raters reviewed enough and
-    agree (same label; times within ``tol_s``), or the arbiter (with a sufficient review)
-    labelled it; otherwise the item is unresolved (escalated). Content items also get an
+    either agree (same label; times within ``tol_s``) or disagree and the arbiter (also with
+    a sufficient review) breaks the tie. If either primary review is insufficient the item
+    stays unresolved for relabelling; the arbiter never supplies a label alone. Content items also get an
     adjudicated ``speech_onset``; a resolved claim sweep yields adjudicated
     ``completion_claim`` + claim-level ``verdict`` events and a ``claim_sweep`` marker.
 
@@ -1072,12 +1071,12 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
             if agree:
                 v, how, who = _combine(a, b), "agreement", [a["annotator"], b["annotator"]]
                 res["agreed"] += 1
-            elif c is not None and c["review_ok"]:
+            elif a["review_ok"] and b["review_ok"] and c is not None and c["review_ok"]:
                 v, how, who = dict(c), "arbitration", [a["annotator"], b["annotator"], c["annotator"]]
                 res["arbitrated"] += 1
             else:
                 short = [r["annotator"] for r in (a, b) if not r["review_ok"]]
-                res["unresolved"][k] = (f"target window not fully watched: {', '.join(short)}" if short
+                res["unresolved"][k] = (f"target window not fully watched: {', '.join(short)}; relabel" if short
                                         else "disagreement")
                 continue
             ev = {"type": "verdict", "source": "adjudicated", **base, "label": v["label"], "annotators": who,
@@ -1105,12 +1104,13 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
         if a["review_ok"] and b["review_ok"] and _agree(a, b, info["kind"], tol_s, step):
             v, how, who = _combine(a, b), "agreement", [a["annotator"], b["annotator"]]
             res["agreed"] += 1
-        elif c is not None and c["review_ok"]:
+        elif a["review_ok"] and b["review_ok"] and c is not None and c["review_ok"]:
+            # the arbiter only breaks a tie between two sufficient independent reviews
             v, how, who = dict(c), "arbitration", [a["annotator"], b["annotator"], c["annotator"]]
             res["arbitrated"] += 1
         else:
             short = [r["annotator"] for r in (a, b) if not r["review_ok"]]
-            res["unresolved"][k] = (f"reviewed less than the deadline window: {', '.join(short)}" if short
+            res["unresolved"][k] = (f"reviewed less than the deadline window: {', '.join(short)}; relabel" if short
                                     else "disagreement")
             continue
         ev = {"type": "verdict", "source": "adjudicated", **base, "label": v["label"],

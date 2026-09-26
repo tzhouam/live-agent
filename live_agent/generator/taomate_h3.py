@@ -357,13 +357,20 @@ class TaoMateH3Generator(Generator):
                 timing.t_student_start = self._mono(message["t"])
         elif kind == P.CHUNK:
             t_ready = now()
+            try:
+                message["video"] = P.from_shm(message.get("video"))
+                message["audio"] = P.from_shm(message.get("audio"))
+            except Exception as e:  # noqa: BLE001 - missing/corrupt payload: fatal, surfaced to chunks()
+                P.discard_shm(message)
+                self._fail({"role": role, "type": P.ERROR, "message": f"chunk payload unreadable: {e}"})
+                return
             chunk = Chunk(
                 request_index=k,
                 chunk_index=int(message["chunk_index"]),
                 n_frames=int(message["n_frames"]),
                 fps=float(message["fps"]),
-                video=P.from_shm(message.get("video")),
-                audio=P.from_shm(message.get("audio")),
+                video=message.get("video"),
+                audio=message.get("audio"),
                 sample_rate=int(message.get("sample_rate", 32000)),
                 t_ready=t_ready,
                 meta={

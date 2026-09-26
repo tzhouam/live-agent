@@ -169,8 +169,12 @@ class MemoryBridge:
         if self.store.erasing:  # ingested after the erasure finishes (forget_async)
             self._deferred.append(utt)
             return
-        res = self.store.ingest_user_utterance(utt, user_id=self.user_id, stream_id=self.stream_id,
-                                               mode=self._mode)
+        try:
+            res = self.store.ingest_user_utterance(utt, user_id=self.user_id, stream_id=self.stream_id,
+                                                   mode=self._mode)
+        except ScopeViolationError as e:  # e.g. a viewer event in a private session: dropped
+            self._violation(utt.text, f"utterance not stored: {e}", [])
+            return
         for rec in [res.episode, *res.facts, res.generated_event]:
             if rec is not None:
                 self._ingested[rec.id] = None

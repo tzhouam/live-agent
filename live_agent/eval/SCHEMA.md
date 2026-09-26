@@ -154,12 +154,15 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   * a multistep step marked done only **before** its predecessor (nonqualifying
     evidence): its own window, step *i−1* time + 15 s.
 
-  A sweep must cover the whole recording. Shorter reviews are **escalated** to the arbiter,
-  not accepted.
+  A sweep must cover the whole recording. If either primary review is too short, the item
+  stays **unresolved and must be relabelled**; the arbiter never replaces an insufficient
+  primary review.
 * **Reconciliation**: two independent label files plus an optional **arbiter**. Every label
   is kept as a `rating` event. One reconciled `verdict` per item/step is written only when
   both raters reviewed enough and agree (same label; times within `--tol`, default 1 s; the
-  later time is used), or else the arbiter (with sufficient review) labelled it. Sweep
+  later time is used), or when both reviewed enough but disagree and the arbiter (with a
+  sufficient review) breaks the tie. Every accepted item therefore rests on two sufficient
+  independent reviews. Sweep
   claims are reconciled **strictly one-to-one across all three raters**. The referent is the
   chain, step and intent revision in force at the claim. Rater A–B pairs with the same
   referent within `--tol` are matched first, and agreed pairs are accepted. Arbiter marks
@@ -239,7 +242,8 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   `withdrawn` (any withdrawal, from the chain's withdrawal history, at or after the
   assignment and before the target request finished presenting, even if a later revision
   reopened the chain: a failure in the primary row, excluded in a sensitivity row,
-  **whatever the target request showed**); `success` (the adjudicated repair-target verdict
+  **whatever the target request showed**); `insufficient_observation` (checked before
+  success; see below); `success` (the adjudicated repair-target verdict
   for (chain, j, assignment-time revision, step) is `complied`, so a later revision of the
   chain cannot undo a repair; diagnostic mode without one falls back to a complied verdict
   bound to that revision whose request is j); `insufficient_observation` (not **every** chunk,

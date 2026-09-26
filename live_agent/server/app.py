@@ -270,6 +270,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 elif t == "speech_start":
                     await orch.on_speech_start()
                 elif t == "text" and data.get("text", "").strip():
+                    # a typed instruction interrupts like speech does (before its LLM work is queued)
+                    await orch.on_speech_start()
                     inputs.put_nowait(("text", data["text"].strip(), transport._to_server(data)))
                 elif t == "audio_end":  # precedes the recorded audio bytes
                     audio_end = transport._to_server(data)

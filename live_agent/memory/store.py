@@ -683,6 +683,10 @@ class MemoryStore:
                                               derived_from=None)
             return IngestResult(episode=None, generated_event=gen)
         if utt.speaker.startswith("viewer:"):
+            # the role comes from the authenticated session: viewers exist only in a public one
+            if mode != "public":
+                self.stats["viewer_outside_public"] += 1
+                raise ScopeViolationError("viewer events are only accepted in an authenticated public session")
             if not stream_id:
                 raise ValueError("viewer chat requires stream_id")
             ep = self.ingest_viewer_chat(utt.text, utt.speaker.split(":", 1)[1], stream_id,
@@ -1060,7 +1064,10 @@ class MemoryStore:
         * "proposition": one clause of the turn (split on ，。；,;！？!? and 但/而/可是/并且/but/
           and/whereas/although) restates the subject-predicate-value proposition: it contains
           the value **and** a predicate cue (e.g. 住/live for ``lives_in``) **and** a subject
-          cue (我/I for the user; 妹妹/sister for ``user:<id>/sister``). A bare value mention
+          cue (我/I for the user; 妹妹/sister for ``user:<id>/sister``) **as the clause's
+          grammatical subject**: the text before the first predicate cue must contain the
+          subject cue, must not name another person (我妈妈住在北京 does not confirm "I live in
+          Beijing") and must not negate the predicate (我不住在北京). A bare value mention
           ("I visited Beijing") or cues spread over clauses ("我住在北京，我妹妹住在上海")
           do not bind.
         * "answer": ``question_id`` is the persona line that asked about this record (a
@@ -1074,8 +1081,7 @@ class MemoryStore:
         text = conf.text
         if len(nv) >= 2:
             for clause in _clauses(text):  # all three cues must come from the same clause
-                if (nv in _norm(clause) and _has_cue(clause, _predicate_cues(rec.predicate))
-                        and _has_cue(clause, _subject_cues(rec.subject))):
+                if nv in _norm(clause) and _clause_states(clause, rec.subject, rec.predicate):
                     return "proposition"
         if question_id:
             q = self._require(question_id)
@@ -1865,6 +1871,41 @@ _CLAUSE_SPLIT = re.compile(r"[，。；,;！？!?、\n]|但是|但|而且|并且
 
 def _clauses(text: str) -> list[str]:
     return [c for c in (x.strip() for x in _CLAUSE_SPLIT.split(text)) if c]
+
+
+_ALL_KIN = tuple(w for ws in _REL_CUES.values() for w in ws)
+_OTHER_PERSON = ("他", "她", "他们", "她们", "你", "you", "he", "she", "they", "his", "her", "their", "your")
+_PRE_NEGATION = re.compile(r"不|没|别|未|\bnot\b|n't|\bnever\b|\bno longer\b", re.IGNORECASE)
+
+
+def _cue_positions(text: str, cues: Iterable[str]) -> list[int]:
+    low = text.lower()
+    out = []
+    for c in cues:
+        if c.isascii():
+            m = re.search(rf"(?<![a-z']){re.escape(c)}(?![a-z])", low)
+            if m:
+                out.append(m.start())
+        else:
+            i = text.find(c)
+            if i >= 0:
+                out.append(i)
+    return out
+
+
+def _clause_states(clause: str, subject: str | None, predicate: str | None) -> bool:
+    """True if ``clause`` asserts ``predicate`` with ``subject`` as its grammatical subject:
+    the span before the first predicate cue holds the subject cue, no other person / kin
+    noun, and no negation."""
+    pos = _cue_positions(clause, _predicate_cues(predicate))
+    if not pos:
+        return False
+    head = clause[:min(pos)]
+    subj = _subject_cues(subject)
+    if not _has_cue(head, subj) or _PRE_NEGATION.search(head):
+        return False
+    others = [w for w in _ALL_KIN + _OTHER_PERSON if w not in subj]
+    return not _has_cue(head, others)
 
 
 def _has_cue(text: str, cues: Iterable[str]) -> bool:

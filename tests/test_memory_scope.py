@@ -644,3 +644,35 @@ def test_forget_async_in_memory_runs_inline(mem):
     b.on_user_utterance(utt("I work at Acme"))
     rep = _run(b.forget_async("Acme"))
     assert rep.complete and rep.deleted_ids and mem.verify_erasure(rep).ok
+
+
+# ---------------------------------------------------------------- round 6
+
+
+def test_viewer_events_only_in_public_sessions(mem):
+    before = mem.db.execute("SELECT count(*) FROM records").fetchone()[0]
+    for mode in (None, "private"):
+        with pytest.raises(ScopeViolationError):
+            mem.ingest_user_utterance(utt("I live in Tokyo", speaker="viewer:v1"), user_id=U, stream_id=S, mode=mode)
+    b = bridge(mem, mode="private")
+    b.on_user_utterance(utt("我住在东京", speaker="viewer:v1", scope="public"))
+    assert "viewer events" in b.scope_violations[-1]["reason"]
+    assert mem.db.execute("SELECT count(*) FROM records").fetchone()[0] == before
+    assert mem.db.execute("SELECT count(*) FROM records WHERE scope LIKE 'public:%'").fetchone()[0] == 0
+    pub = bridge(mem, mode="public")
+    pub.on_user_utterance(utt("主播好", speaker="viewer:v1"))
+    (ep,) = mem._load(mem._ids("SELECT id FROM records WHERE kind = 'episode'"))
+    assert ep.scope == public_scope(S) and ep.claim_type == ClaimType.VIEWER_CLAIM
+
+
+def test_confirmation_subject_must_be_the_clause_subject(mem):
+    mem.record_generated_event("你住在北京吧", "sess", private_scope(U))
+    (e,) = mem.ingest_user_utterance(utt("我住在北京"), user_id=U).facts
+    assert e.status == Status.PENDING and e.subject == f"user:{U}"
+    for text in ("我妈妈住在北京", "我不住在北京", "我没住在北京", "他住在北京", "My mom lives in 北京",
+                 "I don't live in 北京", "I no longer live in 北京"):
+        turn = mem.ingest_user_utterance(utt(text, session="c"), user_id=U).episode
+        with pytest.raises(ValueError):
+            mem.confirm(e.id, turn.id)
+    ok = mem.ingest_user_utterance(utt("对，我住在北京", session="c"), user_id=U).episode
+    assert mem.confirm(e.id, ok.id).status == Status.ACTIVE

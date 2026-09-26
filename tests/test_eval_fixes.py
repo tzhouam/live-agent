@@ -453,12 +453,12 @@ def _exp(tasks: int, seeds: int, label: str = "c1") -> set[tuple]:
 
 
 def _session_file(tmp_path: Path, name: str, task_id: str, utts: list[tuple], extra=(), cond="A2",
-                  length=40.0, mode="browser") -> Path:
+                  length=40.0, mode="browser", **meta) -> Path:
     """utts: (t_end, text, action, label, ann_extra). Chunks of 1 s, presented back to back
     from t=0 (video time == session time), recorded length ``length``."""
     sid = f"{cond}-{task_id}-s0"
     recs = [{"type": "session", "session_id": sid, "condition": cond, "task_id": task_id, "seed": 0,
-             "mode": mode}]
+             "mode": mode, **meta}]
     for i, (t_end, text, action, label, ann) in enumerate(utts):
         uid = f"{sid}:u{i}"
         recs.append({"type": "utterance", "uid": uid, "speaker": "user", "text": text,
@@ -624,9 +624,17 @@ def test_negative_labels_need_review_through_the_deadline(tmp_path):
     r = merge(batch, [(_labels(tmp_path, "a", short), "R1"), (_labels(tmp_path, "b", short), "R2")])
     assert "reviewed less than the deadline window" in r["unresolved"][f"{iid}/0"]  # escalated
     assert score_session(load_session(log)).chains[0].outcome == Outcome.UNADJUDICATED
+    # an arbiter alone never supplies the label when a primary review was insufficient
     r = merge(batch, [(_labels(tmp_path, "a", short), "R1"), (_labels(tmp_path, "b", short), "R2")],
               arbiter=(_labels(tmp_path, "c", full), "R3"))
-    assert r["arbitrated"] == 1
+    assert r["arbitrated"] == 0 and "relabel" in r["unresolved"][f"{iid}/0"]
+    assert score_session(load_session(log)).chains[0].outcome == Outcome.UNADJUDICATED
+    # one sufficient + one insufficient review: still unresolved
+    r = merge(batch, [(_labels(tmp_path, "a3", full), "R1"), (_labels(tmp_path, "b3", short), "R2")],
+              arbiter=(_labels(tmp_path, "c3", full), "R3"), replace=True)
+    assert r["arbitrated"] == 0 and f"{iid}/0" in r["unresolved"]
+    # relabelled with two sufficient reviews
+    merge(batch, [(_labels(tmp_path, "a4", full), "R1"), (_labels(tmp_path, "b4", full), "R2")], replace=True)
     assert score_session(load_session(log)).chains[0].outcome == Outcome.NEVER
     # recording shorter than the deadline: review to its end suffices (then flagged unobserved)
     log2, batch2, items2, sw2 = _one_item(tmp_path, name="t", length=12.0)
@@ -1136,7 +1144,7 @@ def test_repair_target_items_and_merge(tmp_path):
             (15.0, "哦对了，用左手挥。", "revision", "c1", {"kind": "action"})]
     assign = {"type": "repair_assignment", "chain_id": "A2-rq2-E2-D01-s0:c1", "arm": "repeat", "failure_request": 0,
               "target_request": 1, "t": 4.0, "arm_drawn": True, "revision": 0}
-    log = _session_file(tmp_path, "s", "E2-D01", utts, extra=[assign], cond="A2-rq2")
+    log = _session_file(tmp_path, "s", "E2-D01", utts, extra=[assign], cond="A2-rq2", chunks_per_request=5)
     batch = tmp_path / "b"
     items = _items(prepare([log], batch))
     (rt,) = [i for i in items if i["type"] == "repair_target"]
@@ -1187,3 +1195,33 @@ def test_non_e2e_sessions_get_no_primary_decision(tmp_path, capsys):
     with pytest.raises(SystemExit) as e:
         report.main([str(p)])
     assert e.value.code == 2 and "--allow-non-e2e" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- round 6 (impl2g)
+
+
+def test_repair_success_needs_the_whole_target_observed():
+    L = Log("A2", "T1", 0)
+    L.recs[0]["chunks_per_request"] = 2
+    L.new(0.0, chain="c1")
+    L.ev(type="chunk_presented", request=3, chunk=0, t_start=18.0, t_end=20.0)  # chunk 1 never presented
+    L.ev(type="observation_end", t=60.0)
+    L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=10.0,
+         arm_drawn=True, revision=0)
+    L.verdict(19.0, chain="c1")
+    L.rverdict(3, "complied", t=19.0)
+    assert L.one().repairs[0]["status"] == "insufficient_observation"
+    L.ev(type="chunk_presented", request=3, chunk=1, t_start=20.0, t_end=22.0)
+    assert L.one().repairs[0]["status"] == "success"
+
+
+def test_arbiter_never_replaces_an_insufficient_primary_review(tmp_path):
+    _, batch, items, sw = _sweep_session(tmp_path)
+    ch, sk = items[0]["id"], f"{sw['id']}/0"
+    chain = {f"{ch}/0": {"v_onset": 11.0, "label": "complied", "v_first": 12.0}}
+    full = {"complete": True, "v_watched": [[0.0, 40.0]], "claims": []}
+    short = {"complete": True, "v_watched": [[0.0, 20.0]], "claims": []}
+    r = merge(batch, [(_labels(tmp_path, "a", {**chain, sk: full}), "R1"),
+                      (_labels(tmp_path, "b", {**chain, sk: short}), "R2")],
+              arbiter=(_labels(tmp_path, "c", {sk: full}), "R3"))
+    assert "relabel" in r["unresolved"][sk] and r["arbitrated"] == 0

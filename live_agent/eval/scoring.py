@@ -520,13 +520,14 @@ def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, A
       finished presenting (withdrawal history: a later reopening by revision does not undo
       it): a repair failure in the primary analysis, excluded in a sensitivity row,
       whatever the target request showed;
+    * ``insufficient_observation`` (before success): not every chunk of j was presented
+      before ``observation_end`` (or ``chunks_per_request`` is unknown, or there is no j):
+      flagged, rerun -- a success seen in a partly presented target is not accepted;
     * ``success``: the repair-target verdict for (chain, j, assignment-time revision, step)
       is ``complied`` -- judged by blinded raters on request j's window against the intent
       as of the assignment, so a later revision cannot undo it. Diagnostic mode without
       such a verdict: a complied verdict bound to that revision whose request (explicit,
       else the presented chunk containing its compliance time) is j;
-    * ``insufficient_observation``: not every chunk of j was presented before
-      ``observation_end`` (or ``chunks_per_request`` is unknown): flagged, rerun;
     * ``unadjudicated``: primary mode without a repair-target verdict (the report refuses);
     * ``failure``: otherwise."""
     cfg = cfg or ScoringConfig()
@@ -563,10 +564,10 @@ def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, A
         status = "ineligible"
     elif withdrawn:
         status = "withdrawn"
+    elif tgt is None or done_t is None:  # every row needs the whole target observed, success included
+        status = "insufficient_observation"
     elif ok:
         status = "success"
-    elif tgt is not None and done_t is None:
-        status = "insufficient_observation"
     elif not own and not cfg.diagnostic:
         status = "unadjudicated"
     else:

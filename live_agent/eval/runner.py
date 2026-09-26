@@ -143,7 +143,7 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
                     out.append({"type": "speech_onset", "t": ts(ev.t), "on_topic": None, "source": "script",
                                 "onset_source": d.get("onset_source"), "chain_id": gt, "request": k})
         elif ev.type == EventType.REFUSAL:
-            gt = dchain_to_gt.get(d.get("chain_id", ""))
+            gt = gt_of(d.get("chain_id", ""), d.get("revision"))
             if gt:
                 out.append({"type": "refusal", "chain_id": gt, "t": ts(ev.t),
                             "kind": "degraded" if d.get("degraded") else "refused", "reason": d.get("reason", "")})

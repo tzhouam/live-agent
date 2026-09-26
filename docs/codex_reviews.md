@@ -472,3 +472,11 @@ Both verdicts: **not ready**. Every finding was accepted and fixed in the next c
 - **Config bug found while fixing #35:** every capability's `degrade_to` line was an acceptance or completion phrase.
 - **#10 (audio input path):** handled by refusing primary E2 decisions for non-browser logs. The TTS-driven client is open.
 - **Pending:** the GPU re-check of the round-5 adapter change (rank-PID gather at worker start-up) is queued; GPUs 3–5 and 7 are held by another user.
+
+### impl1g + impl2g: round 6
+
+Model gpt-6-sol, verified.
+- **impl1g:** 29 of 38 RESOLVED or scoped, 9 PARTIAL, plus 4 new major findings.
+- **impl2g:** 8 of 10 RESOLVED, 2 PARTIAL, plus 3 new findings (1 blocking: in a private session, a `viewer:`-tagged utterance was written into public scope).
+
+Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit (all tests pass).

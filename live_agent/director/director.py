@@ -136,6 +136,7 @@ class Director:
         self.interrupted: dict[str, Segment] = {}  # open chain -> its cut (dropped, unverified) segment
         self.awaiting_decision = False
         self.deferred: list[Segment] = []
+        self.deferred_verifications: list[tuple] = []
 
     @property
     def closed(self) -> bool:
@@ -163,6 +164,10 @@ class Director:
         for seg in reversed(deferred):
             if seg.chain_id not in touched:
                 self.queue.appendleft(seg)
+        pending, self.deferred_verifications = self.deferred_verifications, []
+        for chain_id, intent, k, t, revision, step in pending:
+            # a revised chain has a new revision count, so a stale verification no longer matches
+            self.on_verified(chain_id, intent, k, t, revision=revision, step=step)
         for seg in self.queue:
             if id(seg) not in before:
                 seg.memory_ids = list(memory_ids) if memory_ids is not None else None
@@ -221,7 +226,8 @@ class Director:
         return None
 
     def _guard(self, line: str) -> str:
-        """Closed loop: remove clauses that claim completion from an (unverified) LLM line."""
+        """Closed loop: remove clauses that claim completion from an (unverified) LLM line —
+        every spoken line, not only action-bearing ones."""
         if not self.closed or not _claims_completion(line):
             return line
         kept = [c for c in re.split(r"(?<=[。！？!?；;，,])", line) if c and not _claims_completion(c)]
@@ -277,7 +283,9 @@ class Director:
         if refusal:
             chain.status = ChainStatus.REFUSED
             self.events.refusals.append((chain.chain_id, refusal))
-            self._enqueue_chat(steps)  # the spoken explanation, not bound to the refused chain
+            # keep the LLM's words only if they actually decline; never speak an acceptance
+            declines = [st for st in steps if _DECLINE.search(st.get("line") or "")]
+            self._enqueue_chat(declines or [{"line": "这个我现在做不到，不过我们可以聊聊别的。"}])
             return
         self._enqueue_chain(chain, steps)
 
@@ -391,6 +399,11 @@ class Director:
     # ------------------------------------------------------------ verdict feedback
     def on_verified(self, chain_id: str, intent: str, request_index: int, t: float, *,
                     revision: int | None = None, step: int | None = None) -> bool:
+        if self.awaiting_decision:
+            # a barge-in decision is pending: the chain must stay open (revision-eligible) and
+            # no "好了。" may be queued until the decision resolves; re-applied after `apply`
+            self.deferred_verifications.append((chain_id, intent, request_index, t, revision, step))
+            return True
         chain = self.chains.get(chain_id)
         if not chain or chain.status != ChainStatus.OPEN or not self._matches(chain, revision, step):
             return False
@@ -601,8 +614,22 @@ _COMPLETION = re.compile(
     r"[喝吃写翻挥放拿站坐鞠点摇]了(?![吗呢])|[喝吃]光|[了完好过光]啦|done|finished)")
 
 
+_ACTION_VERB = "喝吃写翻挥放拿站坐鞠点摇倒扇笑看读唱讲画收摆捧端举"
+_VERB_PERFECTIVE = re.compile(rf"[{_ACTION_VERB}][^，。！？,.!?；;]{{0,4}}[了啦过完光净好掉]")
+
+
 def _claims_completion(line: str) -> bool:
-    return bool(_COMPLETION.search(line or ""))
+    """Completion meaning: explicit markers, or an action verb followed (same clause) by a
+    perfective / resultative marker (e.g. 茶被我喝净了, 书放好了)."""
+    line = line or ""
+    if _COMPLETION.search(line):
+        return True
+    for clause in re.split(r"(?<=[，。！？,.!?；;])", line):
+        if re.search(r"[吗呢？?]\s*[，。！？,.!?；;]?$", clause.strip()):
+            continue  # a question does not claim anything
+        if _VERB_PERFECTIVE.search(clause):
+            return True
+    return False
 
 
 _REQUEST = re.compile(r"(请|吧|给我|帮我|能不能|能否|可以.{0,6}吗|你能.{0,8}吗|来.{0,4}一下|一下)")
