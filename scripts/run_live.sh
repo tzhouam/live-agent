@@ -72,7 +72,8 @@ case "$mode" in
     for p in 8101 8102 8103; do port_free $p || { echo "helper port $p already in use (models running?)"; exit 1; }; done
     echo "[run_live] $mode: starting helper models on 1 GPU (log $HELPER_LOG) ..."
     : > "$HELPER_LOG"; : > "$SERVER_LOG"
-    gpu run --gpus 1 --timeout "$HOURS" --note "live-agent helper models (run_live.sh)" -- \
+    hsel=(--gpus 1); [ -n "${HELPER_GPU:-}" ] && hsel=(--gpu-ids "$HELPER_GPU")  # pin (avoid shared cards)
+    gpu run "${hsel[@]}" --timeout "$HOURS" --note "live-agent helper models (run_live.sh)" -- \
       scripts/serve_models.sh > "$HELPER_LOG" 2>&1 &
     pids+=($!)
     t0=$SECONDS
@@ -92,7 +93,8 @@ case "$mode" in
         --host "$HOST" --port "$PORT" "${extra[@]}" > "$SERVER_LOG" 2>&1 &
     else
       echo "[run_live] helper models ready; starting TaoMate-H3 server on 6 GPUs (start-up ~2-3 min) ..."
-      gpu run --gpus 6 --timeout "$HOURS" --note "live-agent server (run_live.sh)" -- \
+      ssel=(--gpus 6); [ -n "${GPU_IDS:-}" ] && ssel=(--gpu-ids "$GPU_IDS")
+      gpu run "${ssel[@]}" --timeout "$HOURS" --note "live-agent server (run_live.sh)" -- \
         python3 -m live_agent.server.app --generator taomate_h3 --director-mode "$DIRECTOR" \
           --host "$HOST" --port "$PORT" "${extra[@]}" > "$SERVER_LOG" 2>&1 &
     fi
