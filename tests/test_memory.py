@@ -187,7 +187,9 @@ def test_agent_inference_is_candidate_belief(mem):
     assert mem.resolve(U, "user", "speaks").value is None
     with pytest.raises(ValueError):
         mem.confirm(b.id)  # an inference needs the user's confirming turn
-    yes = say(mem, "对，我会说法语。").episode
+    with pytest.raises(ValueError):  # an unrelated turn does not confirm the proposition
+        mem.confirm(b.id, say(mem, "今天天气不错。").episode.id)
+    yes = say(mem, "对，我会说French。").episode
     c = mem.confirm(b.id, yes.id)
     assert c.id != b.id and c.kind == Kind.USER_FACT and c.claim_type == ClaimType.OWN_ASSERTION
     assert c.provenance.speaker == "user" and c.provenance.source_id == yes.provenance.source_id

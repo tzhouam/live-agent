@@ -44,14 +44,14 @@ async def main(args) -> None:
                 await asyncio.sleep(dur)
                 playhead = start + dur
                 await ws.send(json.dumps({"type": "chunk_end", "request": meta["request"], "chunk": meta["chunk"],
-                                          "tp": playhead * 1000}))
+                                          "tp": playhead * 1000, "painted": list(range(meta["n_frames"]))}))
                 summary["chunks"] += 1
 
         async def talker():
             for at, text in turns:
                 await asyncio.sleep(max(0.0, t0 + at - time.monotonic()))
                 await ws.send(json.dumps({"type": "speech_start"}))
-                await ws.send(json.dumps({"type": "text", "text": text}))
+                await ws.send(json.dumps({"type": "text", "text": text, "tp": time.monotonic() * 1000}))
 
         async def pinger():
             while True:

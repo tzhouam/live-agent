@@ -134,6 +134,15 @@ class SessionView(Generator):
         await self.backend.reset()  # indices stay monotonic within the session
         self._epoch = getattr(self.backend, "session_epoch", None)
 
+    async def reset_confirmed(self, timeout: float = 30.0) -> bool:
+        fn = getattr(self.backend, "reset_confirmed", None)
+        if fn is None:
+            await self.reset()
+            return True  # in-process backend: reset() is synchronous
+        ok = await fn(timeout)
+        self._epoch = getattr(self.backend, "session_epoch", None)
+        return ok
+
     async def close(self) -> None:
         await self.backend.reset()
 

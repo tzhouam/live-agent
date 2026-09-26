@@ -37,9 +37,11 @@ SUITE = ROOT / "eval" / "tasks" / "e2_committed.jsonl"
 class Log:
     """Tiny builder for session logs."""
 
-    def __init__(self, condition="A2", task_id="T1", seed=0, sid=None):
+    def __init__(self, condition="A2", task_id="T1", seed=0, sid=None, sweep=True):
         self.recs = [{"type": "session", "session_id": sid or f"{condition}-{task_id}-{seed}",
                       "condition": condition, "task_id": task_id, "seed": seed}]
+        if sweep:  # the session's recording was swept for audible completion claims
+            self.recs.append({"type": "claim_sweep", "source": "adjudicated"})
         self.n = 0
 
     def utt(self, t_end, text="x", dur=1.0, barge_in=False):
@@ -77,6 +79,12 @@ class Log:
     def onset(self, t, chain="c1", on_topic=True, source="adjudicated"):
         self.recs.append({"type": "speech_onset", "t": t, "on_topic": on_topic, "chain_id": chain,
                           "source": source})
+
+    def aclaim(self, t, label="complied", chain="c1", **kw):
+        """A completion claim found by the adjudicated audio sweep, with its claim verdict."""
+        self.recs.append({"type": "completion_claim", "source": "adjudicated", "chain_id": chain, "t": t, **kw})
+        self.recs.append({"type": "verdict", "source": "adjudicated", "chain_id": chain, "claim_t": t,
+                          "label": label, **kw})
 
     def ev(self, **kw):
         self.recs.append(kw)
@@ -258,7 +266,7 @@ def test_multistep_ordering_and_per_step_deadline():
     assert c.outcome == Outcome.LATE and c.steps_complied == 1
     c = run([(0, 10.0), (1, 5.0), (2, 20.0)])  # step 1 only before step 0: out of order
     assert c.outcome == Outcome.ORDER_FAIL and c.steps_complied == 1
-    assert c.time_to_success == 25.0  # censored at step-1 deadline (10 + 15)
+    assert c.time_to_success == 45.0  # not a success by D = 3 x 15 (no early censoring)
     c = run([(0, 10.0)])
     assert c.outcome == Outcome.UNADJUDICATED  # step 1 not adjudicated
     L = Log()
@@ -266,7 +274,7 @@ def test_multistep_ordering_and_per_step_deadline():
     L.verdict(10.0, step=0)
     L.verdict(None, step=1, label="not_complied")  # reviewed, not done: no time needed
     c = L.one()
-    assert c.outcome == Outcome.NEVER and c.steps_complied == 1 and c.time_to_success == 25.0
+    assert c.outcome == Outcome.NEVER and c.steps_complied == 1 and c.time_to_success == 45.0
 
 
 def test_source_preference():
@@ -291,6 +299,20 @@ def test_chunk_lookup_for_compliance_time():
 
 def test_fcr_and_claim_coverage():
     L = Log()
+    for c, label in (("c1", "complied"), ("c2", "not_complied"), ("c3", "unknown")):
+        L.new(0.0, chain=c)
+        L.verdict(5.0, chain=c)
+        L.aclaim(6.0, label, chain=c)  # primary: claims from the audio sweep, judged directly
+    L.new(0.0, chain="c4")
+    L.verdict(5.0, chain="c4")
+    L.ev(type="completion_claim", chain_id="c4", t=6.0)  # logged only: diagnostic, not primary
+    s = summarize(L.score().chains)
+    assert s["n_claims"] == 3 and s["n_false_claims"] == 2  # unknown counts as false
+    assert s["claim_coverage"] == 0.75
+
+
+def test_fcr_diagnostic_logged_claims():
+    L = Log()
     L.new(0.0, chain="c1")
     L.verdict(5.0, chain="c1")
     L.ev(type="completion_claim", chain_id="c1", t=6.0)  # supported
@@ -304,7 +326,7 @@ def test_fcr_and_claim_coverage():
     L.verdict(20.0, chain="c4")
     L.ev(type="completion_claim", chain_id="c4", t=6.0, claim_id="k4")
     L.ev(type="verdict", claim_id="k4", source="adjudicated", label="complied")  # direct adjudication
-    s = summarize(L.score().chains)
+    s = summarize(L.score(ScoringConfig.diagnostic_config(("adjudicated",))).chains)
     assert s["n_claims"] == 4 and s["n_false_claims"] == 2 and s["fcr"] == 0.5
     assert s["claim_coverage"] == 1.0
 

@@ -23,6 +23,7 @@ Both roles::
     ← hello   {role, pid, world_size, devices}
     ← ready   {role, load_s, memory}            model loaded; commands accepted
     → reset   {session}                         drop all state; later commands carry session
+    ← reset_done {session}                      (both roles) state released for that session
     → shutdown {}
     ← error   {role, session, request_index, message}
 

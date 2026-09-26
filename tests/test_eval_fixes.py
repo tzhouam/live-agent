@@ -1,7 +1,8 @@
-"""Tests for the impl2 Codex review fixes in the evaluation harness (findings 1-7, 9, 11):
-adjudication-only primary outcome, dual rating + arbitration, frozen criteria, revision
-binding, claims, capacity skips, observation windows, preregistered Holm families, key
-placement and label validation."""
+"""Tests for the Codex review fixes in the evaluation harness (impl2 findings 1-7, 9, 11 and
+impl2c round 2: NEW-1..9, R1-5/7/11): adjudication-only primary outcome, dual rating +
+arbitration with review coverage, frozen criteria and absolute deadlines, revision binding,
+audio claim sweep, capacity skips, observation windows and the missing-data rule,
+preregistered Holm families, RQ2 per failure point, blinded media, immutable batches."""
 
 from __future__ import annotations
 
@@ -14,7 +15,10 @@ from test_eval import Log
 
 from live_agent.eval import report, stats
 from live_agent.eval.adjudicate import (
+    BlindingError,
     LabelError,
+    MergeConflictError,
+    check_blinded,
     default_key_path,
     merge,
     prepare,
@@ -25,6 +29,7 @@ from live_agent.eval.report import build_report, compare
 from live_agent.eval.schema import SchemaError, load_session, parse_session
 from live_agent.eval.scoring import (
     IncompleteAdjudicationError,
+    InsufficientObservationError,
     Outcome,
     ScoringConfig,
     score_session,
@@ -178,43 +183,43 @@ def test_verdict_revision_binding():
     assert L2.one().outcome == Outcome.SUCCESS and L2.one().tvc == pytest.approx(5.0)
 
 
-# --------------------------------------------------------------------------- finding 5
+# --------------------------------------------------------------------------- finding 5 / R1-5: claims
 
 
-def test_claims_on_withdrawn_chains_count_in_fcr():
+def test_primary_fcr_uses_adjudicated_sweep_claims_incl_withdrawn_chains():
     L = Log()
     L.new(0.0, chain="c1")
     L.withdraw(4.0, chain="c1")
-    L.ev(type="completion_claim", chain_id="c1", t=6.0)  # claimed after the user withdrew
+    L.aclaim(6.0, "not_complied", chain="c1")  # heard after the user withdrew: false
+    L.ev(type="completion_claim", chain_id="c1", t=6.5)  # logged claim: diagnostic only
     L.new(8.0, chain="c2")
     L.verdict(10.0, chain="c2")
+    L.aclaim(11.0, "complied", chain="c2")
     sc = L.score()
     c1 = next(c for c in sc.chains if c.chain_id == "c1")
-    assert c1.outcome == Outcome.WITHDRAWN and c1.n_claims == 1 and c1.n_claims_unadjudicated == 1
-    with pytest.raises(IncompleteAdjudicationError, match="claim-level"):
-        build_report([sc], n_boot=50)
-    # claim-level adjudication (chain_id + claim_t): not done at claim time -> false
-    L.ev(type="verdict", chain_id="c1", claim_t=6.0, source="adjudicated", label="not_complied")
-    s = summarize(L.score().chains)
-    assert s["n_claims"] == 1 and s["n_false_claims"] == 1 and s["fcr"] == 1.0
-    # diagnostic: no complied verdict before the claim -> false
-    assert summarize(L.score(DIAG).chains)["n_false_claims"] == 1
+    assert c1.outcome == Outcome.WITHDRAWN and c1.n_claims == 1 and c1.n_false_claims == 1
+    s = summarize(sc.chains)
+    assert s["n_claims"] == 2 and s["n_false_claims"] == 1 and s["fcr"] == 0.5
+    build_report([sc], n_boot=50)  # complete
+    # diagnostic: the logged claims, judged by time (no complied verdict before it -> false)
+    assert summarize(L.score(DIAG).chains)["n_claims"] == 1
 
 
-def test_claim_before_revision_needs_claim_level_adjudication():
+def test_missing_claim_sweep_or_claim_verdict_is_a_gap():
+    L = Log(sweep=False)
+    L.new(0.0)
+    L.verdict(5.0)
+    with pytest.raises(IncompleteAdjudicationError, match="claim sweep"):
+        build_report([L.score()], n_boot=50)
     L = Log()
     L.new(0.0)
-    L.ev(type="completion_claim", chain_id="c1", t=3.0)  # about the first intent
-    L.revise(5.0)
-    L.verdict(8.0)  # final intent done
-    c = L.one()
-    assert c.outcome == Outcome.SUCCESS and c.n_claims_unadjudicated == 1
-    L.ev(type="verdict", chain_id="c1", claim_t=3.0, source="adjudicated", label="complied")
-    c = L.one()
-    assert c.n_claims == 1 and c.n_false_claims == 0 and c.n_claims_unadjudicated == 0
+    L.verdict(5.0)
+    L.ev(type="completion_claim", chain_id="c1", t=6.0, source="adjudicated")  # no claim verdict
+    with pytest.raises(IncompleteAdjudicationError, match="claim-level verdict"):
+        build_report([L.score()], n_boot=50)
 
 
-def test_claims_matched_to_steps():
+def test_diagnostic_claims_matched_to_steps():
     L = Log()
     L.new(0.0, kind="multistep", steps=["a", "b"])
     L.verdict(5.0, step=0)
@@ -223,7 +228,7 @@ def test_claims_matched_to_steps():
     L.ev(type="completion_claim", chain_id="c1", t=7.0, step=1)  # false: step 1 only at 12
     L.ev(type="completion_claim", chain_id="c1", t=8.0)  # whole task: false (step 1 missing)
     L.ev(type="completion_claim", chain_id="c1", t=13.0)  # whole task: true
-    c = L.one()
+    c = L.one(cfg=ScoringConfig.diagnostic_config(("adjudicated",)))
     assert c.n_claims == 4 and c.n_false_claims == 2
 
 
@@ -242,26 +247,45 @@ def test_capacity_skip_bound_to_revision_and_precedes_verdicts():
     assert c.outcome == Outcome.CAPACITY_SKIPPED and c.in_primary and not c.served
 
 
-# --------------------------------------------------------------------------- finding 7
+# --------------------------------------------------------------------------- finding 7 / NEW-1
 
 
-def test_insufficient_observation_is_excluded_and_flagged():
+def _short_observed():
     L = Log()
     L.new(0.0, chain="c1")
     L.verdict(None, chain="c1", label="not_complied")
     L.new(0.0, chain="c2")
     L.verdict(4.0, chain="c2")  # success observed before the recording ended
     L.ev(type="observation_end", t=10.0)  # window of c1 needs 15 s
+    return L
+
+
+def test_insufficient_observation_blocks_primary_report():
+    L = _short_observed()
     sc = L.score()
     out = {c.chain_id: c for c in sc.chains}
     assert out["c1"].outcome == Outcome.INSUFFICIENT_OBSERVATION and not out["c1"].in_primary
     assert out["c2"].outcome == Outcome.SUCCESS
     s = summarize(sc.chains)
-    assert s["n_effective"] == 1 and s["n_insufficient_observation"] == 1 and s["success_rate"] == 1.0
-    md = build_report([sc], n_boot=50)
-    assert "Flagged for rerun" in md and "insufficient observation (excluded, rerun): 1" in md
+    assert s["n_effective"] == 1 and s["n_insufficient_observation"] == 1
+    with pytest.raises(InsufficientObservationError, match="c1"):
+        build_report([sc], n_boot=50)  # default rule: rerun-required
+    md = build_report([sc], n_boot=50, missing_rule="worst-case")
+    assert "SENSITIVITY ANALYSIS (worst-case missing-data rule)" in md and "1 chain(s)" in md
+    assert "| A2 | 1 | 2 | 50.0% |" in md  # imputed failure back in the denominator
     L.ev(type="observation_end", t=20.0)
     assert L.one("c1").outcome == Outcome.NEVER
+    build_report([L.score()], n_boot=50)
+
+
+def test_report_cli_missing_rule(tmp_path, capsys):
+    p = _write_log(tmp_path / "a.jsonl", _short_observed().recs)
+    with pytest.raises(SystemExit) as e:
+        report.main([str(p)])
+    assert e.value.code == 2 and "unobserved deadline window" in capsys.readouterr().err
+    out = tmp_path / "wc.md"
+    report.main([str(p), "--missing-rule", "worst-case", "-o", str(out)])
+    assert "SENSITIVITY" in out.read_text(encoding="utf-8")
 
 
 def test_observation_end_falls_back_to_last_presented_chunk():
@@ -272,16 +296,26 @@ def test_observation_end_falls_back_to_last_presented_chunk():
     assert L.one().outcome == Outcome.INSUFFICIENT_OBSERVATION
 
 
-def test_order_fail_is_a_competing_failure_not_censoring():
+# --------------------------------------------------------------------------- NEW-9
+
+
+def test_time_to_success_has_no_early_censoring_and_per_kind_table():
     L = Log()
-    L.new(0.0, kind="multistep", steps=["a", "b"])
-    L.verdict(10.0, step=0)
-    L.verdict(5.0, step=1)
-    L.ev(type="observation_end", t=12.0)  # deterministic: no observation needed
-    c = L.one()
-    assert c.outcome == Outcome.ORDER_FAIL and c.competing_failure and c.in_primary
+    L.new(0.0, kind="multistep", steps=["a", "b"], chain="m")
+    L.verdict(10.0, step=0, chain="m")
+    L.verdict(5.0, step=1, chain="m")  # order_fail: deterministic
+    L.new(0.0, chain="a1")
+    L.ev(type="refusal", chain_id="a1", t=1.0)
+    L.new(0.0, chain="a2")
+    L.verdict(6.0, chain="a2")
+    L.ev(type="observation_end", t=40.0)
+    out = {c.chain_id: c for c in L.score().chains}
+    assert out["m"].outcome == Outcome.ORDER_FAIL and out["m"].time_to_success == 30.0  # = D
+    assert out["a1"].time_to_success == 15.0 and out["a2"].time_to_success == pytest.approx(6.0)
     md = build_report([L.score()], n_boot=50)
-    assert "order_fail" in md and "competing failure" in md
+    assert "Success by the common deadline, per kind" in md
+    assert "| action | 15 | 2 | 1/2 (50.0%) |" in md and "| multistep | 30 | 1 | 0/1 (0.0%) |" in md
+    assert "Time to success, all kinds" not in md
 
 
 # --------------------------------------------------------------------------- finding 9
@@ -306,11 +340,11 @@ def _sessions(conds_p, n_tasks=12, n_seeds=3, seed=0):
                 L.new(0.0)
                 if rng.random() < p:
                     L.verdict(float(rng.uniform(3, 14)))
-                    L.ev(type="completion_claim", chain_id="c1", t=14.5)
+                    L.aclaim(14.5, "complied")
                 else:
                     L.verdict(None, label="not_complied")
                     if rng.random() < 0.5:
-                        L.ev(type="completion_claim", chain_id="c1", t=14.5)
+                        L.aclaim(14.5, "not_complied")
                 out.append(L.score())
     return out
 
@@ -328,7 +362,6 @@ def test_families_are_fixed_and_compare_only_selects_display():
     p, p_adj = float(cells[5]), float(cells[6])
     assert p_adj == pytest.approx(min(1.0, 4 * p))  # family size 4 even though 1 was run
     assert "reject H0" in "\n".join(x for x in md.splitlines() if x.startswith("| A2 - A1 |"))
-    # display selection: hides rows, never changes the adjustment; extra pairs are exploratory
     md2 = "\n".join(compare(by, display=[("A2", "A2-noqc"), ("A2-noqc", "A1")], n_boot=300))
     assert "| A2 - A1 |" not in md2 and row in md2
     assert "Exploratory (not preregistered" in md2 and "| A2-noqc - A1 |" in md2
@@ -342,22 +375,35 @@ def test_fcr_and_claim_coverage_get_task_clustered_cis():
     assert cov.rstrip("|").split("|")[-1].strip() != "n/a"
 
 
-def test_repair_per_failure_point():
+# --------------------------------------------------------------------------- NEW-8: RQ2
+
+
+def test_repair_every_failure_point_with_preregistered_handling():
     L = Log("A2-rq2", "T1", 0)
-    L.new(0.0)
+    L.new(0.0, chain="c1")
     L.ev(type="chunk_presented", request=3, chunk=0, t_start=18.0, t_end=23.0)
     L.ev(type="observation_end", t=40.0)
     L.ev(type="repair_assignment", chain_id="c1", arm="forward_correction", failure_request=1, target_request=3)
-    L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=2, target_request=4)
-    L.verdict(19.0)  # adjudicated: no request field -> mapped through the presented chunk
-    c = L.one()
-    assert [r["arm"] for r in c.repairs] == ["forward_correction", "repeat"]
-    assert [r["success"] for r in c.repairs] == [True, False]
-    s = summarize([c])["repair"]
-    assert s["forward_correction"]["k"] == 1 and s["repeat"]["n"] == 1
+    L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=2, target_request=9)
+    L.verdict(19.0, chain="c1")  # no request field -> mapped through the presented chunk
+    L.new(1.0, chain="c2")
+    L.withdraw(20.0, chain="c2")
+    L.ev(type="repair_assignment", chain_id="c2", arm="repeat", failure_request=1, target_request=3)
+    sc = L.score()
+    c1 = next(c for c in sc.chains if c.chain_id == "c1")
+    assert [r["status"] for r in c1.repairs] == ["success", "insufficient_observation"]
+    c2 = next(c for c in sc.chains if c.chain_id == "c2")
+    assert c2.outcome == Outcome.WITHDRAWN and c2.repairs[0]["status"] == "withdrawn"
+    s = summarize(sc.chains)["repair"]
+    assert s["forward_correction"]["k"] == 1 and s["forward_correction"]["n"] == 1
+    assert s["repeat"] == {**s["repeat"], "n": 1, "k": 0, "n_withdrawn": 1, "n_insufficient_observation": 1,
+                           "n_excl_withdrawn": 0}
+    md = build_report([sc], n_boot=100)
+    assert "withdrawal after assignment = failure" in md and "sensitivity: withdrawn excluded" in md
+    assert "target request not observed (excluded, rerun)" in md
 
 
-# --------------------------------------------------------------------------- adjudication tool (2, 3, 11)
+# --------------------------------------------------------------------------- adjudication tool
 
 
 def _session_file(tmp_path: Path, name: str, task_id: str, utts: list[tuple], extra=(), cond="A2",
@@ -379,7 +425,7 @@ def _session_file(tmp_path: Path, name: str, task_id: str, utts: list[tuple], ex
     recs.append({"type": "observation_end", "t": length})
     recs += list(extra)
     p = _write_log(tmp_path / f"{name}.jsonl", recs)
-    p.with_suffix(".mp4").write_bytes(b"\0")
+    p.with_suffix(".mp4").write_bytes(b"\0not-a-real-mp4")
     return p
 
 
@@ -393,7 +439,10 @@ def _labels(tmp_path: Path, name: str, d: dict) -> Path:
     return p
 
 
-def test_key_outside_batch_and_blinding(tmp_path):
+SWEEP_NONE = {"complete": True, "v_seen": 40.0, "claims": []}
+
+
+def test_key_outside_batch_media_not_symlinked_and_blinded(tmp_path):
     log = _session_file(tmp_path, "A2-E2-A01-s0", "E2-A01", [(3.0, "请喝口茶吧。", "new", "c1",
                                                               {"kind": "action", "intent": "端起茶杯喝一口茶"})])
     batch = tmp_path / "adj" / "b1"
@@ -401,95 +450,183 @@ def test_key_outside_batch_and_blinding(tmp_path):
     key = default_key_path(batch)
     assert key.exists() and batch.resolve() not in key.resolve().parents
     assert not list(batch.rglob("key*"))
+    media = list((batch / "media").iterdir())
+    assert media and not any(m.is_symlink() for m in media)  # hard link or copy, never a symlink
     for f in batch.rglob("*"):
         assert "A2" not in f.name and "E2-A01" not in f.name
     text = page.read_text(encoding="utf-8")
-    assert "E2-A01" not in text and '"A2' not in text
+    assert "E2-A01" not in text and '"A2' not in text and str(tmp_path) not in text
     with pytest.raises(ValueError, match="must not be inside"):
         prepare([log], batch, key_path=batch / "sub" / "key.json")
 
 
-def test_items_carry_frozen_criteria(tmp_path):
+def test_check_blinded_catches_leaks(tmp_path):
+    b = tmp_path / "b"
+    (b / "media").mkdir(parents=True)
+    (b / "index.html").write_text("<p>ok</p>", encoding="utf-8")
+    check_blinded(b, ["A2-E2-A01-s0"], ["A2"])
+    (b / "media" / "x.mp4").write_bytes(b"\0\0title=A2-E2-A01-s0\0")  # metadata leak
+    with pytest.raises(BlindingError, match="contains"):
+        check_blinded(b, ["A2-E2-A01-s0"], ["A2"])
+    (b / "media" / "x.mp4").unlink()
+    (b / "media" / "y.mp4").symlink_to(tmp_path / "A2-E2-A01-s0.mp4")
+    with pytest.raises(BlindingError, match="symlink"):
+        check_blinded(b, [], [])
+    (b / "media" / "y.mp4").unlink()
+    (b / "index.html").write_text("<p>condition A2-noqc</p>", encoding="utf-8")
+    with pytest.raises(BlindingError, match="condition"):
+        check_blinded(b, [], ["A2-noqc"])
+
+
+def test_items_carry_frozen_criteria_and_absolute_deadlines(tmp_path):
     logs = [
         _session_file(tmp_path, "x1", "E2-A01", [(3.0, "请喝口茶吧。", "new", "c1", {"kind": "action"})]),
         _session_file(tmp_path, "x2", "E2-C04", [(3.0, "给我讲讲CUDA是什么吧。", "new", "c1",
-                                                  {"kind": "content", "content_type": "explain"})]),
+                                                  {"kind": "content", "content_type": "explain"})], length=60.0),
         _session_file(tmp_path, "x3", "E2-M02", [(3.0, "先站起来，挥挥手，再坐回去。", "new", "c1",
                                                   {"kind": "multistep", "steps": ["站起来", "挥手", "坐下"]})]),
     ]
-    items = {it["kind"]: it for it in _items(prepare(logs, tmp_path / "b"))}
+    page = prepare(logs, tmp_path / "b")
+    items = {it["kind"]: it for it in _items(page) if it["type"] == "chain"}
     assert items["action"]["criteria"]["checks"] == ["人物端起茶杯", "茶杯送到嘴边并作饮用动作"]
-    c = items["content"]["criteria"]
-    assert c["rubric"]["k"] == 3 and len(c["rubric"]["key_points"]) == 3 and c["duration_s"] == 30.0
+    assert items["action"]["dl"]["done_by"] == {"v": 18.0, "beyond": False}
+    c = items["content"]
+    assert c["criteria"]["rubric"]["k"] == 3 and c["criteria"]["duration_s"] == 30.0
+    # proposal D: onset <= origin + 15 s; complete answer <= origin + 15 s + duration
+    assert c["dl"]["onset_by"] == {"v": 18.0, "beyond": False}
+    assert c["dl"]["complete_by"] == {"v": 48.0, "beyond": False}
+    assert "request end + " in page.read_text(encoding="utf-8")
     m = items["multistep"]
     assert m["n_steps"] == 3 and [s["checks"] for s in m["criteria"]["steps"]][2] == ["人物由站姿回到坐姿"]
-    # a chain without preregistered criteria cannot be put in front of annotators
+    assert sum(it["type"] == "sweep" for it in _items(page)) == 3  # one audio claim sweep per session
     bad = _session_file(tmp_path, "x4", "T-unknown", [(3.0, "x", "new", "c1", {"kind": "action"})])
     with pytest.raises(ValueError, match="no preregistered criteria"):
         prepare([bad], tmp_path / "b2")
 
 
-def _one_item(tmp_path, task_id="E2-A01", utts=None, extra=(), name="s"):
+def _one_item(tmp_path, task_id="E2-A01", utts=None, extra=(), name="s", length=40.0):
     utts = utts or [(3.0, "请喝口茶吧。", "new", "c1", {"kind": "action"})]
-    log = _session_file(tmp_path, name, task_id, utts, extra)
+    log = _session_file(tmp_path, name, task_id, utts, extra, length=length)
     batch = tmp_path / f"batch-{name}"
     items = _items(prepare([log], batch))
-    return log, batch, items
+    chain = [it for it in items if it["type"] == "chain"]
+    sweep = next(it for it in items if it["type"] == "sweep")
+    return log, batch, chain, sweep
 
 
 def test_merge_agreement_disagreement_arbitration(tmp_path):
-    log, batch, items = _one_item(tmp_path)
-    iid = items[0]["id"]
-    a = _labels(tmp_path, "a", {f"{iid}/0": {"label": "complied", "v_first": 8.0, "v_seen": 20.0}})
-    b = _labels(tmp_path, "b", {f"{iid}/0": {"label": "not_complied", "v_seen": 25.0}})
+    log, batch, items, sw = _one_item(tmp_path)
+    iid, sk = items[0]["id"], f"{sw['id']}/0"
+    a = _labels(tmp_path, "a", {f"{iid}/0": {"label": "complied", "v_first": 8.0, "v_seen": 20.0}, sk: SWEEP_NONE})
+    b = _labels(tmp_path, "b", {f"{iid}/0": {"label": "not_complied", "v_seen": 25.0}, sk: SWEEP_NONE})
     r = merge(batch, [(a, "R1"), (b, "R2")])
-    assert r["unresolved"] == [f"{iid}/0"] and r["agreed"] == 0
+    assert list(r["unresolved"]) == [f"{iid}/0"] and r["agreed"] == 1  # the sweep agreed
     s = load_session(log)
-    assert len(s.of_type("rating")) == 2 and not s.of_type("verdict")  # ratings kept, nothing scored
+    assert len([e for e in s.of_type("rating") if e.get("item") == iid]) == 2
+    assert not [v for v in s.of_type("verdict") if v.get("item") == iid]  # ratings kept, nothing scored
     assert score_session(s).chains[0].outcome == Outcome.UNADJUDICATED
     unres = json.loads((default_key_path(batch).parent / "unresolved.json").read_text())
-    assert unres["unresolved"] == [f"{iid}/0"]
+    assert list(unres["unresolved"]) == [f"{iid}/0"]
     c = _labels(tmp_path, "c", {f"{iid}/0": {"label": "not_complied", "v_seen": 30.0}})
-    r = merge(batch, [(a, "R1"), (b, "R2")], arbiter=(c, "R3"))
+    r = merge(batch, [(a, "R1"), (b, "R2")], arbiter=(c, "R3"))  # adding an arbiter is allowed
     assert r["arbitrated"] == 1
     s = load_session(log)
-    vs = s.of_type("verdict")
+    vs = [v for v in s.of_type("verdict") if v.get("item") == iid]
     assert len(vs) == 1 and vs[0]["reconciliation"] == "arbitration" and vs[0]["label"] == "not_complied"
     assert vs[0]["annotators"] == ["R1", "R2", "R3"] and vs[0]["revision"] == 0
     assert vs[0]["t_review_start"] == pytest.approx(3.0) and vs[0]["t_review_end"] == pytest.approx(30.0)
-    assert len(s.of_type("rating")) == 3
-    assert score_session(s).chains[0].outcome == Outcome.NEVER  # negative label without a time
-    # idempotent
-    r = merge(batch, [(a, "R1"), (b, "R2")], arbiter=(c, "R3"))
-    assert sum(r["appended"].values()) == 0
+    assert len([e for e in s.of_type("rating") if e.get("item") == iid]) == 3
+    sc = score_session(s)
+    assert sc.chains[0].outcome == Outcome.NEVER and sc.claim_sweep
+    build_report([sc], n_boot=50)
+    before = log.read_text(encoding="utf-8")
+    merge(batch, [(a, "R1"), (b, "R2")], arbiter=(c, "R3"))  # identical inputs: no-op
+    assert log.read_text(encoding="utf-8") == before
     with pytest.raises(ValueError, match="exactly two"):
         merge(batch, [(a, "R1")])
     with pytest.raises(ValueError, match="distinct"):
         merge(batch, [(a, "R1"), (b, "R1")])
 
 
+def test_finalized_batch_is_immutable_unless_replaced(tmp_path):
+    log, batch, items, sw = _one_item(tmp_path)
+    iid, sk = items[0]["id"], f"{sw['id']}/0"
+    lab = {f"{iid}/0": {"label": "complied", "v_first": 8.0}, sk: SWEEP_NONE}
+    a, b = _labels(tmp_path, "a", lab), _labels(tmp_path, "b", lab)
+    merge(batch, [(a, "R1"), (b, "R2")])
+    assert score_session(load_session(log)).chains[0].outcome == Outcome.SUCCESS
+    corrected = {f"{iid}/0": {"label": "not_complied", "v_seen": 20.0}, sk: SWEEP_NONE}
+    b2 = _labels(tmp_path, "b2", corrected)
+    a2 = _labels(tmp_path, "a2", corrected)
+    with pytest.raises(MergeConflictError):
+        merge(batch, [(a2, "R1"), (b2, "R2")])
+    assert score_session(load_session(log)).chains[0].outcome == Outcome.SUCCESS  # untouched
+    merge(batch, [(a2, "R1"), (b2, "R2")], replace=True)
+    s = load_session(log)
+    vs = [v for v in s.of_type("verdict") if v.get("item") == iid]
+    assert len(vs) == 1 and vs[0]["label"] == "not_complied"  # old success removed atomically
+    assert len([e for e in s.of_type("rating") if e.get("item") == iid]) == 2
+    assert score_session(s).chains[0].outcome == Outcome.NEVER
+    assert not list(log.parent.glob("*.tmp-*"))
+
+
+def test_negative_labels_need_review_through_the_deadline(tmp_path):
+    log, batch, items, sw = _one_item(tmp_path)  # origin 3 s -> deadline 18 s
+    iid, sk = items[0]["id"], f"{sw['id']}/0"
+    short = {f"{iid}/0": {"label": "not_complied", "v_seen": 4.0}, sk: SWEEP_NONE}
+    full = {f"{iid}/0": {"label": "not_complied", "v_seen": 18.0}, sk: SWEEP_NONE}
+    r = merge(batch, [(_labels(tmp_path, "a", short), "R1"), (_labels(tmp_path, "b", short), "R2")])
+    assert "reviewed less than the deadline window" in r["unresolved"][f"{iid}/0"]  # escalated
+    assert score_session(load_session(log)).chains[0].outcome == Outcome.UNADJUDICATED
+    r = merge(batch, [(_labels(tmp_path, "a", short), "R1"), (_labels(tmp_path, "b", short), "R2")],
+              arbiter=(_labels(tmp_path, "c", full), "R3"))
+    assert r["arbitrated"] == 1
+    assert score_session(load_session(log)).chains[0].outcome == Outcome.NEVER
+    # recording shorter than the deadline: review to its end suffices (then flagged unobserved)
+    log2, batch2, items2, sw2 = _one_item(tmp_path, name="t", length=12.0)
+    j, sk2 = items2[0]["id"], f"{sw2['id']}/0"
+    lab = {f"{j}/0": {"label": "not_complied", "v_seen": 12.0}, sk2: dict(SWEEP_NONE, v_seen=12.0)}
+    r = merge(batch2, [(_labels(tmp_path, "a2", lab), "R1"), (_labels(tmp_path, "b2", lab), "R2")])
+    assert not r["unresolved"]
+    assert score_session(load_session(log2)).chains[0].outcome == Outcome.INSUFFICIENT_OBSERVATION
+
+
+def test_multistep_negative_review_counts_from_previous_step(tmp_path):
+    utts = [(3.0, "先站起来，挥挥手，再坐回去。", "new", "c1", {"kind": "multistep", "steps": ["a", "b", "c"]})]
+    log, batch, items, sw = _one_item(tmp_path, "E2-M02", utts)
+    iid, sk = items[0]["id"], f"{sw['id']}/0"
+    # step 0 done at 10 -> step 1 "not done" needs review to 25
+    lab = {f"{iid}/0": {"label": "complied", "v_first": 10.0}, f"{iid}/1": {"label": "not_complied", "v_seen": 20.0},
+           sk: SWEEP_NONE}
+    r = merge(batch, [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
+    assert list(r["unresolved"]) == [f"{iid}/1"] and r["agreed"] == 2
+    lab[f"{iid}/1"]["v_seen"] = 25.0
+    r = merge(batch, [(_labels(tmp_path, "a3", lab), "R1"), (_labels(tmp_path, "b3", lab), "R2")], replace=True)
+    assert not r["unresolved"]
+    assert score_session(load_session(log)).chains[0].outcome == Outcome.NEVER
+
+
 def test_merge_agreement_uses_later_time(tmp_path):
-    log, batch, items = _one_item(tmp_path)
-    iid = items[0]["id"]
-    a = _labels(tmp_path, "a", {f"{iid}/0": {"label": "complied", "v_first": 8.0}})
-    b = _labels(tmp_path, "b", {f"{iid}/0": {"label": "complied", "v_first": 8.6}})
+    log, batch, items, sw = _one_item(tmp_path)
+    iid, sk = items[0]["id"], f"{sw['id']}/0"
+    a = _labels(tmp_path, "a", {f"{iid}/0": {"label": "complied", "v_first": 8.0}, sk: SWEEP_NONE})
+    b = _labels(tmp_path, "b", {f"{iid}/0": {"label": "complied", "v_first": 8.6}, sk: SWEEP_NONE})
     r = merge(batch, [(a, "R1"), (b, "R2")])
-    assert r["agreed"] == 1 and r["kappa"] == 1.0
+    assert r["agreed"] == 2 and r["kappa"] == 1.0
     c = score_session(load_session(log)).chains[0]
     assert c.outcome == Outcome.SUCCESS and c.tvc == pytest.approx(5.6)
-    # times further apart than the tolerance are a disagreement
-    _, batch2, items2 = _one_item(tmp_path, name="t")
+    _, batch2, items2, _ = _one_item(tmp_path, name="t")
     j = items2[0]["id"]
     a2 = _labels(tmp_path, "a2", {f"{j}/0": {"label": "complied", "v_first": 8.0}})
     b2 = _labels(tmp_path, "b2", {f"{j}/0": {"label": "complied", "v_first": 12.0}})
-    assert merge(batch2, [(a2, "R1"), (b2, "R2")])["unresolved"] == [f"{j}/0"]
+    assert list(merge(batch2, [(a2, "R1"), (b2, "R2")])["unresolved"]) == [f"{j}/0"]
 
 
 def test_merge_rejects_out_of_range_and_incomplete_labels(tmp_path):
-    log, batch, items = _one_item(tmp_path)
+    log, batch, items, _ = _one_item(tmp_path)
     iid = items[0]["id"]
     before = log.read_text(encoding="utf-8")
-    ok = _labels(tmp_path, "ok", {f"{iid}/0": {"label": "not_complied"}})
+    ok = _labels(tmp_path, "ok", {f"{iid}/0": {"label": "not_complied", "v_seen": 20.0}})
     for bad in ({"label": "complied", "v_first": 45.0},  # past the recording (40 s)
                 {"label": "complied", "v_first": 1.0},  # before the request (origin 3 s)
                 {"label": "complied"},  # done without a time
@@ -511,17 +648,18 @@ def test_video_to_session_does_not_extrapolate():
         video_to_session(segs, 2.5)
 
 
-def test_content_item_onset_merge(tmp_path):
+def test_content_item_onset_merge_and_order(tmp_path):
     utts = [(3.0, "《静夜思》是谁写的？", "new", "c1", {"kind": "content", "content_type": "qa"})]
     script = {"type": "speech_onset", "t": 4.0, "on_topic": None, "source": "script", "chain_id": "A2-E2-C01-s0:c1"}
-    log, batch, items = _one_item(tmp_path, "E2-C01", utts, extra=[script])
-    iid = items[0]["id"]
+    log, batch, items, sw = _one_item(tmp_path, "E2-C01", utts, extra=[script])
+    iid, sk = items[0]["id"], f"{sw['id']}/0"
     assert items[0]["criteria"]["rubric"]["answer"] == "李白"
-    no_onset = _labels(tmp_path, "n", {f"{iid}/0": {"label": "complied", "v_end": 12.0}})
-    good = _labels(tmp_path, "g", {f"{iid}/0": {"label": "complied", "v_onset": 6.0, "v_end": 12.0}})
-    with pytest.raises(LabelError, match="onset"):
-        merge(batch, [(good, "R1"), (no_onset, "R2")])
-    good2 = _labels(tmp_path, "g2", {f"{iid}/0": {"label": "complied", "v_onset": 6.5, "v_end": 12.2}})
+    good = _labels(tmp_path, "g", {f"{iid}/0": {"label": "complied", "v_onset": 6.0, "v_end": 12.0}, sk: SWEEP_NONE})
+    for bad in ({"label": "complied", "v_end": 12.0},  # no onset decision
+                {"label": "complied", "v_onset": 13.0, "v_end": 12.0}):  # answer ends before onset
+        with pytest.raises(LabelError, match="onset"):
+            merge(batch, [(good, "R1"), (_labels(tmp_path, "n", {f"{iid}/0": bad}), "R2")])
+    good2 = _labels(tmp_path, "g2", {f"{iid}/0": {"label": "complied", "v_onset": 6.5, "v_end": 12.2}, sk: SWEEP_NONE})
     merge(batch, [(good, "R1"), (good2, "R2")])
     s = load_session(log)
     adj = [e for e in s.of_type("speech_onset") if e.get("source") == "adjudicated"]
@@ -530,32 +668,66 @@ def test_content_item_onset_merge(tmp_path):
     assert c.outcome == Outcome.SUCCESS and c.onset_s == pytest.approx(3.5)  # the scripted 4.0 is ignored
 
 
-def test_content_no_onset_label(tmp_path):
+def test_content_no_onset_needs_review_to_onset_deadline(tmp_path):
     utts = [(3.0, "《静夜思》是谁写的？", "new", "c1", {"kind": "content", "content_type": "qa"})]
-    log, batch, items = _one_item(tmp_path, "E2-C01", utts)
-    iid = items[0]["id"]
-    a = _labels(tmp_path, "a", {f"{iid}/0": {"label": "not_complied", "onset_none": True}})
-    b = _labels(tmp_path, "b", {f"{iid}/0": {"label": "not_complied", "onset_none": True}})
-    merge(batch, [(a, "R1"), (b, "R2")])
+    log, batch, items, sw = _one_item(tmp_path, "E2-C01", utts)
+    iid, sk = items[0]["id"], f"{sw['id']}/0"
+    lab = {f"{iid}/0": {"label": "not_complied", "onset_none": True, "v_seen": 28.0}, sk: SWEEP_NONE}  # 3+15+10
+    merge(batch, [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
     assert score_session(load_session(log)).chains[0].outcome == Outcome.ONSET_FAIL
 
 
-def test_claim_items_for_withdrawn_chains(tmp_path):
+def _sweep_session(tmp_path):
     utts = [(3.0, "请站起来一下。", "new", "c1", {"kind": "action"}),
             (6.0, "算了，不用站了。", "withdrawal", "c1", {}),
             (10.0, "笑一个吧。", "new", "c2", {"kind": "action"})]
-    claim = {"type": "completion_claim", "chain_id": "A2-E2-D04-s0:c1", "t": 7.0}
-    log, batch, items = _one_item(tmp_path, "E2-D04", utts, extra=[claim])
-    by = {it["type"]: it for it in items}
-    assert set(by) == {"chain", "claim"}
-    cl = by["claim"]
-    assert cl["texts"] == ["请站起来一下。", "算了，不用站了。"] and cl["criteria"]["checks"] == ["人物由坐姿变为站姿"]
-    assert cl["v_claim"] == pytest.approx(7.0)
-    ch = by["chain"]
-    lab = {f"{ch['id']}/0": {"label": "complied", "v_first": 12.0}, f"{cl['id']}/0": {"label": "not_complied"}}
-    a, b = _labels(tmp_path, "a", lab), _labels(tmp_path, "b", lab)
-    merge(batch, [(a, "R1"), (b, "R2")])
-    sc = score_session(load_session(log))
-    s = summarize(sc.chains)
-    assert s["n_claims"] == 1 and s["n_false_claims"] == 1 and s["n_withdrawn"] == 1 and s["n_success"] == 1
-    build_report([sc], n_boot=50)  # complete: no gaps
+    logged = {"type": "completion_claim", "chain_id": "A2-E2-D04-s0:c1", "t": 7.0}
+    return _one_item(tmp_path, "E2-D04", utts, extra=[logged])
+
+
+def test_audio_claim_sweep_items_and_merge(tmp_path):
+    log, batch, items, sw = _sweep_session(tmp_path)
+    assert [len(r["revisions"]) for r in sw["refs"]] == [1, 1]
+    assert sw["refs"][0]["revisions"][0]["criteria"]["checks"] == ["人物由坐姿变为站姿"]
+    assert "7.0" not in json.dumps(sw) and "claim" not in json.dumps(sw["refs"])  # logged claims hidden
+    ch, sk = items[0]["id"], f"{sw['id']}/0"
+    r0, r1 = sw["refs"][0]["ref"], sw["refs"][1]["ref"]
+    claims_a = [{"v_claim": 7.0, "ref": r0, "label": "not_complied"},
+                {"v_claim": 14.0, "ref": r1, "label": "complied", "v_evidence": 12.0}]
+    claims_b = [{"v_claim": 7.4, "ref": r0, "label": "not_complied"},
+                {"v_claim": 14.2, "ref": r1, "label": "complied", "v_evidence": 12.5},
+                {"v_claim": 30.0, "ref": r1, "label": "complied", "v_evidence": 20.0}]  # only B heard this
+    chain = {f"{ch}/0": {"label": "complied", "v_first": 12.0}}
+    a = _labels(tmp_path, "a", {**chain, sk: {"complete": True, "v_seen": 40.0, "claims": claims_a}})
+    b = _labels(tmp_path, "b", {**chain, sk: {"complete": True, "v_seen": 40.0, "claims": claims_b}})
+    r = merge(batch, [(a, "R1"), (b, "R2")])
+    assert sk in r["unresolved"] and "one rater only" in r["unresolved"][sk]
+    assert not load_session(log).of_type("claim_sweep")
+    c = _labels(tmp_path, "c", {sk: {"complete": True, "v_seen": 40.0, "claims": []}})  # arbiter: no such claim
+    merge(batch, [(a, "R1"), (b, "R2")], arbiter=(c, "R3"))
+    s = load_session(log)
+    adj = [e for e in s.of_type("completion_claim") if e.get("source") == "adjudicated"]
+    assert [round(e["t"], 1) for e in adj] == [7.4, 14.2]  # later time of each agreed pair
+    sc = score_session(s)
+    assert sc.claim_sweep
+    sm = summarize(sc.chains)
+    assert sm["n_claims"] == 2 and sm["n_false_claims"] == 1  # the claim on the withdrawn chain is false
+    build_report([sc], n_boot=50)
+
+
+def test_sweep_evidence_must_precede_claim_and_review_whole_recording(tmp_path):
+    _, batch, _, sw = _sweep_session(tmp_path)
+    sk, r1 = f"{sw['id']}/0", sw["refs"][1]["ref"]
+    ok = _labels(tmp_path, "ok", {sk: SWEEP_NONE})
+    for bad in ({"complete": True, "v_seen": 40.0,
+                 "claims": [{"v_claim": 14.0, "ref": r1, "label": "complied", "v_evidence": 16.0}]},  # after
+                {"complete": True, "v_seen": 40.0,
+                 "claims": [{"v_claim": 14.0, "ref": r1, "label": "complied"}]},  # no evidence
+                {"complete": True, "v_seen": 40.0,
+                 "claims": [{"v_claim": 8.0, "ref": r1, "label": "not_complied"}]},  # before the request
+                {"complete": False, "v_seen": 40.0, "claims": []}):  # not finished
+        with pytest.raises(LabelError):
+            merge(batch, [(ok, "R1"), (_labels(tmp_path, "bad", {sk: bad}), "R2")])
+    short = _labels(tmp_path, "short", {sk: {"complete": True, "v_seen": 20.0, "claims": []}})
+    r = merge(batch, [(ok, "R1"), (short, "R2")])
+    assert "incomplete review" in r["unresolved"][sk]

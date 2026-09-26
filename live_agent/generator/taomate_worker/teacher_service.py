@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             break
         if kind == P.RESET:
             previous_clean, previous_count, next_local = None, None, 0
+            loop.send({"type": "reset_done", "session": int(command["session"])})  # audio tail dropped
             continue
         if kind != P.TEACH:
             continue

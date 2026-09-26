@@ -20,6 +20,7 @@ from .schema import (
 )
 from .store import (
     MEMORY_DB_TARGET,
+    SIMILARITY_REVIEW_TARGET,
     ErasureIncompleteError,
     ErasureReport,
     ErasureVerification,
@@ -38,6 +39,7 @@ __all__ = [
     "CANON",
     "CLAIM_PRIORITY",
     "MEMORY_DB_TARGET",
+    "SIMILARITY_REVIEW_TARGET",
     "CandidateFact",
     "ClaimType",
     "Embedder",

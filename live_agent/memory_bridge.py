@@ -1,17 +1,22 @@
 """Adapter from live_agent.memory.MemoryStore to the orchestrator's MemoryPort.
 
-Scope rules (review findings 12/13):
+Scope rules (review findings 12/13, round 2):
 
-* The bridge's **session mode** ("private" 1:1 or "public" livestream) is authoritative
-  for every write. Pass it at construction (``mode=``, from the server's authenticated
-  session); if omitted it is pinned by the first orchestrator call that names a mode
-  (``recall(mode=...)`` / ``on_persona_line(scope=...)``, both ``OrchestratorConfig.scope``).
-  Until pinned, writes are private (fail closed). ``Utterance.scope`` is never trusted.
-* Persona lines carry lineage: ``on_persona_line(..., source_ids=[...])`` stores the
-  memory ids the line was conditioned on as parents. With ``source_ids=None`` the lineage
-  is unknown, so the bridge links the line to *every* memory recalled in this session
-  (a conservative superset: erasure and correction still cascade to it) and writes it
-  in the session scope. A public write with a private input is refused (returns None).
+* The bridge's **session mode** ("private" 1:1 or "public" livestream) is required at
+  construction (from the server's authenticated session) and can never change: a call
+  naming another mode raises :class:`ScopeViolationError`. ``Utterance.scope`` is never
+  trusted; every write uses the session scope.
+* Persona lines carry lineage. ``on_persona_line(..., source_ids=[...], lineage=...)``:
+
+  - ``lineage="complete"``: ``source_ids`` is the full list of memory inputs;
+  - ``lineage="none"``: the caller asserts the line had no memory inputs (no ids);
+  - default (``lineage=None``): unknown. The bridge then links the line to every memory
+    recalled and every turn ingested in this session (a conservative superset, so
+    erasure and correction still cascade to it), plus any ``source_ids`` given.
+
+  A **public** line is stored only with complete lineage ("complete" / "none") and no
+  private input; otherwise nothing is written and None is returned (see
+  ``scope_violations``). Private lines with unknown lineage are stored privately.
 * Erasure is complete only when every required purge target acked (see
   :class:`live_agent.memory.ErasureReport`); the orchestrator acks its targets with
   :meth:`MemoryBridge.acknowledge_erasure`.
@@ -43,55 +48,45 @@ class RecallHit:
 
 
 class MemoryBridge:
-    def __init__(self, db_path: str, *, user_id: str, stream_id: str, session_id: str,
-                 store: MemoryStore | None = None, mode: str | None = None,
+    def __init__(self, db_path: str, *, user_id: str, stream_id: str, session_id: str, mode: str,
+                 store: MemoryStore | None = None,
                  required_purge_targets: Sequence[str] = DEFAULT_PURGE_TARGETS, recall_k: int = 6):
+        if mode not in ("private", "public"):
+            raise ValueError(f"session mode must be 'private' or 'public', got {mode!r}")
         self.store = store or MemoryStore(db_path)
         self.user_id = user_id
         self.stream_id = stream_id
         self.session_id = session_id
-        self._mode: str | None = None
-        if mode is not None:
-            self._pin(mode)
+        self._mode = mode
         self.required_purge_targets = tuple(required_purge_targets)
         self.recall_k = recall_k
-        self._recalled: dict[str, None] = {}  # ordered set of memory ids recalled this session
+        # ordered sets of this session's memory inputs (the unknown-lineage superset)
+        self._recalled: dict[str, None] = {}
+        self._ingested: dict[str, None] = {}
         self.scope_violations: list[dict[str, Any]] = []
-        self.mode_mismatches = 0
         self.on_erasure: list[Callable[[ErasureReport], Any]] = []
         self.store.register_purge_target("bridge_callbacks", self._erasure_hook)
 
     # ------------------------------------------------------------------ session scope
 
     @property
-    def mode(self) -> str | None:
+    def mode(self) -> str:
         return self._mode
 
-    def _pin(self, mode: str) -> str:
-        if mode not in ("private", "public"):
-            raise ValueError(f"session mode must be 'private' or 'public', got {mode!r}")
-        if self._mode is None:
-            self._mode = mode
-        elif mode != self._mode:
-            self.mode_mismatches += 1
-            log.warning("caller mode %r differs from session mode %r; session mode wins", mode, self._mode)
-        return self._mode
+    def _check_mode(self, mode: str) -> None:
+        if mode != self._mode:
+            raise ScopeViolationError(f"caller mode {mode!r} differs from the session mode {self._mode!r}")
 
     @property
     def write_scope(self) -> str:
         return MemoryStore.session_write_scope(self._mode, self.user_id, self.stream_id)
 
-    def _scope(self, mode: str) -> str:  # kept for compatibility; writes ignore ``mode`` beyond pinning
-        self._pin(mode)
-        return self.write_scope
-
     # ------------------------------------------------------------------ recall
 
     def recall_hits(self, text: str, *, mode: str) -> list[RecallHit]:
         """Retrieval with record ids; the ids are remembered as this session's lineage superset."""
-        session_mode = self._pin(mode)
-        read_mode = "public" if "public" in (mode, session_mode) else "private"  # never widen reads
-        res = self.store.retrieve(text, read_mode, user_id=self.user_id if read_mode == "private" else None,
+        self._check_mode(mode)
+        res = self.store.retrieve(text, self._mode, user_id=self.user_id if self._mode == "private" else None,
                                   stream_id=self.stream_id, k=self.recall_k)
         out = []
         for h in res.hits:
@@ -107,28 +102,34 @@ class MemoryBridge:
     # ------------------------------------------------------------------ writes
 
     def on_user_utterance(self, utt: Utterance) -> None:
-        self.store.ingest_user_utterance(utt, user_id=self.user_id, stream_id=self.stream_id,
-                                         mode=self._mode or "private")
+        res = self.store.ingest_user_utterance(utt, user_id=self.user_id, stream_id=self.stream_id,
+                                               mode=self._mode)
+        for rec in [res.episode, *res.facts, res.generated_event]:
+            if rec is not None:
+                self._ingested[rec.id] = None
 
     def on_persona_line(self, text: str, *, session_id: str, scope: str,
-                        source_ids: Iterable[str] | None = None,
+                        source_ids: Iterable[str] | None = None, lineage: str | None = None,
                         request_index: int | None = None) -> Record | None:
-        """Log a persona line in the session scope with its lineage.
+        """Log a persona line in the session scope with its lineage (see module docstring).
 
-        ``source_ids``: ids of the memories (``recall_hits(...).id``) the line was
-        conditioned on. ``None`` = unknown: linked to all memories recalled this session.
-        Returns None (nothing written, violation recorded) if the line would be public but
-        an input is private, or if an explicit source was erased meanwhile.
+        Returns None (nothing written, reason in ``scope_violations``) if the line would
+        be public without complete lineage or with a private input, or if an explicit
+        source was erased meanwhile.
         """
-        self._pin(scope)
-        if source_ids is None:
-            parents, lineage = self.store.existing_ids(self._recalled), "session_recall_superset"
-        else:
-            wanted = list(dict.fromkeys(source_ids))
-            parents, lineage = self.store.existing_ids(wanted), "explicit"
-            if len(parents) != len(wanted):
-                return self._violation(text, "source memory no longer exists (erased)",
-                                       sorted(set(wanted) - set(parents)))
+        self._check_mode(scope)
+        if lineage not in (None, "complete", "none"):
+            raise ValueError("lineage must be None (unknown), 'complete' or 'none'")
+        wanted = list(dict.fromkeys(source_ids or ()))
+        parents = self.store.existing_ids(wanted)
+        if len(parents) != len(wanted):
+            return self._violation(text, "source memory no longer exists (erased)",
+                                   sorted(set(wanted) - set(parents)))
+        if lineage is None:
+            if self._mode == "public":
+                return self._violation(text, "public persona line without complete source lineage", parents)
+            parents = self.store.existing_ids([*parents, *self._recalled, *self._ingested])
+            lineage = "session_superset"
         try:
             return self.store.record_generated_event(
                 text, session_id, self.write_scope, user_id=self.user_id, derived_from=parents,
@@ -147,6 +148,7 @@ class MemoryBridge:
                                    require=self.required_purge_targets)
         for rid in report.deleted_ids:
             self._recalled.pop(rid, None)
+            self._ingested.pop(rid, None)
         return report
 
     @staticmethod

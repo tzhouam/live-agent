@@ -123,7 +123,9 @@ class WSTransport:
         if msg["type"] == "chunk_start":
             self._starts[key] = t
         elif msg["type"] == "chunk_end" and self.orchestrator is not None:
-            self.orchestrator.on_presented(key[0], key[1], self._starts.pop(key, t), t)
+            painted = msg.get("painted")
+            self.orchestrator.on_presented(key[0], key[1], self._starts.pop(key, t), t,
+                                           painted=[int(i) for i in painted] if painted is not None else None)
 
 
 def build_app(args: argparse.Namespace) -> FastAPI:
@@ -142,7 +144,11 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         # Heavy generators are started once and shared (reset per session); the mock is per session.
         if args.generator != "mock":
             gen = make_generator(args)
-            await gen.start()
+            try:
+                await gen.start()
+            except BaseException:
+                await gen.close()  # workers / listener of a partial start must not linger
+                raise
             app.state.shared_gen = gen
 
     @app.on_event("shutdown")
@@ -214,7 +220,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 """Utterances are processed in order, off the receive loop, so presentation acks
                 and barge-in keep being read (and timestamped) while ASR / the LLM run."""
                 while True:
-                    kind, payload = await inputs.get()
+                    kind, payload, t_end = await inputs.get()
                     try:
                         if kind == "audio":
                             from live_agent.asr import decode_audio_bytes
@@ -225,19 +231,22 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                         else:
                             text = payload
                         if text:
-                            await orch.on_user_utterance(Utterance(new_id("utt"), "user", text, now(),
+                            # t_end = when the user stopped speaking / sent (client clock, mapped), so
+                            # ASR and queueing delay count toward the deadlines (proposal §7)
+                            await orch.on_user_utterance(Utterance(new_id("utt"), "user", text, t_end,
                                                                    session_id=session_id, scope=mode))
                     except Exception:  # noqa: BLE001
                         log.exception("input handling failed")
 
             worker = asyncio.create_task(handle_inputs())
+            audio_end = now()
             while True:
                 msg = await ws.receive()
                 if msg.get("type") == "websocket.disconnect":
                     break
                 if msg.get("bytes") is not None:
                     if asr is not None:
-                        inputs.put_nowait(("audio", msg["bytes"]))
+                        inputs.put_nowait(("audio", msg["bytes"], audio_end))
                     continue
                 data = json.loads(msg["text"])
                 t = data.get("type")
@@ -246,7 +255,9 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 elif t == "speech_start":
                     await orch.on_speech_start()
                 elif t == "text" and data.get("text", "").strip():
-                    inputs.put_nowait(("text", data["text"].strip()))
+                    inputs.put_nowait(("text", data["text"].strip(), transport._to_server(data)))
+                elif t == "audio_end":  # precedes the recorded audio bytes
+                    audio_end = transport._to_server(data)
                 elif t == "ping":
                     await ws.send_text(json.dumps({"type": "pong", "t": data.get("t"), "ts": now()}))
                 elif t == "clock":
@@ -254,12 +265,16 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
-            if worker is not None:
-                worker.cancel()
-            if orch is not None:
-                await orch.stop()
-            if shared:
-                app.state.session_lock.release()
+            try:
+                if worker is not None:
+                    worker.cancel()
+                if orch is not None:
+                    await orch.stop()
+            except Exception:  # noqa: BLE001
+                log.exception("session cleanup failed")
+            finally:
+                if shared:
+                    app.state.session_lock.release()
 
     return app
 

@@ -33,6 +33,8 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "observation_end": ("t",),
     # one annotator's raw, independent label (kept for agreement statistics; never scored)
     "rating": ("annotator", "chain_id", "label"),
+    # an adjudicated audio sweep of the session's recording for completion claims
+    "claim_sweep": ("source",),
 }
 
 ANNOTATION_ACTIONS = ("new", "revision", "withdrawal")
@@ -42,6 +44,7 @@ REFUSAL_KINDS = ("refused", "degraded")
 REPAIR_ARMS = ("forward_correction", "repeat")
 ONSET_SOURCES = ("script", "adjudicated", "human")
 SESSION_MODES = ("simulation", "generator_path", "browser")
+CLAIM_SOURCES = ("system", "adjudicated")
 
 
 class SchemaError(ValueError):
@@ -93,6 +96,10 @@ def validate_event(ev: dict[str, Any]) -> None:
         raise SchemaError(f"bad refusal kind {ev.get('kind')!r}")
     if typ == "repair_assignment" and ev["arm"] not in REPAIR_ARMS:
         raise SchemaError(f"bad repair arm {ev['arm']!r}")
+    if typ == "completion_claim" and ev.get("source", "system") not in CLAIM_SOURCES:
+        raise SchemaError(f"bad completion_claim source {ev.get('source')!r}")
+    if typ == "claim_sweep" and ev["source"] != "adjudicated":
+        raise SchemaError(f"claim_sweep source must be 'adjudicated': {ev}")
     if typ == "rating" and ev["label"] not in VERDICT_LABELS:
         raise SchemaError(f"bad rating label {ev['label']!r}")
     if typ == "speech_onset":

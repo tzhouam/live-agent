@@ -64,7 +64,7 @@ class CompileResult:
 
 
 class CapabilityManifest:
-    def __init__(self, caps: list[Capability], *, min_status: Status = Status.EXECUTED, min_p: float = 0.6):
+    def __init__(self, caps: list[Capability], *, min_status: Status = Status.CALIBRATED, min_p: float = 0.6):
         self.caps = {c.cap_id: c for c in caps}
         self.min_status = min_status
         self.min_p = min_p
@@ -80,7 +80,7 @@ class CapabilityManifest:
             if d.get("p_ci") is not None:
                 d["p_ci"] = tuple(d["p_ci"])
             caps.append(Capability(**d))
-        return cls(caps, min_status=Status(data.get("min_status", kw.get("min_status", "executed"))),
+        return cls(caps, min_status=Status(data.get("min_status", kw.get("min_status", "calibrated"))),
                    min_p=data.get("min_p", kw.get("min_p", 0.6)))
 
     def save(self, path: str | Path) -> None:

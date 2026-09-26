@@ -83,6 +83,12 @@ class LockScheduler:
         for k, x in sorted(by_k.items()):
             if x.t_first_chunk is None:
                 continue
+            if x.t_teacher_done is not None and x.t_student_start is not None:
+                # Explicit components (proposal §10): G_a = lock -> teacher done (includes waiting
+                # for a busy teacher), G_1 = student start -> first chunk. The student's wait for
+                # request k-1's KV (teacher done -> student start) is excluded.
+                out.append((x.t_teacher_done - x.t_lock) + (x.t_first_chunk - x.t_student_start))
+                continue
             prev = by_k.get(k - 1)
             # Unknown predecessor: lock time (conservative: may include some KV wait).
             start = max(x.t_lock, prev.t_done) if prev is not None and prev.t_done is not None else x.t_lock

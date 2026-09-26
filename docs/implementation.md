@@ -84,8 +84,9 @@ python3 -m pytest
 - **Deadlock classes found and fixed by tests:** barge-in or erasure dropping requests that the backlog guard
   was waiting on.
 
-- **M0 (measured locally):** the TaoMate-H3 streaming adapter is real time at 480x864 on 4+2 GPUs. See
-  `docs/m0_measurements.md` and D-021.
+- **M0 component profile (measured locally):** in short runs (40 s sessions), the streaming adapter's generation
+  period was 3.55 s per 4.958 s of media at 480x864 on 4+2 GPUs, so short-run throughput met the playback rate.
+  This is not a real-time qualification: M1/M2 soak gates are open. See `docs/m0_measurements.md` and D-021.
 - **Generator-path diagnostic run (not M1 qualification; measured locally, 2026-09-26; `.cache/m1`, 12 sessions = 6 tasks × A2/A1, seed 0,
   real TaoMate-H3 + Qwen3-8B responder + Qwen3-VL-8B judge, pre-E1 manifest with `--allow-uncalibrated`):**
   - 29–52 chunks per session, **0 playback gaps > 50 ms** in all 12 sessions (after moving the recorder off
@@ -137,7 +138,21 @@ python3 -m pytest
   image re-anchoring) are not wired into the active path; only the textual bridging note after barge-in is.
   **The E2 pilot claim for A2's online loop is therefore restricted to action and multistep-action chains.**
 - **Pre-play ASR of generated speech (§15) is not implemented.** ASR runs after presentation, off the event
-  loop. The pre-generation script audit is implemented (erased terms, length).
+  loop. The pre-generation script audit checks erased terms, length and an operator term blocklist. It is **not
+  content moderation**: there is no moderation model, so the proposal's content-audit gate is open.
+- **QC evidence = painted frames.** Browser acks report which frames were actually painted. QC samples only
+  those frames and abstains if fewer than half were shown. The simulated client reports all frames.
+- **Media retention:** decoded frames/audio are evicted after presentation and QC (a 30-min session would
+  otherwise hold ~50 GiB [derived]); recordings are separate and opt-in.
+- **Deadlines start at the client's utterance end.** Browser/WS clients stamp when a text was sent or a
+  recording stopped; the server maps it to its clock, so ASR and queueing delay count toward D.
+- **Barge-in races.** A barge-in changes the plan and pauses locking before its first await. A responder decision
+  whose input was superseded by a newer barge-in is discarded and logged as a capacity skip (erasures are still
+  honoured).
+- **Erasure fails closed.** The generator reset counts as purged only when both TaoMate worker groups confirm it
+  (`reset_done`), after adapter prompt buffers are cleared. Memory runs a paraphrase sweep (similarity
+  threshold 0.5 [estimate]; cross-lingual paraphrases are not caught). If any purge target is unacknowledged,
+  including `similarity_review` for similar surviving user facts, the session stays paused.
 - **Transport:** the browser path sends JPEG frames + PCM16 per chunk instead of the proposal's per-chunk fMP4
   (`Chunk.encoded` is unused). Presentation acks carry the client's audio-output time (performance clock via
   `getOutputTimestamp`), mapped to server time with the lowest-RTT ping; the accuracy of this mapping is

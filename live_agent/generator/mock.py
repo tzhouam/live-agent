@@ -63,6 +63,9 @@ class MockGenerator(Generator):
                 shade = (k * 37) % 255
                 video = np.full((1, self.info.height, self.info.width, 3), shade, dtype=np.uint8)
                 audio = np.zeros((int(n / self.info.fps * self.info.sample_rate), 2), dtype=np.float32)
+                if "<d>" in prompt and ci == 0:  # a scripted line: audible "speech" from 0.2 s
+                    t = np.arange(len(audio)) / self.info.sample_rate
+                    audio[:, :] = (0.1 * np.sin(2 * np.pi * 220 * t) * (t >= 0.2))[:, None]
                 ch = Chunk(k, ci, n, self.info.fps, video=video, audio=audio,
                            sample_rate=self.info.sample_rate, t_ready=now(),
                            meta={"prompt": prompt, "session": session})

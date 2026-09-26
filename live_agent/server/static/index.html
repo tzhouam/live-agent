@@ -130,8 +130,9 @@ function render() {
       if (q.startedSent && t < q.end) {
         const idx = Math.min(q.frames.length - 1, Math.floor((t - q.start) / (q.end - q.start) * q.frames.length));
         g.drawImage(q.frames[idx], 0, 0, canvas.width, canvas.height);
+        (q.painted = q.painted || new Set()).add(idx);  // frames actually shown (QC evidence)
       }
-      if (!q.endedSent && t >= q.end) { q.endedSent = true; send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.end)}); }
+      if (!q.endedSent && t >= q.end) { q.endedSent = true; send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.end), painted: Array.from(q.painted || [])}); }
     }
     queue = queue.filter(q => !q.endedSent);
   }
@@ -144,11 +145,11 @@ $("talk").onpointerdown = async () => {
   recorder = new MediaRecorder(stream, {mimeType: "audio/webm;codecs=opus"});
   const parts = [];
   recorder.ondataavailable = (e) => parts.push(e.data);
-  recorder.onstop = async () => { stream.getTracks().forEach(t => t.stop()); ws.send(await new Blob(parts).arrayBuffer()); };
+  recorder.onstop = async () => { stream.getTracks().forEach(t => t.stop()); send({type: "audio_end", tp: performance.now()}); ws.send(await new Blob(parts).arrayBuffer()); };
   recorder.start(); $("talk").textContent = "松开结束";
 };
 $("talk").onpointerup = () => { if (recorder && recorder.state === "recording") recorder.stop(); $("talk").textContent = "按住说话"; };
-function sendText() { const v = $("text").value.trim(); if (!v) return; send({type: "speech_start"}); stopAll(); send({type: "text", text: v}); logLine("[你] " + v); $("text").value = ""; }
+function sendText() { const v = $("text").value.trim(); if (!v) return; send({type: "speech_start"}); stopAll(); send({type: "text", text: v, tp: performance.now()}); logLine("[你] " + v); $("text").value = ""; }
 $("send").onclick = sendText;
 $("text").onkeydown = (e) => { if (e.key === "Enter") sendText(); };
 </script>

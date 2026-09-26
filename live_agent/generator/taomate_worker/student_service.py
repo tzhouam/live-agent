@@ -218,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
             break
         if kind == P.RESET:
             reset_all(int(command["session"]))
+            loop.send({"type": "reset_done", "session": int(command["session"])})  # state released
             continue
         if kind == "flush":
             frame_start, frames = video_decoder.flush()

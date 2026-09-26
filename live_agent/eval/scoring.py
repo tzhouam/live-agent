@@ -23,12 +23,19 @@ Rules implemented (all *proposed targets*, preregistered, identical across condi
   order; correction = restart clock at revision.
 * Outcomes: refused/degraded -> fail; capacity skip (of the final revision) -> fail (in
   denominator); withdrawn -> excluded, counted; "cannot tell" -> fail in primary, excluded
-  in sensitivity analysis; never complied -> censored at D; order_fail -> a deterministic
-  failure (competing event, not censoring).
+  in sensitivity analysis; never complied -> not a success by D; order_fail -> a
+  deterministic failure. Time to success: every non-success is "not yet" until the chain's
+  full deadline D (no early censoring), so success-by-t per kind is a cumulative incidence
+  with all failure types as competing outcomes.
+* FCR (primary): completion claims found in the recorded audio by the adjudicated claim
+  sweep, each settled by its reconciled claim-level verdict. Logged claims are diagnostic.
+* RQ2: every randomised failure point, by assigned arm; withdrawal after assignment is a
+  repair failure (sensitivity row excludes it); unobserved target requests are flagged.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import math
 from dataclasses import dataclass, field
@@ -97,6 +104,11 @@ class IncompleteAdjudicationError(ValueError):
     """The primary analysis needs a reconciled adjudicated verdict for every chain and claim."""
 
 
+class InsufficientObservationError(ValueError):
+    """Some deadline windows were not observed: rerun those trials, or select a
+    preregistered missing-data rule explicitly (report ``--missing-rule``)."""
+
+
 # --------------------------------------------------------------------------- chains
 
 
@@ -130,13 +142,6 @@ class Chain:
     def origin_at(self, t: float) -> float:
         """Clock origin in force at time t (for judging claims made before a revision)."""
         return self.origins[self.revision_at(t)]
-
-
-def claim_needs_direct_adjudication(ch: Chain, t: float) -> bool:
-    """A claim is settled by the chain's final-intent verdicts only when the chain ends
-    effective and the claim was heard under the final intent; otherwise it needs its own
-    (claim-level) adjudication against what was requested at claim time."""
-    return ch.withdrawn or ch.revision_at(t) != len(ch.revisions)
 
 
 def _kind(v: Any) -> TaskKind:
@@ -258,6 +263,7 @@ class SessionScore:
     diagnostic: bool = False
     sources: tuple[str, ...] = PRIMARY_SOURCES
     observation_end: float | None = None
+    claim_sweep: bool = False  # an adjudicated audio claim sweep covers this session
 
 
 def _vtime(v: dict[str, Any], chunks: dict[tuple[int, int], dict[str, Any]]) -> float | None:
@@ -418,17 +424,20 @@ def _claims(
     chunks: dict[tuple[int, int], dict[str, Any]],
     cfg: ScoringConfig,
 ) -> tuple[int, int, int]:
-    """Return (n_claims, n_false, n_unadjudicated) over every audible completion claim on
-    the chain, withdrawn chains included. A claim is judged against the intent revision in
-    force when it was heard: it is true only if a ``complied`` verdict bound to that
-    revision (for the claimed step, or for every step when no step is named) has its
-    compliance time in [origin of that revision, t_claim + grace]. A claim-level verdict
-    (``claim_id``, or ``chain_id`` + ``claim_t``) settles the claim directly; ``unknown``
-    counts as false. In primary mode a claim that needs claim-level adjudication (withdrawn
-    chain, or heard before the final revision) and has none is unadjudicated."""
+    """Return (n_claims, n_false, n_unadjudicated) over the chain's completion claims,
+    withdrawn chains included. A claim-level verdict (``claim_id``, or ``chain_id`` +
+    ``claim_t``) settles a claim directly; ``unknown`` counts as false.
+
+    Primary mode: the claims are the ones found by the adjudicated audio claim sweep
+    (``completion_claim`` with ``source: adjudicated``), each settled by its reconciled
+    claim-level verdict; a claim without one is unadjudicated.
+
+    Diagnostic mode (logged claims): a claim is judged against the intent revision in force
+    when it was heard. It is true only if a ``complied`` verdict bound to that revision (for
+    the claimed step, or for every step when no step is named) has its compliance time in
+    [origin of that revision, t_claim + grace]."""
     n_false = n_unadj = 0
     n_rev = len(ch.revisions)
-    has_chain_adj = any(v["source"] in cfg.source_preference for v in verdicts)
     for c in claims:
         t = float(c["t"])
         dv = direct.get(("id", c.get("claim_id"))) if c.get("claim_id") is not None else None
@@ -437,7 +446,7 @@ def _claims(
         if dv:
             n_false += int(dv[-1]["label"] != "complied")
             continue
-        if not cfg.diagnostic and (claim_needs_direct_adjudication(ch, t) or not has_chain_adj):
+        if not cfg.diagnostic:
             n_unadj += 1
             continue
         r = ch.revision_at(t)
@@ -468,6 +477,53 @@ def _request_at(t: float, chunks: dict[tuple[int, int], dict[str, Any]]) -> int 
         if float(c["t_start"]) - _EPS <= t < float(c["t_end"]):
             return k
     return None
+
+
+def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, Any]],
+            chunks: dict[tuple[int, int], dict[str, Any]], obs_end: float | None) -> dict[str, Any]:
+    """One RQ2 failure point (preregistered handling):
+
+    * ``success``: a complied verdict (for the assigned step) whose request -- explicit
+      ``request``, else the presented chunk containing its compliance time -- is the
+      target request j;
+    * ``withdrawn``: the user withdrew the chain after the assignment: a repair failure
+      in the primary analysis, excluded in a sensitivity row;
+    * ``insufficient_observation``: request j was not fully presented before
+      ``observation_end``: flagged, excluded, rerun;
+    * ``unadjudicated``: the chain lacks adjudication (the primary report refuses);
+    * ``failure``: otherwise."""
+    tgt = int(r["target_request"]) if r.get("target_request") is not None else None
+    step = r.get("step")
+
+    def req(v: dict[str, Any]) -> int | None:
+        if v.get("request") is not None:
+            return int(v["request"])
+        return _request_at(v["_tc"], chunks) if v["_tc"] is not None else None
+
+    ok = tgt is not None and any(
+        v["label"] == "complied" and req(v) == tgt and (step is None or int(v.get("step", 0)) == int(step))
+        for v in vs
+    )
+    ends = [float(c["t_end"]) for (k, _), c in chunks.items() if k == tgt]
+    if ok:
+        status = "success"
+    elif ch.withdrawn:
+        status = "withdrawn"
+    elif tgt is not None and obs_end is not None and (not ends or max(ends) > obs_end + _EPS):
+        status = "insufficient_observation"
+    elif outcome == Outcome.UNADJUDICATED:
+        status = "unadjudicated"
+    else:
+        status = "failure"
+    return {
+        "arm": r["arm"],
+        "failure_request": int(r["failure_request"]),
+        "target_request": tgt,
+        "step": step,
+        "offset": (tgt - int(r["failure_request"])) if tgt is not None else None,
+        "status": status,
+        "success": status == "success",
+    }
 
 
 def observation_end(session: SessionLog) -> float | None:
@@ -502,7 +558,12 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
                 direct.setdefault(_claim_key(e["chain_id"], e["claim_t"]), []).append(e)
             else:
                 put(e["chain_id"], "verdict", e)
-        elif t in ("completion_claim", "refusal", "capacity_skip", "repair_assignment") or (
+        elif t == "completion_claim":
+            # primary: claims found in the recorded audio by the adjudicated sweep; diagnostic:
+            # the orchestrator's logged claims
+            if (e.get("source") == "adjudicated") != cfg.diagnostic:
+                put(e["chain_id"], t, e)
+        elif t in ("refusal", "capacity_skip", "repair_assignment") or (
             t == "speech_onset" and e.get("chain_id") is not None
         ):
             put(e["chain_id"], t, e)
@@ -549,10 +610,9 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
         else:
             D = cfg.step_deadline_s
         success = outcome == Outcome.SUCCESS
-        if success:
-            tts = float(info.get("t_complete", info.get("tvc", 0.0)))
-        else:
-            tts = float(info.get("deadline", D))  # censored where failure became certain
+        # success by the chain's full deadline D; every non-success stays "not yet" until D
+        # (no early censoring: refusal, skip, rubric and order failures preclude success)
+        tts = float(info.get("t_complete", info.get("tvc", 0.0))) if success else D
 
         rec = ChainOutcome(
             session_id=session.session_id,
@@ -592,27 +652,9 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
         rec.n_claims, rec.n_false_claims, rec.n_claims_unadjudicated = _claims(
             ch, ev.get("completion_claim", []), all_v, direct, chunks, cfg
         )
-        for r in ev.get("repair_assignment", []):  # RQ2: one record per failure point
-            tgt = int(r["target_request"]) if r.get("target_request") is not None else None
-            step = r.get("step")
-
-            def req(v: dict[str, Any]) -> int | None:
-                if v.get("request") is not None:
-                    return int(v["request"])
-                return _request_at(v["_tc"], chunks) if v["_tc"] is not None else None
-
-            rec.repairs.append({
-                "arm": r["arm"],
-                "failure_request": int(r["failure_request"]),
-                "target_request": tgt,
-                "step": step,
-                "offset": (tgt - int(r["failure_request"])) if tgt is not None else None,
-                "success": tgt is not None and any(
-                    v["label"] == "complied" and req(v) == tgt
-                    and (step is None or int(v.get("step", 0)) == int(step))
-                    for v in vs
-                ),
-            })
+        # RQ2: every randomised failure point, whatever later happens to the chain
+        for r in ev.get("repair_assignment", []):
+            rec.repairs.append(_repair(r, ch, rec.outcome, vs, chunks, obs_end))
         out.append(rec)
 
     # latencies
@@ -647,6 +689,7 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
         diagnostic=cfg.diagnostic,
         sources=tuple(cfg.source_preference),
         observation_end=obs_end,
+        claim_sweep=any(e.get("source") == "adjudicated" for e in session.of_type("claim_sweep")),
     )
 
 
@@ -654,12 +697,16 @@ def adjudication_gaps(sessions: list[SessionScore]) -> list[str]:
     """Human-readable list of what blocks the primary analysis (empty = complete)."""
     gaps = []
     for s in sessions:
+        if not s.diagnostic and not s.claim_sweep:
+            gaps.append(f"{s.session_id}: no adjudicated audio claim sweep (FCR needs every audible claim)")
         for c in s.chains:
             if c.outcome == Outcome.UNADJUDICATED:
                 gaps.append(f"{s.session_id} {c.chain_id}: {c.missing}")
             if c.n_claims_unadjudicated:
                 gaps.append(f"{s.session_id} {c.chain_id}: {c.n_claims_unadjudicated} completion "
-                            "claim(s) need claim-level adjudication")
+                            "claim(s) without a reconciled claim-level verdict")
+            if any(r["status"] == "unadjudicated" for r in c.repairs):
+                gaps.append(f"{s.session_id} {c.chain_id}: RQ2 failure point on an unadjudicated chain")
     return gaps
 
 
@@ -675,11 +722,51 @@ def require_complete(sessions: list[SessionScore]) -> None:
         )
 
 
+def observation_gaps(sessions: list[SessionScore]) -> list[str]:
+    return [f"{s.session_id} {c.chain_id}: {c.missing}" for s in sessions for c in s.chains
+            if c.outcome == Outcome.INSUFFICIENT_OBSERVATION]
+
+
+def require_observed(sessions: list[SessionScore]) -> None:
+    """Raise unless every deadline window was observed (preregistered rule 'rerun-required')."""
+    gaps = observation_gaps(sessions)
+    if gaps:
+        raise InsufficientObservationError(
+            f"{len(gaps)} chain(s) with an unobserved deadline window; rerun these trials (and "
+            "their pairs) or select a preregistered missing-data rule explicitly:\n  " + "\n  ".join(gaps)
+        )
+
+
+def impute_worst_case(sessions: list[SessionScore]) -> list[SessionScore]:
+    """Missing-data rule 'worst-case' (sensitivity only): every insufficiently observed
+    chain counts as a failure (outcome ``never`` at its deadline)."""
+    out = []
+    for s in sessions:
+        ch = [dataclasses.replace(c, outcome=Outcome.NEVER, missing=f"worst-case imputed: {c.missing}",
+                                  success_event=False, time_to_success=c.deadline_s)
+              if c.outcome == Outcome.INSUFFICIENT_OBSERVATION else c for c in s.chains]
+        out.append(dataclasses.replace(s, chains=ch))
+    return out
+
+
 # --------------------------------------------------------------------------- aggregation
 
 
 def _rate(k: int, n: int) -> float:
     return k / n if n else math.nan
+
+
+def _repair_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Primary: success / (success + failure + withdrawn); sensitivity excludes withdrawn.
+    Insufficiently observed points are excluded and counted (rerun)."""
+    st = [r["status"] for r in rs]
+    k = st.count("success")
+    n = k + st.count("failure") + st.count("withdrawn")
+    return {"n": n, "k": k, "n_withdrawn": st.count("withdrawn"),
+            "n_insufficient_observation": st.count("insufficient_observation"),
+            "n_unadjudicated": st.count("unadjudicated"),
+            "n_excl_withdrawn": n - st.count("withdrawn"),
+            "offsets": sorted(r["offset"] for r in rs if r["offset"] is not None)}
 
 
 def summarize(chains: list[ChainOutcome]) -> dict[str, Any]:
@@ -696,7 +783,7 @@ def summarize(chains: list[ChainOutcome]) -> dict[str, Any]:
     content = [c for c in eff if c.kind == TaskKind.CONTENT.value]
     claims = sum(c.n_claims - c.n_claims_unadjudicated for c in chains)
     false_claims = sum(c.n_false_claims for c in chains)
-    reps = [r for c in eff for r in c.repairs]
+    reps = [r for c in chains for r in c.repairs]  # every randomised failure point
     return {
         "n_effective": n,
         "n_success": succ,
@@ -722,13 +809,7 @@ def summarize(chains: list[ChainOutcome]) -> dict[str, Any]:
         "claim_coverage_of_successes": _rate(
             sum(c.n_claims > 0 for c in eff if c.success), succ
         ),
-        "repair": {
-            arm: {
-                "n": sum(r["arm"] == arm for r in reps),
-                "k": sum(bool(r["success"]) for r in reps if r["arm"] == arm),
-                "offsets": sorted(r["offset"] for r in reps if r["arm"] == arm and r["offset"] is not None),
-            }
-            for arm in sorted({r["arm"] for r in reps})
-        },
+        "repair": {arm: _repair_summary([r for r in reps if r["arm"] == arm])
+                   for arm in sorted({r["arm"] for r in reps})},
         "outcomes": {o.value: sum(c.outcome == o for c in chains) for o in Outcome},
     }

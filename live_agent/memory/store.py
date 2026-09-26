@@ -27,10 +27,12 @@ import hashlib
 import json
 import logging
 import math
+import re
 import sqlite3
 import time
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -210,11 +212,14 @@ class ErasureVerification:
     term_hits: list[str] = field(default_factory=list)  # term residue in erasable records (any scope)
     orphans: list[str] = field(default_factory=list)  # index / embedding / edge rows without a record
     file_hits: list[str] = field(default_factory=list)  # term bytes still in the DB file(s)
+    similar: list[str] = field(default_factory=list)  # derived artifacts semantically close to erased content
+    review: list[str] = field(default_factory=list)  # similar user-origin records (need a human / user decision)
     foreign_hits: list[str] = field(default_factory=list)  # informational only
 
     @property
     def hits(self) -> list[str]:
-        return [*self.surviving, *self.missing_tombstones, *self.term_hits, *self.orphans, *self.file_hits]
+        return [*self.surviving, *self.missing_tombstones, *self.term_hits, *self.orphans, *self.file_hits,
+                *self.similar]
 
     @property
     def ok(self) -> bool:
@@ -222,6 +227,9 @@ class ErasureVerification:
 
 
 MEMORY_DB_TARGET = "memory_db"
+SIMILARITY_REVIEW_TARGET = "similarity_review"  # pending while similar user records await review
+# kinds the similarity sweep deletes (persona / derived artifacts); user-origin kinds are only reported
+_SWEEP_DELETE = (Kind.GENERATED_EVENT, Kind.SUMMARY, Kind.LEDGER, Kind.PROCEDURAL)
 
 
 @dataclass
@@ -251,6 +259,10 @@ class ErasureReport:
     required_targets: list[str] = field(default_factory=list)
     acks: dict[str, PurgeAck] = field(default_factory=dict)
     verification: ErasureVerification | None = None
+    swept_ids: list[str] = field(default_factory=list)  # derived artifacts deleted by the similarity sweep
+    review_ids: list[str] = field(default_factory=list)  # similar user-origin records kept for review
+    # in-memory only (never persisted): embeddings of the erased content, for verification
+    query_vecs: Any = field(default=None, repr=False)
 
     def acknowledge(self, target: str, ok: bool = True, detail: str = "") -> None:
         if target not in self.required_targets:
@@ -272,6 +284,19 @@ class ErasureReport:
         if not self.complete:
             raise ErasureIncompleteError(
                 f"erasure not complete; pending purge targets: {self.pending_targets}; errors: {self.hook_errors}")
+
+
+def _atomic(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Run a MemoryStore method as one transaction (retire + insert + lineage + commit);
+    stale hooks fire only after the commit, nothing is left half-applied on error."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(self: MemoryStore, *a: Any, **kw: Any) -> Any:
+        with self._tx():
+            return fn(self, *a, **kw)
+
+    return wrapper
 
 
 def _hook_name(hook: Callable[..., Any]) -> str:
@@ -305,6 +330,8 @@ class MemoryStore:
         extractor: Extractor | None = None,
         clock: Callable[[], float] = time.time,
         echo_threshold: float = 0.5,
+        confirm_threshold: float = 0.5,
+        erase_sim_threshold: float = 0.5,
         echo_lexical_floor: float = 0.4,
         viewer_rate: tuple[int, float] = (5, 10.0),
         viewer_max_len: int = 200,
@@ -316,6 +343,9 @@ class MemoryStore:
         self.extractor: Extractor = extractor or RuleExtractor()
         self.clock = clock
         self.echo_threshold = echo_threshold
+        # estimates (HashingEmbedder cosine), not calibrated: see confirm() / forget()
+        self.confirm_threshold = confirm_threshold
+        self.erase_sim_threshold = erase_sim_threshold
         self.echo_lexical_floor = echo_lexical_floor
         self.viewer_max_len = viewer_max_len
         self.recency_tau_s = recency_tau_s
@@ -330,6 +360,8 @@ class MemoryStore:
         self.erasure_hooks: list[Callable[[ErasureReport], Any]] = []
         self.required_purge_targets: set[str] = set()  # must ack, even without a hook
         self.purge_hooks: dict[str, Callable[[ErasureReport], Any]] = {}
+        self._tx_depth = 0
+        self._pending_stale: list[Record] = []  # stale hooks fire only after a successful commit
         self.stale_hooks: list[Callable[[list[Record]], None]] = []
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
@@ -342,6 +374,32 @@ class MemoryStore:
 
     def close(self) -> None:
         self.db.close()
+
+    @contextmanager
+    def _tx(self) -> Iterator[None]:
+        """One atomic unit of work: nested ``_commit`` calls are deferred to the outermost
+        block; any exception rolls everything back and drops queued stale hooks."""
+        self._tx_depth += 1
+        try:
+            yield
+        except BaseException:
+            self._tx_depth -= 1
+            if self._tx_depth == 0:
+                self.db.rollback()
+                self._pending_stale.clear()
+            raise
+        self._tx_depth -= 1
+        self._commit()
+
+    def _commit(self) -> None:
+        """Commit unless inside :meth:`_tx`; then fire queued stale hooks (after the commit)."""
+        if self._tx_depth:
+            return
+        self.db.commit()
+        stale, self._pending_stale = self._pending_stale, []
+        if stale:
+            for hook in list(self.stale_hooks):
+                hook(stale)
 
     def __enter__(self) -> MemoryStore:
         return self
@@ -377,6 +435,9 @@ class MemoryStore:
         parents = [self._require(pid) for pid in dict.fromkeys(derived_from)]
         source_scopes = union_scopes(scope, parents)
         self._check_write_scope(kind, scope, source_scopes, provenance)
+        if (kind == Kind.GENERATED_EVENT and scope.startswith("public:")
+                and (meta or {}).get("lineage") not in self.COMPLETE_LINEAGE):
+            raise ScopeViolationError("public persona output requires complete source lineage")
         if kind == Kind.GENERATED_EVENT and claim_type == ClaimType.OWN_ASSERTION:
             raise ValueError("generated events are never user assertions")
         now = self.clock()
@@ -420,7 +481,7 @@ class MemoryStore:
             (rec.id, self.embedder.name, vec.tobytes()),
         )
         if commit:
-            self.db.commit()
+            self._commit()
         return rec
 
     @staticmethod
@@ -573,6 +634,7 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ write policy
 
+    @_atomic
     def ingest_user_utterance(
         self,
         utt: Utterance,
@@ -624,7 +686,7 @@ class MemoryStore:
                 result.skipped.append((cand, "duplicate"))
             else:
                 result.facts.append(rec)
-        self.db.commit()
+        self._commit()
         return result
 
     def _abs_subject(self, subject: str, user_id: str) -> str:
@@ -689,6 +751,11 @@ class MemoryStore:
                 hits.append(r["id"])
         return hits
 
+    #: lineage values: "complete" = ``derived_from`` lists every memory input; "none" = the
+    #: caller asserts there were no memory inputs (``derived_from`` empty); anything else
+    #: ("unknown", "session_recall_superset", ...) is incomplete.
+    COMPLETE_LINEAGE = ("complete", "none")
+
     def record_generated_event(
         self,
         text: str,
@@ -706,17 +773,23 @@ class MemoryStore:
         ``scope`` must be the *session's* write scope (persona lines in a private
         conversation are private). ``derived_from`` lists the memory records the line was
         conditioned on; the line inherits their ``source_scopes`` and erasure / correction
-        cascade through them. A public ``scope`` with any private input raises
-        :class:`ScopeViolationError` (nothing is written). ``derived_from=None`` means the
-        lineage is unknown: recorded as ``meta.lineage = "unknown"``; the caller must then
-        pass the session scope (never a public scope from a private session).
+        cascade through them. ``lineage`` says how complete that list is (default
+        "unknown"; see :attr:`COMPLETE_LINEAGE`). Fail closed: a **public** line requires
+        complete lineage ("complete", or "none" with no parents) and no private input,
+        otherwise :class:`ScopeViolationError` and nothing is written. Private lines may
+        have incomplete lineage (they stay private).
         """
         validate_scope(scope)
         if scope == CANON:
             raise ScopeViolationError("persona output is never canon")
+        lineage = lineage or "unknown"
+        if lineage == "none" and derived_from:
+            raise ValueError("lineage='none' asserts no memory inputs but derived_from is non-empty")
+        if lineage == "complete" and derived_from is None:
+            raise ValueError("lineage='complete' requires derived_from")
         if not user_id and is_private(scope):
             user_id = scope.split(":", 1)[1]
-        meta: dict[str, Any] = {"lineage": lineage or ("unknown" if derived_from is None else "explicit")}
+        meta: dict[str, Any] = {"lineage": lineage}
         if request_index is not None:
             meta["request_index"] = request_index
         prov = Provenance(source_id=source_id, speaker="persona", session_id=session_id,
@@ -726,6 +799,7 @@ class MemoryStore:
             derived_from=derived_from or (), meta=meta,
         )
 
+    @_atomic
     def ingest_viewer_chat(
         self, text: str, viewer_id: str, stream_id: str, *, session_id: str = "", source_id: str = ""
     ) -> Record | None:
@@ -758,7 +832,7 @@ class MemoryStore:
                     derived_from=[ep.id], subject=subj, predicate=cand.predicate, value=cand.value,
                     confidence=0.3, importance=0.1, commit=False,
                 )
-        self.db.commit()
+        self._commit()
         return ep
 
     def record_inference(
@@ -804,6 +878,7 @@ class MemoryStore:
             value=value, confidence=confidence,
         )
 
+    @_atomic
     def add_ledger(
         self,
         text: str,
@@ -835,6 +910,7 @@ class MemoryStore:
             immutable=canonical, meta={"key": key, "canonical": canonical},
         )
 
+    @_atomic
     def add_procedure(
         self,
         text: str,
@@ -883,15 +959,24 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ confirmation / correction
 
-    def confirm(self, record_id: str, confirmation_id: str | None = None) -> Record:
+    @_atomic
+    def confirm(self, record_id: str, confirmation_id: str | None = None, *,
+                question_id: str | None = None) -> Record:
         """User explicitly confirms a pending echo / conflicting fact or a candidate belief.
 
-        ``confirmation_id`` is the ``episode`` record of the user's confirming turn (e.g.
-        "yes, that's right"). It is **required** for a candidate belief: the belief is not
-        rewritten; a *new* ``own_assertion`` user fact (speaker="user", derived from the
-        confirming episode and the belief) is created and returned, and the belief is kept
-        as provenance (status superseded, ``meta.confirmed_by``). For a pending user fact
-        it is optional and, when given, is linked into the fact's lineage.
+        ``confirmation_id`` is the ``episode`` record of the user's confirming turn. It is
+        **required** for a candidate belief: the belief is not rewritten; a *new*
+        ``own_assertion`` user fact (speaker="user", derived from the confirming episode and
+        the belief) is created and returned, and the belief is kept as provenance (status
+        superseded, ``meta.confirmed_as``). For a pending user fact it is optional and, when
+        given, is linked into the fact's lineage.
+
+        Binding rule (the turn must confirm *this* proposition, see :meth:`_confirmation_binds`):
+        either (a) the turn states it: it contains the record's value, or its embedding
+        cosine to the record's text + value is >= ``confirm_threshold`` (0.5, an estimate);
+        or (b) ``question_id`` names the persona line that asked about it (a generated
+        event derived from the record, same session) and the turn is an affirmative answer
+        and the first user turn after that question.
         """
         rec = self._require(record_id)
         if rec.status != Status.PENDING:
@@ -903,6 +988,10 @@ class MemoryStore:
                 raise ValueError("confirmation must be an episode spoken by the record's owner")
             if conf.claim_type in (ClaimType.QUESTION, ClaimType.HYPOTHETICAL, ClaimType.QUOTE_OF_PERSONA):
                 raise ValueError(f"a {conf.claim_type.value} turn cannot confirm a memory")
+            why = self._confirmation_binds(rec, conf, question_id)
+            if why is None:
+                raise ValueError("confirming turn is not bound to this proposition "
+                                 "(no value / semantic match and no answered question)")
         elif rec.kind == Kind.CANDIDATE_BELIEF:
             raise ValueError("confirming an agent inference requires the user's confirming episode")
         now = self.clock()
@@ -928,8 +1017,8 @@ class MemoryStore:
             )
             # the inference is kept (for audit / lineage) but no longer usable on its own
             self._set_status(rec.id, Status.SUPERSEDED, valid_to=now)
-            self._update_meta(rec.id, confirmed_as=fact.id, confirmed_by=conf.id)
-            self.db.commit()
+            self._update_meta(rec.id, confirmed_as=fact.id, confirmed_by=conf.id, confirmed_rule=why)
+            self._commit()
             return self._require(fact.id)
         if others:
             self._update_meta(rec.id, supersedes=[r.id for r in others])
@@ -937,8 +1026,32 @@ class MemoryStore:
             self._link_parent(rec.id, conf)
         self._set_status(rec.id, Status.ACTIVE, valid_from=now)
         self._update_meta(rec.id, confirmed_at=now, **({"confirmed_by": conf.id} if conf else {}))
-        self.db.commit()
+        self._commit()
         return self._require(rec.id)
+
+    def _confirmation_binds(self, rec: Record, conf: Record, question_id: str | None) -> str | None:
+        """Return the rule that binds ``conf`` to ``rec`` ("value", "semantic", "answer") or None."""
+        if _NEGATION.search(conf.text):
+            return None
+        nv = _norm(rec.value)
+        if len(nv) >= 2 and nv in _norm(conf.text):
+            return "value"
+        a, b = self.embedder.embed([conf.text, f"{rec.text} {rec.value or ''}"])
+        if float(a @ b) >= self.confirm_threshold:
+            return "semantic"
+        if question_id:
+            q = self._require(question_id)
+            if (q.kind == Kind.GENERATED_EVENT and rec.id in q.derived_from
+                    and q.provenance.session_id == conf.provenance.session_id
+                    and q.provenance.timestamp <= conf.provenance.timestamp and _AFFIRM.search(conf.text)):
+                between = self._ids(
+                    "SELECT id FROM records WHERE kind = 'episode' AND session_id = ? AND owner = ?"
+                    " AND t >= ? AND t < ? AND id != ?",
+                    [conf.provenance.session_id, conf.provenance.user_id, q.provenance.timestamp,
+                     conf.provenance.timestamp, conf.id])
+                if not between:
+                    return "answer"
+        return None
 
     def _link_parent(self, child_id: str, parent: Record) -> None:
         """Add a lineage edge after insertion (and widen the child's source_scopes accordingly)."""
@@ -949,14 +1062,16 @@ class MemoryStore:
         self.db.executemany("INSERT OR IGNORE INTO record_scopes (record_id, scope) VALUES (?, ?)",
                             [(child_id, sc) for sc in sorted(scopes)])
 
+    @_atomic
     def reject(self, record_id: str) -> Record:
         rec = self._require(record_id)
         if rec.status != Status.PENDING:
             raise ValueError(f"{record_id} is not pending")
         self._set_status(rec.id, Status.REJECTED)
-        self.db.commit()
+        self._commit()
         return self._require(rec.id)
 
+    @_atomic
     def correct(self, record_id: str, new_value: str, *, text: str | None = None,
                 source_id: str = "", session_id: str = "") -> Record:
         """Bi-temporal correction: old value gets ``valid_to`` (kept for audit), new value is
@@ -981,7 +1096,7 @@ class MemoryStore:
                 raise ImmutableRecordError(r.id)
             self._set_status(r.id, Status.SUPERSEDED, valid_to=now)
         stale = self.invalidate_derivatives([r.id for r in records]) if records else []
-        self.db.commit()
+        self._commit()
         return stale
 
     def invalidate_derivatives(self, root_ids: Sequence[str]) -> list[Record]:
@@ -994,12 +1109,11 @@ class MemoryStore:
             self._set_status(rec.id, Status.STALE)
             rec.status = Status.STALE
             stale.append(rec)
-        self.db.commit()
-        if stale:
-            for hook in list(self.stale_hooks):
-                hook(stale)
+        self._pending_stale.extend(stale)
+        self._commit()
         return stale
 
+    @_atomic
     def regenerate_stale(self, summarizer: Summarizer | None = None) -> list[Record]:
         """Hook helper: rebuild every stale summary from its session's current records."""
         sessions = {r["session_id"] for r in self.db.execute(
@@ -1157,6 +1271,7 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ consolidation
 
+    @_atomic
     def consolidate(self, session_id: str, summarizer: Summarizer | None = None) -> Record | None:
         """Sleep-time summary of one session. Writes a ``summary`` record whose
         ``derived_from`` lists every input and whose ``source_scopes`` is their union.
@@ -1189,7 +1304,7 @@ class MemoryStore:
         for r in old:
             self._set_status(r.id, Status.SUPERSEDED, valid_to=now)
         if not recs:
-            self.db.commit()
+            self._commit()
             return None
         scopes = frozenset().union(*(r.source_scopes for r in recs))
         privs = sorted(s for s in scopes if is_private(s))
@@ -1293,6 +1408,11 @@ class MemoryStore:
         for term in terms:
             erase |= set(self._content_match(term, user_id))
         erase = self._descendants(erase)
+        # similarity sweep: unlinked paraphrases of the erased content (literal search misses them)
+        query_vecs = self._erasure_query_vecs(erase, terms)
+        swept, review = self._similar_records(query_vecs, user_id, exclude=erase)
+        erase = self._descendants(erase | set(swept))
+        review = [r for r in review if r not in erase]
         doomed = self._load(sorted(erase))
         if any(r.immutable for r in doomed):
             raise ImmutableRecordError("erasure cascade reached a canon anchor; canon must not derive from user data")
@@ -1318,8 +1438,11 @@ class MemoryStore:
         hook_names = [(_hook_name(h), h) for h in self.erasure_hooks] + list(self.purge_hooks.items())
         required = [MEMORY_DB_TARGET, *dict.fromkeys(
             [n for n, _ in hook_names] + sorted(self.required_purge_targets) + list(require))]
+        if review:
+            required.append(SIMILARITY_REVIEW_TARGET)
         report = ErasureReport(user_id=user_id, reason=reason, t=now, deleted_ids=ids, kinds=dict(kinds),
-                               sessions=sessions, terms=terms, required_targets=required)
+                               sessions=sessions, terms=terms, required_targets=required,
+                               swept_ids=sorted(swept), review_ids=review, query_vecs=query_vecs)
         if regenerate and kinds.get(Kind.SUMMARY.value):
             summ = regenerate if not isinstance(regenerate, bool) else None
             for s in sorted(sessions):
@@ -1344,6 +1467,62 @@ class MemoryStore:
                       .hexdigest()[:12], report.pending_targets)
         return report
 
+    def _erasure_query_vecs(self, ids: Iterable[str], terms: Iterable[str]) -> np.ndarray | None:
+        """Embeddings of the erased user content (facts, beliefs, turns, persona lines, ledger)
+        and of the query terms. Summaries are left out (they span whole sessions)."""
+        ids = list(ids)
+        vecs: list[np.ndarray] = []
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            for r in self.db.execute(
+                    "SELECT e.vec FROM embeddings e JOIN records r ON r.id = e.record_id"
+                    f" WHERE r.kind != 'summary' AND e.record_id IN ({','.join('?' * len(chunk))})", chunk):
+                vecs.append(np.frombuffer(r[0], dtype=np.float32))
+        terms = [t for t in terms if t]
+        if terms:
+            vecs.extend(self.embedder.embed(terms).astype(np.float32))
+        return np.stack(vecs) if vecs else None
+
+    def _similar_records(self, query_vecs: np.ndarray | None, user_id: str,
+                         exclude: Iterable[str] = ()) -> tuple[list[str], list[str]]:
+        """Records readable to ``user_id`` (private mode: own private, public, canon) whose
+        cosine to any erased vector is >= ``erase_sim_threshold`` (0.5, an estimate for the
+        default HashingEmbedder: paraphrased persona lines score ~0.53-0.66, unrelated
+        sentences ~0-0.35; structure-sharing sentences like "I work at X/Y" ~0.6).
+        Returns (records to delete, records to review). Deleted: persona / derived artifacts
+        and turns that back no current fact (questions, commands, chit-chat: nothing but
+        log). Reviewed, never silently deleted: user facts, candidate beliefs and turns
+        that are the source of a current fact. Canon / immutable records are never returned."""
+        if query_vecs is None or not len(query_vecs):
+            return [], []
+        excl = set(exclude)
+        filt, params = self._scope_filter_sql("private", user_id, None)
+        rows = self.db.execute(
+            "SELECT r.id, r.kind, e.vec FROM records r JOIN embeddings e ON e.record_id = r.id"
+            " WHERE r.immutable = 0"
+            f" AND NOT EXISTS (SELECT 1 FROM record_scopes rs WHERE rs.record_id = r.id AND NOT {filt})"
+            " AND EXISTS (SELECT 1 FROM record_scopes rs WHERE rs.record_id = r.id AND rs.scope != 'canon')",
+            params).fetchall()
+        rows = [r for r in rows if r["id"] not in excl]
+        if not rows:
+            return [], []
+        mat = np.stack([np.frombuffer(r["vec"], dtype=np.float32) for r in rows])
+        sims = (mat @ query_vecs.T).max(axis=1)
+        delete, review = [], []
+        for r, sim in zip(rows, sims):
+            if sim < self.erase_sim_threshold:
+                continue
+            kind = Kind(r["kind"])
+            if kind == Kind.EPISODE:
+                backs_fact = self.db.execute(
+                    "SELECT 1 FROM derivations d JOIN records c ON c.id = d.child_id WHERE d.parent_id = ?"
+                    " AND c.kind IN ('user_fact', 'candidate_belief') AND c.status IN ('active', 'pending')",
+                    [r["id"]]).fetchone()
+                (review if backs_fact else delete).append(r["id"])
+            else:
+                (delete if kind in _SWEEP_DELETE else review).append(r["id"])
+        return delete, review
+
     def _scrub_refs(self, deleted: set[str]) -> None:
         """Remove references to erased ids from surviving records' meta (echo_of, supersedes ...)."""
         if not deleted:
@@ -1363,7 +1542,8 @@ class MemoryStore:
 
     def verify_erasure(self, report: ErasureReport, *, raw_file: bool = False) -> ErasureVerification:
         """Verify one :meth:`forget` result (its deleted ids incl. descendants, and its terms)."""
-        return self.verify_erased(report.terms, report.user_id, deleted_ids=report.deleted_ids, raw_file=raw_file)
+        return self.verify_erased(report.terms, report.user_id, deleted_ids=report.deleted_ids, raw_file=raw_file,
+                                  query_vecs=report.query_vecs)
 
     def verify_erased(
         self,
@@ -1372,6 +1552,7 @@ class MemoryStore:
         *,
         deleted_ids: Iterable[str] = (),
         raw_file: bool = False,
+        query_vecs: np.ndarray | None = None,
     ) -> ErasureVerification:
         """Check that erased data is gone from every table.
 
@@ -1384,6 +1565,11 @@ class MemoryStore:
           ``foreign_hits`` only.
         * orphan index / embedding / edge rows; with ``raw_file``, the DB file bytes (only
           meaningful if no other user legitimately stores the term).
+
+        * ``query_vecs`` (embeddings of the erased content, kept in memory on the report):
+          surviving derived artifacts at or above ``erase_sim_threshold`` fail (``similar``);
+          user-origin records are listed in ``review`` (they need a decision, and keep the
+          report's ``similarity_review`` target pending).
 
         External stores (recordings, generator / LLM state) are verified by their purge
         targets' acknowledgements on the :class:`ErasureReport`, not here.
@@ -1438,6 +1624,10 @@ class MemoryStore:
                 "SELECT child_id, parent_id FROM derivations WHERE child_id NOT IN (SELECT id FROM records)"
                 " OR parent_id NOT IN (SELECT id FROM records)"):
             out.orphans.append(f"derivations(orphan):{r[0]}->{r[1]}")
+        if user_id and query_vecs is not None:
+            sim_del, sim_rev = self._similar_records(query_vecs, user_id)
+            out.similar = [f"records:{i}" for i in sim_del]
+            out.review = [f"records:{i}" for i in sim_rev]
         if raw_file and self.path != ":memory:":
             for t in terms:
                 needle = t.encode("utf-8")
@@ -1445,6 +1635,11 @@ class MemoryStore:
                     if p.exists() and needle in p.read_bytes():
                         out.file_hits.append(f"file:{p.name}")
         return out
+
+
+_AFFIRM = re.compile(r"^\W*(yes|yeah|yep|right|correct|exactly|sure|that'?s right|对|是的|是啊|是呀|没错|对的|嗯|确实|正确|当然)",
+                     re.IGNORECASE)
+_NEGATION = re.compile(r"^\W*(no\b|nope|not\b|不|没有|别)|不对|不是|wrong|incorrect|isn'?t|don'?t", re.IGNORECASE)
 
 
 def _norm(v: str | None) -> str:

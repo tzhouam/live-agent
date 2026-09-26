@@ -121,6 +121,7 @@ class TaoMateH3Generator(Generator):
         self._student_done = -1  # highest request index the student finished
         self._clock_offset = time.monotonic() - time.time()
         self._futures: dict[str, asyncio.Future] = {}
+        self._reset_acks: dict[int, set[str]] = {}
 
     @classmethod
     def add_args(cls, p) -> None:
@@ -157,6 +158,13 @@ class TaoMateH3Generator(Generator):
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
+        try:
+            await self._start()
+        except BaseException:
+            await self.close()  # a partial start must not leave workers or the listener alive
+            raise
+
+    async def _start(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._listener = Listener(("127.0.0.1", 0), authkey=self.authkey)
         self.address = self._listener.address
@@ -308,6 +316,9 @@ class TaoMateH3Generator(Generator):
             if not getattr(self, "_closing", False):
                 self._fail({"role": role, "message": f"{role} worker disconnected"})
             return
+        if kind == "reset_done":
+            self._reset_acks.setdefault(int(message.get("session", -1)), set()).add(role)
+            return
         if kind in ("flushed", "full_audio"):
             future = self._futures.pop(kind, None)
             if future is not None and not future.done():
@@ -440,8 +451,28 @@ class TaoMateH3Generator(Generator):
         self._session_base = self._next
         self._taught = self._generated = self._student_done = self._next - 1
         self._teacher_done.clear()
+        # Retained text of earlier requests (prompts, teacher payloads) is released here too, so an
+        # erasure does not leave erased content in adapter memory; queued stale output is discarded.
+        self._prompts.clear()
+        self.request_extras.clear()
+        while not self._out.empty():
+            item = self._out.get_nowait()
+            if item is None or isinstance(item, Exception):
+                self._out.put_nowait(item)
+                break
         for role in (P.ROLE_TEACHER, P.ROLE_STUDENT):
             self._send(role, {"type": P.RESET, "session": self._session})
+
+    async def reset_confirmed(self, timeout: float = 30.0) -> bool:
+        """Reset and wait until both worker groups report their state released (erasure)."""
+        await self.reset()
+        session = self._session
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._reset_acks.get(session, set()) >= {P.ROLE_TEACHER, P.ROLE_STUDENT}:
+                return True
+            await asyncio.sleep(0.02)
+        return False
 
     async def flush(self, timeout: float = 120.0) -> dict[str, Any]:
         """Ask the student for the held 5-frame video overlap (end of a session)."""

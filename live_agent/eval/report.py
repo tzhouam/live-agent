@@ -31,9 +31,12 @@ from live_agent.eval.schema import load_session
 from live_agent.eval.scoring import (
     ChainOutcome,
     IncompleteAdjudicationError,
+    InsufficientObservationError,
     ScoringConfig,
     SessionScore,
+    impute_worst_case,
     require_complete,
+    require_observed,
     score_session,
     summarize,
 )
@@ -46,6 +49,7 @@ H1C_FAMILY: tuple[tuple[str, str], ...] = (  # H1c ablations: each is expected t
     ("A2", "A2-nomanifest"),
     ("A2", "A2-nocorrection"),
 )
+MISSING_RULES = ("rerun-required", "worst-case")  # preregistered; see build_report
 FAMILIES: dict[str, tuple[tuple[str, str], ...]] = {
     "primary (H1a)": PRIMARY_FAMILY,
     "secondary (H1c ablations)": H1C_FAMILY,
@@ -128,7 +132,10 @@ def condition_section(cond: str, sessions: list[SessionScore], n_boot: int = 400
                         sum(c.n_claims > 0 for c in eff), len(eff),
                         cl, [float(c.n_claims > 0) for c in eff], n_boot))
     for arm, r in sm["repair"].items():
-        L.append(_rate_line(f"Repair rate, arm `{arm}` (RQ2, per failure point)", r["k"], r["n"]))
+        L.append(_rate_line(f"Repair rate, arm `{arm}` (RQ2, every failure point; withdrawal = failure)",
+                            r["k"], r["n"]))
+        L.append(_rate_line(f"Repair rate, arm `{arm}` (sensitivity: withdrawn excluded)",
+                            r["k"], r["n_excl_withdrawn"]))
 
     # by kind
     L += ["", "**Success by chain kind**", "", "| Kind | k/n | Estimate | Wilson 95% CI |", "|---|---|---|---|"]
@@ -146,7 +153,9 @@ def condition_section(cond: str, sessions: list[SessionScore], n_boot: int = 400
 
     # repair offsets
     for arm, r in sm["repair"].items():
-        L.append(f"Repair `{arm}`: earliest eligible request offset j-k = {r['offsets']}")
+        L.append(f"Repair `{arm}`: earliest eligible request offset j-k = {r['offsets']}; withdrawn after "
+                 f"assignment: {r['n_withdrawn']}; target request not observed (excluded, rerun): "
+                 f"{r['n_insufficient_observation']}")
 
     # time-to-event
     L += ["", "**Time to event (Kaplan-Meier, right-censored at D)**", "",
@@ -167,15 +176,28 @@ def condition_section(cond: str, sessions: list[SessionScore], n_boot: int = 400
     if tf:
         km_row("TFMR (on-topic speech onset)", [c.tfmr for c in tf], [c.tfmr_event for c in tf],
                max(c.tfmr for c in tf))
-    tts = [c for c in eff if not c.competing_failure]
-    if tts:
-        km_row("Time to success, all kinds (excl. order_fail)", [c.time_to_success for c in tts],
-               [c.success_event for c in tts], max(c.deadline_s for c in tts))
-    n_order = sum(c.competing_failure for c in eff)
-    if n_order:
-        L.append(f"\n{n_order} multistep chain(s) failed deterministically by step order "
-                 "(order_fail): a competing failure, not right-censoring, so they are left "
-                 "out of the time-to-success KM row (they count as failures in every rate).")
+
+    # Success by deadline per kind (common D within each group). Every chain is followed to
+    # its full deadline D (unobserved windows are excluded), so nothing is censored before D:
+    # the product-limit curve below equals the cumulative incidence of success, with
+    # refusal, capacity skip, rubric / onset / order failure and late or no compliance all
+    # kept in the risk set as competing outcomes that preclude success by D.
+    groups: dict[tuple[str, float], list[ChainOutcome]] = defaultdict(list)
+    for c in eff:
+        name = c.kind + (f"/{c.content_type}" if c.content_type else "")
+        groups[(name, c.deadline_s)].append(c)
+    if groups:
+        L += ["", ("**Success by the common deadline, per kind (cumulative incidence; competing failures "
+                   "kept, no early censoring)**"), "",
+              "| Kind | D (s) | n | success by D | Wilson 95% CI | median time to success (s) |",
+              "|---|---|---|---|---|---|"]
+        for (name, D), cs in sorted(groups.items()):
+            ts = [c.time_to_success if c.success else D for c in cs]
+            km = stats.kaplan_meier(ts, [c.success for c in cs])
+            k = sum(c.success for c in cs)
+            med = km.median
+            L.append(f"| {name} | {D:g} | {len(cs)} | {k}/{len(cs)} ({_f(k / len(cs), True)}) | "
+                     f"{_ci(*stats.wilson(k, len(cs)))} | {_f(med) if med is not None else f'> {D:g}'} |")
 
     # latencies
     va = [x for s in sessions for x in s.visual_ack_s]
@@ -280,22 +302,31 @@ def repair_comparison(by_cond: dict[str, list[SessionScore]], n_boot: int = 4000
     the unit is the failure point, clustered by task."""
     L = []
     for cond, ss in sorted(by_cond.items()):
-        rep = [(c.task_id, r) for s in ss for c in s.chains if c.in_primary for r in c.repairs]
-        arms = {r["arm"] for _, r in rep}
-        if arms != {"forward_correction", "repeat"}:
+        allp = [(c.task_id, r) for s in ss for c in s.chains for r in c.repairs]
+        if {r["arm"] for _, r in allp} != {"forward_correction", "repeat"}:
             continue
-        r = stats.cluster_bootstrap_rate_diff(
-            [float(bool(x["success"])) for _, x in rep],
-            [x["arm"] == "forward_correction" for _, x in rep],
-            [t for t, _ in rep],
-            n_boot=n_boot,
-        )
-        L.append(f"| {cond} | {len(rep)} | {_f(r['estimate'], True)} | {_ci(r['lo'], r['hi'])} |")
+        for name, keep in (("primary: withdrawal after assignment = failure", ("success", "failure", "withdrawn")),
+                           ("sensitivity: withdrawn excluded", ("success", "failure"))):
+            rep = [(t, r) for t, r in allp if r["status"] in keep]
+            if not rep:
+                continue
+            r = stats.cluster_bootstrap_rate_diff(
+                [float(x["status"] == "success") for _, x in rep],
+                [x["arm"] == "forward_correction" for _, x in rep],
+                [t for t, _ in rep],
+                n_boot=n_boot,
+            )
+            L.append(f"| {cond} | {name} | {len(rep)} | {_f(r['estimate'], True)} | {_ci(r['lo'], r['hi'])} |")
+        n_miss = sum(r["status"] == "insufficient_observation" for _, r in allp)
+        if n_miss:
+            L.append(f"| {cond} | flagged: target request not observed (excluded, rerun) | {n_miss} | | |")
     if not L:
         return []
     return ["## RQ2 repair: forward correction - repeat (earliest eligible request)", "",
-            "| Condition | assigned failure points | difference | 95% CI (task-clustered) |",
-            "|---|---|---|---|", *L, ""]
+            ("Every randomised eligible failure point is analysed by its assigned arm, including "
+             "those on chains later withdrawn or excluded from the chain-level analysis."), "",
+            "| Condition | analysis | failure points | difference | 95% CI (task-clustered) |",
+            "|---|---|---|---|---|", *L, ""]
 
 
 def build_report(
@@ -303,11 +334,25 @@ def build_report(
     pairs: Sequence[tuple[str, str]] | None = None,
     title: str = "E2 evaluation report",
     n_boot: int = 4000,
+    missing_rule: str = "rerun-required",
 ) -> str:
     """``pairs`` selects displayed comparisons (None = all preregistered ones present).
-    Raises ``IncompleteAdjudicationError`` for a primary report with adjudication gaps."""
+
+    Raises ``IncompleteAdjudicationError`` for a primary report with adjudication gaps.
+    ``missing_rule`` (preregistered handling of unobserved deadline windows):
+    ``rerun-required`` (default) raises ``InsufficientObservationError`` while any chain is
+    ``insufficient_observation``; ``worst-case`` counts them as failures and labels the
+    whole report a SENSITIVITY analysis."""
+    if missing_rule not in MISSING_RULES:
+        raise ValueError(f"missing_rule must be one of {MISSING_RULES}")
     require_complete(sessions)
     diagnostic = any(s.diagnostic for s in sessions)
+    n_imputed = 0
+    if missing_rule == "worst-case":
+        n_imputed = sum(c.outcome.value == "insufficient_observation" for s in sessions for c in s.chains)
+        sessions = impute_worst_case(sessions)
+    elif not diagnostic:
+        require_observed(sessions)
     by_cond: dict[str, list[SessionScore]] = defaultdict(list)
     for s in sessions:
         by_cond[s.condition].append(s)
@@ -322,6 +367,9 @@ def build_report(
                "without an online judge (A1) cannot be compared here."), ""]
     else:
         L += [f"# {title}", ""]
+    if missing_rule == "worst-case":
+        L += [(f"> **SENSITIVITY ANALYSIS (worst-case missing-data rule), not the primary result.** "
+               f"{n_imputed} chain(s) whose deadline window was not observed are counted as failures."), ""]
     L += [("All values *measured locally* from the session logs below; thresholds are *proposed "
            "targets* (proposal v2.11 §8). Primary denominator = effective intent chains (final "
            "intent not withdrawn, capacity-skipped included), minus chains whose deadline window "
@@ -351,6 +399,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--source", action="append", default=None, choices=("adjudicated", "human", "judge"),
                     help="verdict source preference (default: adjudicated only = primary). Any "
                          "other choice produces a DIAGNOSTIC report")
+    ap.add_argument("--missing-rule", choices=MISSING_RULES, default="rerun-required",
+                    help="unobserved deadline windows: rerun-required (default: refuse) or worst-case "
+                         "(counted as failures; SENSITIVITY report)")
     ap.add_argument("--n-boot", type=int, default=4000)
     ap.add_argument("-o", "--out", default=None)
     args = ap.parse_args(argv)
@@ -361,9 +412,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     scores = [score_session(load_session(p), cfg) for p in args.logs]
     pairs = [tuple(p.split(":", 1)) for p in args.compare] if args.compare else None
     try:
-        md = build_report(scores, pairs, n_boot=args.n_boot)
+        md = build_report(scores, pairs, n_boot=args.n_boot, missing_rule=args.missing_rule)
     except IncompleteAdjudicationError as e:
         print(f"error: {e}\n(use --source judge for a DIAGNOSTIC report)", file=sys.stderr)
+        raise SystemExit(2) from e
+    except InsufficientObservationError as e:
+        print(f"error: {e}\n(rerun, or --missing-rule worst-case for a labelled SENSITIVITY report)",
+              file=sys.stderr)
         raise SystemExit(2) from e
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

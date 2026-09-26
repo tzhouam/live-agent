@@ -1,0 +1,37 @@
+## Round‑1 findings
+
+1. **PARTIAL — blocking — `orchestrator.py:on_presented/_maybe_finish`.** Four chunk acks now gate QC, but a bounded run sets `_stop` immediately after the fourth ack; a caller that then calls `stop()` cancels the newly spawned QC task. Drain final checks before ending the run.
+2. **RESOLVED — blocking — `director.py:on_verified`, `orchestrator.py:_run_checks`.** Verdicts are bound to revision and step; dropped-request verdicts are ignored.
+3. **RESOLVED — blocking — `director.py:_enqueue_chain/on_verified`.** Action steps are released after the preceding step is verified. This resolution applies to the documented action-chain pilot scope.
+4. **PARTIAL — blocking — `orchestrator.py:_erase`.** Erasure resumes locking even when deletion or reset is incomplete, and the generator retains old prompts. Keep the session quiesced on failure and purge retained generator data.
+5. **PARTIAL — blocking — `orchestrator.py:_drop_unpresented`.** Playback stops and late acks are ignored, but `stop_playback()` yields before the scheduler restarts and `on_barge_in()` runs. The lock loop can submit an old-plan request during that gap. Pause locking and change the plan before the first await.
+6. **PARTIAL — major — `timeline.py:effective_leads`, `generator/base.py:SessionView.timings`.** The estimate can omit overlapping teacher time; a `SessionView` timing copied before `REQUEST_DONE` may also keep `t_done=None`. Measure teacher and first-chunk durations explicitly and refresh timing only after completion.
+7. **PARTIAL — major — `director.py:queue_retry/_pop_segment`.** `min_request` prevents an early retry but does not reserve request *j*: a later chat segment can take that slot. Reserve the slot and log the request that actually carries the repair.
+8. **PARTIAL — major — `orchestrator.py:_audit`.** The documented absence of pre-play ASR is an accepted limit. The pre-generation audit checks erased terms and length, but does not perform the proposal’s content moderation. Add that gate or narrow the audit claim.
+9. **PARTIAL — major — `director.py:_guard`, `orchestrator.py:_maybe_onset`.** The completion regex misses the proposal’s example “刚才那首歌你喜欢吗”; a silent request can also log a claim at request start. Gate completion meaning more reliably and log only audible claims.
+10. **RESOLVED — major — `server/app.py:ws_endpoint`.** The receive loop continues reading acks and barge-in while ASR or LLM work runs. A separate stale-decision race remains below.
+11. **RESOLVED — major — `director.py:_admit/on_interrupted`.** Displaced queued or interrupted chains receive logged capacity skips.
+12. **PARTIAL — major — `capability.py:Capability.usable`, `director.py:_apply_decision`.** The default gate accepts `EXECUTED` capabilities, and the responder’s own unsupported-action example is classified as chat, creating no refusal chain. Require calibrated status for E2 and classify unsupported requests independently of the LLM’s `kind`.
+13. **RESOLVED — major — `director.py:OPEN_LOOP_SYSTEM/next_script`.** A1 supplies its own action phrase and line without the A2 manifest or feedback loop.
+14. **RESOLVED, scoped — major — `docs/implementation.md:Known deviations`.** The pilot claim is restricted to action and multistep-action chains; content, memory and drift repair are disclosed as absent.
+15. **RESOLVED — major — `generator/base.py:SessionView.chunks`.** Epoch filtering rejects chunks queued before a reset.
+16. **PARTIAL — major — `taomate_h3.py:start`, `server/app.py:_startup/ws_endpoint`.** Startup failure can leave workers and the listener alive; if `orch.stop()` raises, the shared session lock is not released. Close partially started resources and release the lock in an unconditional `finally`.
+17. **RESOLVED, scoped — major — `server/app.py:WSTransport`, `docs/implementation.md`.** Client-clock mapping exists and its unmeasured accuracy is disclosed; the browser path is not claimed as M1 qualified.
+18. **RESOLVED, scoped — major — `server/app.py:WSTransport`, `docs/implementation.md`.** JPEG/PCM replaces fMP4, and the diagnostics are explicitly excluded from M1 qualification.
+19. **PARTIAL — minor — `docs/implementation.md:Verified so far`.** “The streaming adapter is real time” still reads as a sustained qualification, although the document limits evidence to short runs. Say “short-run throughput met playback rate.” The cited `docs/m0_measurements.md` was not inlined, so its parity figures cannot be rechecked here.
+
+## New findings
+
+1. **Blocking — `server/app.py:handle_inputs`, `director.py:on_user_utterance`.** Inputs are processed serially, but a new `speech_start` does not invalidate an earlier LLM call. If the user interrupts while that call runs, its old decision can finish first, satisfy the restart wait, and lock obsolete content before the newer utterance is processed. Give each input an interruption epoch and discard or cancel decisions from older epochs before they mutate memory or the plan.
+
+2. **Blocking — `server/app.py:handle_inputs`.** `Utterance.t_end` is set with `now()` *after* ASR, or after earlier queued input work. E2’s 15-second deadline and TFMR/TVC therefore omit ASR and queue delay, contrary to the proposal’s user-utterance-end origin. Capture the client’s utterance-end timestamp when input is sent, map it to server time, and carry it through the queue.
+
+3. **Blocking — `server/static/index.html:render`, `orchestrator.py:on_presented/_run_checks`.** The browser acknowledges scheduled audio times while QC receives all generated video frames. A late or throttled render loop can skip frames, then backdate `chunk_end` to `q.end`; QC may verify an action in a frame the user never saw. Record actual painted-frame timestamps and give QC only presented frames; abstain when visual presentation cannot be established.
+
+4. **Blocking — `generator/taomate_h3.py:reset`, `orchestrator.py:_erase`.** Reset increments the epoch but leaves `_prompts`, timing extras and queued output in the long-lived backend. `SessionView` hides stale chunks from the next session; it does not erase retained prompt text. An erased private term can therefore remain in generator memory while `generator_state` is acknowledged as purged. Clear or securely retire those buffers and wait for a worker reset acknowledgement before reporting completion.
+
+5. **Major — `orchestrator.py:_chunk_loop`.** Every decoded video chunk remains in `self.chunks` for the session. At 480×864 RGB and 119 frames per roughly five-second request, that is **about 50 GiB for 30 minutes** [derived], before other buffers. The required soak and long-consistency runs can exhaust host memory. Retain media only until presentation and QC finish, then evict it; keep recordings and compact evidence separately.
+
+The compiler, worker implementation and `docs/m0_measurements.md` were not inlined, so their format, worker-order and numerical claims remain outside this review’s direct evidence.
+
+**Verdict: not ready.**

@@ -1,5 +1,5 @@
 {
- "min_status": "executed",
+ "min_status": "calibrated",
  "min_p": 0.6,
  "capabilities": [
   {

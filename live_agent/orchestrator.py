@@ -73,6 +73,7 @@ class OrchestratorConfig:
     text_encode_s: float = 0.06  # part of the correction chain C [measured locally, M0 teacher text encode]
     restart_decision_wait_s: float = 1.5  # after an interruption, wait this long for an in-flight decision
     loop_lag_log_s: float = 0.2  # log event-loop stalls longer than this (diagnostic)
+    blocklist: tuple[str, ...] = ()  # operator term blocklist for the script audit (no moderation model)
     seed: int = 0
 
 
@@ -131,6 +132,8 @@ class Orchestrator:
         self.error: BaseException | None = None
         self.last_presented_end: float | None = None
         self._decisions = 0  # completed responder decisions
+        self._input_epoch = 0  # bumped by every barge-in; decisions from older epochs are discarded
+        self.painted: dict[tuple[int, int], list[int] | None] = {}  # client-reported painted frame indices
         self._decisions_at_interrupt = 0
 
     @property
@@ -192,10 +195,17 @@ class Orchestrator:
         """Auxiliary work (QC of one request): a failure is logged, the session continues."""
         t = asyncio.create_task(self._guarded(coro, name, fatal=False))
         self._aux.add(t)
-        t.add_done_callback(self._aux.discard)
 
-    async def stop(self) -> None:
+        def done(task: asyncio.Task) -> None:
+            self._aux.discard(task)
+            self._maybe_finish()
+
+        t.add_done_callback(done)
+
+    async def stop(self, drain_s: float = 30.0) -> None:
         self._stop.set()
+        if self._aux:  # let running QC of already-presented requests finish (bounded)
+            await asyncio.wait(list(self._aux), timeout=drain_s)
         tasks = [*self._tasks, *self._aux]
         for t in tasks:
             t.cancel()
@@ -253,8 +263,15 @@ class Orchestrator:
             if script.transcript and self.memory:
                 # lineage: None = linked to every memory recalled this session (over-links, so
                 # erasure/correction reach it); a None return is a refused (scope-violating) write
-                rec = self.memory.on_persona_line(script.transcript, session_id=self.cfg.session_id,
-                                                  scope=self.cfg.scope)
+                ids = script.provenance.get("memory_ids")
+                lineage = None if ids is None else ("complete" if ids else "none")
+                try:
+                    rec = self.memory.on_persona_line(script.transcript, session_id=self.cfg.session_id,
+                                                      scope=self.cfg.scope, source_ids=ids, lineage=lineage,
+                                                      request_index=k)
+                except TypeError:  # simple memory ports without lineage support
+                    rec = self.memory.on_persona_line(script.transcript, session_id=self.cfg.session_id,
+                                                      scope=self.cfg.scope)
                 if rec is None and getattr(self.memory, "scope_violations", None):
                     self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False,
                                   issues=["persona_line_not_recorded"],
@@ -274,6 +291,11 @@ class Orchestrator:
                 script.action = script.action.replace(term, "")
                 script.corrections = [c for c in script.corrections if term not in c]
                 issues.append("erased_term")
+        for term in self.cfg.blocklist:
+            if term and (term in script.transcript or term in script.action):
+                script.transcript, script.action = "", ""  # withhold the whole segment
+                issues.append("blocklisted")
+                break
         if len(script.transcript) > 2 * CHARS_PER_REQUEST:
             script.transcript = script.transcript[: 2 * CHARS_PER_REQUEST]
             issues.append("too_long")
@@ -315,16 +337,21 @@ class Orchestrator:
                                       lead_s=tm.lead_s, teacher_s=tm.teacher_s,
                                       total_s=(tm.t_done - tm.t_lock) if tm.t_done else None)
             if ch.request_index in self.dropped:
+                if ch.chunk_index == self.n_chunks - 1:
+                    self._evict(ch.request_index)
                 continue  # generated before a barge-in: never shown
             script = self.scripts.get(ch.request_index)
             if script is not None:
                 await self.transport.send_chunk(ch, script)
 
     # ------------------------------------------------------------------ presentation acks
-    def on_presented(self, request_index: int, chunk_index: int, t_start: float, t_end: float) -> None:
-        """Called by the transport when a chunk *finished* presenting (with its start/end times)."""
+    def on_presented(self, request_index: int, chunk_index: int, t_start: float, t_end: float,
+                     painted: list[int] | None = None) -> None:
+        """Called by the transport when a chunk *finished* presenting (with its start/end times).
+        ``painted``: indices of the chunk's frames the client actually displayed (None = all)."""
         if request_index in self.dropped:
             return  # late ack of interrupted content: not evidence
+        self.painted[(request_index, chunk_index)] = painted
         if chunk_index == 0:
             self.sched.on_presented(request_index, t_start)
             self.director.ledger.mark_presented(request_index)
@@ -338,6 +365,8 @@ class Orchestrator:
             self._checked.add(request_index)
             if self.cfg.qc_enabled:
                 self._spawn(self._run_checks(request_index, t_evidence=t_end), "qc")
+            else:
+                self._evict(request_index)
         self._maybe_finish()
 
     def _maybe_onset(self, k: int, ci: int, t_start: float) -> None:
@@ -351,14 +380,16 @@ class Orchestrator:
         if off is None:
             if ci < self.n_chunks - 1:
                 return  # silent chunk: look at the next one
-            if 0 not in self.presented[k]:
-                return
-            t, source = self.chunk_start.get((k, 0), t_start), "request_start"  # no audible audio found
-        else:
-            t, source = t_start + off, "audio_energy"
+            # the scripted line was never audible: no onset, and a claim that is not heard is no claim
+            self._onset_done.add(k)
+            dropped_claims = self._claims.pop(k, [])
+            self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["no_audible_speech"],
+                          claims_not_heard=[c for c, _ in dropped_claims])
+            return
+        t = t_start + off
         self._onset_done.add(k)
         self.log.emit(EventType.SPEECH_ONSET, t, request_index=k, chain_ids=script.chain_ids,
-                      onset_source=source)
+                      onset_source="audio_energy")
         for chain_id, step in self._claims.pop(k, []):
             self.log.emit(EventType.COMPLETION_CLAIM, t, request_index=k, chain_id=chain_id, step=step,
                           text=script.transcript)
@@ -369,15 +400,51 @@ class Orchestrator:
             return
         last = m - 1
         done = last in self.dropped or len(self.presented.get(last, ())) == self.n_chunks
-        if done and all(self._resolved(k) for k in range(m)):
+        if done and all(self._resolved(k) for k in range(m)) and not self._aux:  # QC drained
             self._stop.set()
 
     # ------------------------------------------------------------------ QC
+    def _presented_media(self, k: int) -> tuple[list[Chunk], int, int]:
+        """The request's chunks restricted to frames the client reported as painted."""
+        from dataclasses import replace
+
+        out, shown, total = [], 0, 0
+        for ch in self.chunks.get(k, []):
+            n = 0 if ch.video is None else len(ch.video)
+            idx = self.painted.get((k, ch.chunk_index))
+            total += n
+            if idx is None or ch.video is None:
+                out.append(ch)
+                shown += n
+                continue
+            keep = sorted(i for i in set(idx) if 0 <= i < n)
+            shown += len(keep)
+            out.append(replace(ch, video=ch.video[keep] if keep else ch.video[:0]))
+        return out, shown, total
+
+    def _evict(self, k: int) -> None:
+        """Media is kept only until presentation and QC are done (a 30-min session would otherwise
+        hold ~50 GiB of RGB frames [derived])."""
+        self.chunks.pop(k, None)
+        for ci in range(self.n_chunks):
+            self.painted.pop((k, ci), None)
+
     async def _run_checks(self, k: int, t_evidence: float) -> None:
+        try:
+            await self._run_checks_inner(k, t_evidence)
+        finally:
+            self._evict(k)
+
+    async def _run_checks_inner(self, k: int, t_evidence: float) -> None:
         script = self.scripts.get(k)
         if script is None or not script.checks or self.director.mode == DirectorMode.OPEN_LOOP:
             return
-        chunks = list(self.chunks[k])
+        chunks, shown, total = self._presented_media(k)
+        if total and shown / total < 0.5:
+            # presentation of the visual evidence cannot be established: abstain (no verdict)
+            self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["frames_not_presented"],
+                          painted_fraction=shown / total)
+            return
         action_verdicts: list[Verdict] = []
         revision, step = script.provenance.get("revision"), script.provenance.get("step")
         for q in script.checks:
@@ -435,20 +502,29 @@ class Orchestrator:
                       chain_id=chain_id, mode=mode.value, correction=sentence, queued=queued,
                       earliest_correctable=j, next_unlocked=self.next_lock, chain_cost_s=cost,
                       compile_s=now() - t0, step=script.provenance.get("step"),
-                      revision=script.provenance.get("revision"))
+                      revision=script.provenance.get("revision"), t_evidence=t_evidence,
+                      arm_drawn=self.cfg.correction_mode == CorrectionMode.RANDOMIZED)
 
     # ------------------------------------------------------------------ user input
     async def on_speech_start(self, t: float | None = None) -> None:
-        """Barge-in: stop playback now; stop planning ahead; mark unshown generated content."""
+        """Barge-in: stop playback now; stop planning ahead; mark unshown generated content.
+        The plan changes and locking pauses *before* the first await, so no old-plan request
+        can be locked in between; decisions still in flight become stale (input epoch)."""
         t = now() if t is None else t
-        await self._drop_unpresented()
+        self._input_epoch += 1
+        self._ready.clear()
+        try:
+            self.director.on_barge_in()
+            await self._drop_unpresented()
+        finally:
+            self._ready.set()
         self.log.emit(EventType.PLAYBACK_STOP, now(), t_speech_onset=t, dropped=sorted(self.dropped))
-        self.director.on_barge_in()
         self._maybe_finish()
 
     async def _drop_unpresented(self) -> None:
         """Stop playback and discard everything locked but not (fully) presented."""
         cut = []
+        self.sched.interrupt(self.next_lock)  # synchronously, before any await
         for k in range(self.next_lock):
             if len(self.presented.get(k, ())) < self.n_chunks and k not in self.dropped:
                 if k in self.scripts:
@@ -457,9 +533,8 @@ class Orchestrator:
                 self._claims.pop(k, None)  # a claim that is never heard is not a claim
                 self.director.ledger.mark_generated_not_presented(k)
         self.director.on_interrupted(cut)
-        await self.transport.stop_playback()
-        self.sched.interrupt(self.next_lock)
         self._decisions_at_interrupt = self._decisions
+        await self.transport.stop_playback()
 
     async def on_user_utterance(self, utt: Utterance) -> dict[str, Any]:
         try:
@@ -469,19 +544,34 @@ class Orchestrator:
 
     async def _on_user_utterance(self, utt: Utterance) -> dict[str, Any]:
         self.log.emit(EventType.UTTERANCE_END, utt.t_end, uid=utt.uid, speaker=utt.speaker, text=utt.text)
+        epoch = self._input_epoch
         # A forget request must not recall the very fact it asks to erase into the responder.
-        memories = None
+        memories, memory_ids = None, []
         if self.memory and not _FORGET.search(utt.text):
-            memories = self.memory.recall(utt.text, mode=self.cfg.scope)
+            hits_fn = getattr(self.memory, "recall_hits", None)
+            if hits_fn is not None:
+                hits = hits_fn(utt.text, mode=self.cfg.scope)
+                memories, memory_ids = [h.rendered for h in hits], [h.id for h in hits]
+            else:
+                memories, memory_ids = self.memory.recall(utt.text, mode=self.cfg.scope), None
         if self.memory:
             self.memory.on_user_utterance(utt)
-        decision = await self.director.on_user_utterance(utt, memories)
+        decision = await self.director.decide(utt, memories)
         term = (decision or {}).get("forget_term")
+        if epoch != self._input_epoch:
+            # The user barged in again while this decision was computed: it must not change the plan
+            # (the newer utterance decides). An erasure request is still honoured.
+            self.log.emit(EventType.CAPACITY_SKIP, now(), uid=utt.uid, reason="superseded_before_decision")
+        else:
+            self.director.apply(utt, decision, memory_ids=memory_ids)
         if term and self.memory is not None and hasattr(self.memory, "forget"):
             await self._erase(term)
         self._drain_director_events(now())
-        if term:  # the decision itself names the erased term
-            decision = json.loads(json.dumps(decision, ensure_ascii=False).replace(term, "[已删除]"))
+        if term:  # the decision itself names erased terms
+            raw = json.dumps(decision, ensure_ascii=False)
+            for x in sorted(self.director.erased_terms, key=len, reverse=True):
+                raw = raw.replace(x, "[已删除]")
+            decision = json.loads(raw)
         self.log.emit(EventType.UTTERANCE_END, now(), uid=utt.uid, decision=decision,
                       chains={c.chain_id: c.status.value for c in self.director.chains.values()})
         return decision
@@ -500,22 +590,30 @@ class Orchestrator:
 
         try:
             report = self.memory.forget(term)
-            purged = self.director.purge(term)
+            # Redact every erased value, not only the responder's keyword (e.g. "妹妹" names the fact,
+            # "杭州" is its value); report.terms holds them in memory only.
+            terms = sorted({term, *(getattr(report, "terms", None) or [])}, key=len, reverse=True)
+            purged = sum(self.director.purge(x) for x in terms)
             acknowledge("unsent_scripts", True, f"controller items purged: {purged}")
             # The responder is stateless per call; its context is rebuilt from purged state.
             acknowledge("llm_context", True, "stateless responder; memory notes and chains purged")
-            for k, s in self.scripts.items():
-                if term in s.transcript or term in s.action:
-                    s.transcript = s.transcript.replace(term, "[已删除]")
-                    s.action = s.action.replace(term, "[已删除]")
-                if term in self.prompts.get(k, ""):
-                    self.prompts[k] = self.prompts[k].replace(term, "[已删除]")
-            self.log.redact(term)  # in memory and in the JSONL file
+            for x in terms:
+                for k, sc in self.scripts.items():
+                    sc.transcript = sc.transcript.replace(x, "[已删除]")
+                    sc.action = sc.action.replace(x, "[已删除]")
+                    if x in self.prompts.get(k, ""):
+                        self.prompts[k] = self.prompts[k].replace(x, "[已删除]")
+                self.log.redact(x)  # in memory and in the JSONL file
             await self._drop_unpresented()
             self.director.ledger.generated_not_presented.clear()  # erased content must not be bridged to
+            for k in [k for k in self.chunks if k in self.dropped]:
+                self._evict(k)  # unshown media may carry the erased speech
             try:
-                await self.gen.reset()
-                acknowledge("generator_state", True, "generator session reset to canon")
+                confirm = getattr(self.gen, "reset_confirmed", None)
+                ok = await confirm() if confirm is not None else (await self.gen.reset()) is None
+                acknowledge("generator_state", bool(ok),
+                            "workers confirmed reset; adapter prompt buffers cleared" if ok
+                            else "worker reset not confirmed in time")
             except Exception as e:  # noqa: BLE001
                 acknowledge("generator_state", False, f"reset failed: {e}")
             recorder = getattr(self.transport, "recorder", None)
@@ -524,16 +622,19 @@ class Orchestrator:
             else:  # presented audio/video cannot be redacted by text replacement
                 acknowledge("recordings", False, f"media recording {getattr(recorder, 'path', '')} must be deleted")
         finally:
-            self._ready.set()
-        complete = getattr(report, "complete", True)
+            complete = report is not None and getattr(report, "complete", True)
+            if complete:
+                self._ready.set()
+            # else: fail closed — locking stays paused (no new content) until an operator resolves it
         pending = list(getattr(report, "pending_targets", []) or [])
         self.log.emit(EventType.PLAYBACK_STOP, now(), erasure=True,
                       deleted=len(getattr(report, "deleted_ids", []) or []),
                       kinds=getattr(report, "kinds", None), controller_purged=purged,
                       generator_reset=True, erasure_complete=complete, pending_targets=pending)
         if not complete:
-            self.log.emit(EventType.ERROR, now(), where="erasure", error="memory erasure incomplete",
-                          detail=str(getattr(report, "errors", "")))
+            self.log.emit(EventType.ERROR, now(), where="erasure",
+                          error="erasure incomplete: session paused (fail closed)",
+                          detail=str(getattr(report, "errors", "")), pending_targets=pending)
         self._maybe_finish()
 
     def open_chains(self) -> list[str]:

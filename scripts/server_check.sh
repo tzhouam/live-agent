@@ -14,4 +14,4 @@ for i in $(seq 1 600); do
   kill -0 $srv 2>/dev/null || { echo "server died"; tail -30 .cache/logs/server_check_server.log; exit 1; }
   sleep 1
 done
-python3 scripts/ws_client_check.py --seconds 60 --say "8:请喝口茶吧" --say "30:跟我挥挥手吧"
+python3 scripts/ws_client_check.py --seconds 80 --say "8:请喝口茶吧" --say "30:跟我挥挥手吧" --say "50:我妹妹住在杭州" --say "62:请忘掉我妹妹住在哪"

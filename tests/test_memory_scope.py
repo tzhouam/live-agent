@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from live_agent.memory import (
     CANON,
+    SIMILARITY_REVIEW_TARGET,
     ClaimType,
     Kind,
     MemoryStore,
@@ -122,15 +123,22 @@ def test_bridge_derives_scope_from_session_not_utterance(mem):
     b.on_user_utterance(utt("I like cats", scope=public_scope(S)))
     scopes = {r[0] for r in mem.db.execute("SELECT scope FROM records")}
     assert scopes == {private_scope(U)}
-    # unpinned bridge: pinned by the orchestrator's first mode-bearing call, private until then
-    b2 = MemoryBridge(":memory:", user_id=V, stream_id=S, session_id="s2", store=mem)
-    assert b2.mode is None and b2.write_scope == private_scope(V)
-    b2.recall("hi", mode="public")
-    assert b2.mode == "public" and b2.write_scope == public_scope(S)
-    b2.recall("hi", mode="private")  # later mismatch never changes the session mode
-    assert b2.mode == "public" and b2.mode_mismatches == 1
-    with pytest.raises(ValueError):
-        bridge(mem, mode="canon")
+
+
+def test_bridge_mode_required_and_immutable(mem):
+    with pytest.raises(TypeError):
+        MemoryBridge(":memory:", user_id=U, stream_id=S, session_id="s", store=mem)  # no mode
+    for bad in (None, "canon", ""):
+        with pytest.raises(ValueError):
+            bridge(mem, mode=bad)
+    b = bridge(mem, mode="private")
+    b.on_user_utterance(utt("我妹妹住在巴黎"))
+    with pytest.raises(ScopeViolationError):  # a private session can never become public
+        b.recall("巴黎", mode="public")
+    with pytest.raises(ScopeViolationError):
+        b.on_persona_line("她妹妹住在巴黎", session_id="sess", scope="public", lineage="none")
+    assert b.mode == "private" and b.write_scope == private_scope(U)
+    assert mem.db.execute("SELECT count(*) FROM records WHERE scope LIKE 'public:%'").fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------- finding 13: lineage of persona output
@@ -143,37 +151,55 @@ def test_persona_line_lineage_from_recall(mem):
     assert hits and all(h.id and h.rendered.endswith(h.text) for h in hits)
     assert b.recall("妹妹 巴黎", mode="private") == [h.rendered for h in hits]
     fact = next(h for h in hits if h.tags["kind"] == "user_fact")
-    g = b.on_persona_line("你妹妹在巴黎？", session_id="sess", scope="private", source_ids=[fact.id])
+    g = b.on_persona_line("你妹妹在巴黎？", session_id="sess", scope="private", source_ids=[fact.id],
+                          lineage="complete")
     assert g.derived_from == (fact.id,) and g.source_scopes == {private_scope(U)}
-    assert g.meta["lineage"] == "explicit" and g.scope == private_scope(U)
-    # unknown lineage: linked to every memory recalled this session, in the session scope
-    g2 = b.on_persona_line("巴黎很美", session_id="sess", scope="private")
-    assert set(g2.derived_from) == {h.id for h in hits} and g2.meta["lineage"] == "session_recall_superset"
-    assert g2.scope == private_scope(U)
+    assert g.meta["lineage"] == "complete" and g.scope == private_scope(U)
+    # unknown lineage (default, even with ids): linked to every memory recalled / turn ingested
+    g2 = b.on_persona_line("巴黎很美", session_id="sess", scope="private", source_ids=[])
+    ingested = set(mem._ids("SELECT id FROM records WHERE kind IN ('episode', 'user_fact')"))
+    assert set(g2.derived_from) == {h.id for h in hits} | ingested
+    assert g2.meta["lineage"] == "session_superset" and g2.scope == private_scope(U)
     # the lineage makes erasure cascade to both lines
     rep = b.forget("巴黎")
     assert mem.get(g.id) is None and mem.get(g2.id) is None and g.id in rep.deleted_ids
 
 
-def test_public_persona_line_with_private_input_refused(mem):
+def test_public_persona_line_requires_complete_lineage(mem):
     priv = bridge(mem, mode="private")
     priv.on_user_utterance(utt("我妹妹住在巴黎"))
     fact_id = mem._ids("SELECT id FROM records WHERE kind = 'user_fact'")[0]
     pub = bridge(mem, mode="public")
     before = mem.db.execute("SELECT count(*) FROM records").fetchone()[0]
-    assert pub.on_persona_line("她妹妹住在巴黎", session_id="live", scope="public", source_ids=[fact_id]) is None
-    assert pub.scope_violations and "private inputs" in pub.scope_violations[0]["reason"]
+    # unknown lineage (no ids, or ids without lineage="complete") is refused in public
+    assert pub.on_persona_line("大家好", session_id="live", scope="public") is None
+    assert pub.on_persona_line("大家好", session_id="live", scope="public", source_ids=[]) is None
+    assert "complete source lineage" in pub.scope_violations[-1]["reason"]
+    # complete lineage with a private input is refused too
+    assert pub.on_persona_line("她妹妹住在巴黎", session_id="live", scope="public", source_ids=[fact_id],
+                               lineage="complete") is None
+    assert "private inputs" in pub.scope_violations[-1]["reason"]
     assert mem.db.execute("SELECT count(*) FROM records").fetchone()[0] == before
     # direct store API fails closed as well
+    for kw in ({}, {"derived_from": None}, {"derived_from": []}, {"derived_from": [], "lineage": "unknown"},
+               {"derived_from": [fact_id], "lineage": "complete"}):
+        with pytest.raises(ScopeViolationError):
+            mem.record_generated_event("x", "live", public_scope(S), **kw)
     with pytest.raises(ScopeViolationError):
-        mem.record_generated_event("x", "live", public_scope(S), derived_from=[fact_id])
-    # a caller claiming public in a private session still writes private
-    g = priv.on_persona_line("hello", session_id="sess", scope="public", source_ids=[])
-    assert g.scope == private_scope(U) and priv.mode_mismatches == 1
-    # public recall never returns private ids, so the superset lineage of a public line stays public
-    pub.recall("巴黎 妹妹", mode="public")
-    g2 = pub.on_persona_line("welcome everyone", session_id="live", scope="public")
-    assert g2.scope == public_scope(S) and g2.source_scopes <= {public_scope(S), CANON}
+        mem.add_record(Kind.GENERATED_EVENT, public_scope(S), "x", ClaimType.SYSTEM_OBSERVATION,
+                       Provenance(speaker="persona"))
+    with pytest.raises(ValueError):
+        mem.record_generated_event("x", "live", public_scope(S), derived_from=[fact_id], lineage="none")
+    # explicit, complete, public-only lineage is accepted
+    hits = pub.recall_hits("大家", mode="public")
+    g = pub.on_persona_line("欢迎大家", session_id="live", scope="public", source_ids=[h.id for h in hits],
+                            lineage="complete")
+    assert g.scope == public_scope(S) and g.source_scopes <= {public_scope(S), CANON}
+    g0 = pub.on_persona_line("欢迎", session_id="live", scope="public", lineage="none")
+    assert g0.derived_from == () and g0.meta["lineage"] == "none"
+    # a persona utterance ingested in a public session has unknown lineage -> refused
+    with pytest.raises(ScopeViolationError):
+        mem.ingest_user_utterance(utt("hi", speaker="persona"), user_id=U, stream_id=S, mode="public")
 
 
 def test_persona_line_with_erased_explicit_source_not_recorded(mem):
@@ -181,7 +207,8 @@ def test_persona_line_with_erased_explicit_source_not_recorded(mem):
     b.on_user_utterance(utt("I work at Acme"))
     (hit,) = [h for h in b.recall_hits("Acme", mode="private") if h.tags["kind"] == "user_fact"]
     b.forget("Acme")
-    assert b.on_persona_line("How is Acme?", session_id="sess", scope="private", source_ids=[hit.id]) is None
+    assert b.on_persona_line("How is Acme?", session_id="sess", scope="private", source_ids=[hit.id],
+                             lineage="complete") is None
     assert "erased" in b.scope_violations[-1]["reason"]
     assert b.on_persona_line("How are you?", session_id="sess", scope="private").derived_from == ()
 
@@ -276,3 +303,116 @@ def test_forget_scrubs_id_references_in_surviving_records(mem):
     assert mem.get(b.id) is not None and mem.get(b.id).meta["supersedes"] == []
     v = mem.verify_erasure(rep)
     assert v.ok and not v.surviving
+
+
+# ---------------------------------------------------------------- round 2: R1-14 confirmation binding
+
+
+def test_confirmation_must_bind_to_the_proposition(mem):
+    (f,) = mem.ingest_user_utterance(utt("我住在巴黎", session="c"), user_id=U).facts
+    b = mem.record_inference("user speaks French", user_id=U, derived_from=[f.id],
+                             subject="user", predicate="speaks", value="French", session_id="c")
+    unrelated = mem.ingest_user_utterance(utt("I like cats", session="c"), user_id=U).episode
+    with pytest.raises(ValueError):
+        mem.confirm(b.id, unrelated.id)  # unrelated turn by the right user
+    neg = mem.ingest_user_utterance(utt("No, I don't speak French", session="c"), user_id=U).episode
+    with pytest.raises(ValueError):
+        mem.confirm(b.id, neg.id)  # mentions the value but denies it
+    # rule (b): an affirmative answer that is the first user turn after the persona's question
+    q = mem.record_generated_event("你会说法语吗？", "c", private_scope(U), derived_from=[b.id], lineage="complete")
+    yes = mem.ingest_user_utterance(utt("是的", session="c"), user_id=U).episode
+    assert mem.get(b.id).status == Status.PENDING
+    with pytest.raises(ValueError):
+        mem.confirm(b.id, yes.id)  # a bare "yes" without the question does not bind
+    fact = mem.confirm(b.id, yes.id, question_id=q.id)
+    assert fact.value == "French" and mem.get(b.id).meta["confirmed_rule"] == "answer"
+
+
+def test_confirmation_answer_must_follow_the_question_directly(mem):
+    b = mem.record_inference("user speaks French", user_id=U, derived_from=[], subject="user",
+                             predicate="speaks", value="French", session_id="c")
+    q = mem.record_generated_event("你会说法语吗？", "c", private_scope(U), derived_from=[b.id], lineage="complete")
+    mem.ingest_user_utterance(utt("我喜欢猫", session="c"), user_id=U)
+    late_yes = mem.ingest_user_utterance(utt("对", session="c"), user_id=U).episode
+    with pytest.raises(ValueError):
+        mem.confirm(b.id, late_yes.id, question_id=q.id)
+    other_q = mem.record_generated_event("你喜欢猫吗？", "c", private_scope(U), lineage="none")
+    with pytest.raises(ValueError):
+        mem.confirm(b.id, late_yes.id, question_id=other_q.id)  # question not about this inference
+    stated = mem.ingest_user_utterance(utt("对，我会说French", session="c"), user_id=U).episode
+    assert mem.confirm(b.id, stated.id).value == "French"  # rule (a): the turn states the value
+
+
+# ---------------------------------------------------------------- round 2: R1-15 similarity sweep
+
+
+def test_forget_sweeps_unlinked_paraphrases(mem):
+    (f,) = mem.ingest_user_utterance(utt("My sister lives in Paris.", session="p"), user_id=U).facts
+    # persona paraphrase with no lineage and without the literal term "Paris"
+    para = mem.record_generated_event("So your sister lives in France", "p", private_scope(U))
+    unrelated = mem.record_generated_event("Shall we make tea?", "p", private_scope(U))
+    rep = mem.forget(f.id, U)
+    assert para.id in rep.swept_ids and mem.get(para.id) is None
+    assert mem.get(unrelated.id) is not None
+    assert rep.acks["memory_db"].ok and rep.complete
+
+
+def test_forget_reports_similar_user_facts_for_review(mem):
+    (a,) = mem.ingest_user_utterance(utt("I work at Acme"), user_id=U).facts
+    r = mem.ingest_user_utterance(utt("I work at Globex too"), user_id=U)  # similar turn, other value
+    (g,) = r.facts
+    rep = mem.forget(a.id, U)
+    # user-origin records are never silently deleted by similarity: kept and reported
+    assert mem.get(g.id) is not None and mem.get(r.episode.id) is not None
+    assert r.episode.id in rep.review_ids and SIMILARITY_REVIEW_TARGET in rep.pending_targets
+    assert not rep.complete and f"records:{r.episode.id}" in rep.verification.review
+    rep.acknowledge(SIMILARITY_REVIEW_TARGET, detail="user kept Globex")
+    assert rep.complete
+
+
+def test_verify_erased_flags_surviving_similar_artifact(mem):
+    (f,) = mem.ingest_user_utterance(utt("My sister lives in Paris."), user_id=U).facts
+    rep = mem.forget(f.id, U)
+    assert mem.verify_erasure(rep).ok
+    # an artifact written after the erasure (e.g. a stale cache replaying the line)
+    late = mem.record_generated_event("your sister lives in paris", "p", private_scope(U))
+    v = mem.verify_erasure(rep)
+    assert not v.ok and f"records:{late.id}" in v.similar
+
+
+# ---------------------------------------------------------------- round 2: NEW-10 atomic correction
+
+
+def test_correction_is_atomic(mem, monkeypatch):
+    (old,) = mem.ingest_user_utterance(utt("I work at Acme"), user_id=U).facts
+    gen = mem.record_generated_event("Acme sounds fun", "sess", private_scope(U), derived_from=[old.id],
+                                     lineage="complete")
+    fired = []
+    mem.stale_hooks.append(fired.append)
+
+    def boom(texts):
+        raise RuntimeError("embedder down")
+
+    monkeypatch.setattr(mem.embedder, "embed", boom)
+    with pytest.raises(RuntimeError):
+        mem.correct(old.id, "Globex")
+    with pytest.raises(RuntimeError):
+        mem.ingest_user_utterance(utt("不对，我在Globex工作"), user_id=U)
+    monkeypatch.undo()
+    # nothing half-applied: old fact current, descendant not stale, no hook fired
+    assert mem.get(old.id).status == Status.ACTIVE and mem.get(old.id).valid_to is None
+    assert mem.get(gen.id).status == Status.ACTIVE and fired == []
+    assert mem.resolve(U, "user", "works_at").value == "Acme"
+    new = mem.correct(old.id, "Globex")
+    assert mem.get(old.id).status == Status.SUPERSEDED and mem.get(gen.id).status == Status.STALE
+    assert mem.resolve(U, "user", "works_at").record.id == new.id
+    assert len(fired) == 1 and fired[0][0].id == gen.id  # hooks run once, after the commit
+
+
+def test_sweep_deletes_similar_turns_that_back_no_fact(mem):
+    (f,) = mem.ingest_user_utterance(utt("我妹妹住在杭州"), user_id=U).facts
+    req = mem.ingest_user_utterance(utt("忘掉我妹妹住哪"), user_id=U)  # the forget request itself
+    assert req.facts == []
+    rep = mem.forget("杭州", U)
+    assert mem.get(req.episode.id) is None and req.episode.id in rep.swept_ids
+    assert rep.review_ids == [] and rep.complete and mem.get(f.id) is None

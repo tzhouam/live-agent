@@ -174,7 +174,7 @@ def test_erasure_acks_all_targets_and_redacts_log(tmp_path):
         text = messages[-1]["content"]
         if "忘" in text:
             return json.dumps({"relation": "chat", "kind": "memory", "steps": [{"intent": "", "line": "好的，忘掉了。"}],
-                               "forget_term": "杭州"})
+                               "forget_term": "妹妹"})  # keyword names the fact, not its value
         return json.dumps({"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "杭州很美。"}],
                            "memory_note": "用户的妹妹住在杭州"})
 
@@ -186,3 +186,18 @@ def test_erasure_acks_all_targets_and_redacts_log(tmp_path):
     stops = [e for e in events(orch, EventType.PLAYBACK_STOP) if e.data.get("erasure")]
     assert stops and stops[0].data["erasure_complete"], stops[0].data
     assert "杭州" not in (tmp_path / "log.jsonl").read_text(encoding="utf-8")
+
+
+def test_public_session_persona_lines_carry_complete_lineage(tmp_path):
+    from live_agent.memory_bridge import MemoryBridge
+
+    def resp(messages):
+        return json.dumps({"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "欢迎来到直播间。"}]})
+
+    orch, client = build(max_requests=6)
+    orch.cfg.scope = "public"
+    orch.director.llm = ScriptedLLM(resp)
+    orch.memory = MemoryBridge(str(tmp_path / "m.sqlite"), user_id="u", stream_id="s", session_id="sess", mode="public")
+    asyncio.run(run(orch, client, [(1.0, "大家好")]))
+    refused = [e for e in events(orch, EventType.AUDIT) if "persona_line_not_recorded" in e.data.get("issues", [])]
+    assert not refused, orch.memory.scope_violations

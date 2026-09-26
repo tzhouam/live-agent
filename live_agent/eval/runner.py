@@ -103,7 +103,7 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
             out.append({"type": "chunk_presented", "request": k, "chunk": ev.chunk_index,
                         "t_start": ts(ev.t), "t_end": ts(d["t_end"])})
         elif ev.type == EventType.VERDICT and d.get("kind") == "action":
-            for cid in d.get("chain_ids", dchains):  # only the chain the judged request served
+            for cid in d.get("chain_ids") or []:  # only the chain(s) the judged request served (exact)
                 gt = dchain_to_gt.get(cid)
                 if gt is None:
                     continue
@@ -147,12 +147,16 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
         elif ev.type == EventType.REPAIR:
             gt = dchain_to_gt.get(d.get("chain_id", ""))
             if gt:
-                r = {"type": "repair_assignment", "chain_id": gt,
+                r = {"type": "repair_assignment", "chain_id": gt, "E": ts(d["t_evidence"]) if d.get("t_evidence") else None,
+                     "arm_drawn": bool(d.get("arm_drawn")),
                      "arm": "forward_correction" if d.get("mode") == "gradient" else "repeat",
                      "failure_request": k, "target_request": d.get("earliest_correctable"),
                      "C": d.get("chain_cost_s")}
                 if d.get("step") is not None:
                     r["step"] = d["step"]
+                carried = [j for j, sc in sorted(orch.scripts.items())
+                           if sc.provenance.get("retry_of") == k and d.get("chain_id") in sc.chain_ids]
+                r["actual_request"] = carried[0] if carried else None  # the request that carried it
                 out.append(r)
         elif ev.type == EventType.OBSERVATION_END:
             out.append({"type": "observation_end", "t": ts(ev.t)})
@@ -196,7 +200,7 @@ async def run_task(task: Task, condition: str, seed: int, *, factory, speed: flo
         raise RuntimeError(f"{condition}/{task.task_id}: session failed: {orch.error}")
     header = dict(session_id=f"{condition}-{task.task_id}-s{seed}", condition=condition,
                   task_id=task.task_id, seed=seed, mode=mode, backbone=orch.gen.info.name)
-    gseed = getattr(getattr(orch.gen, "backend", orch.gen), "seed", None)
+    gseed = getattr(orch.gen, "seed", None)  # the session's effective seed (SessionView sets the backend's)
     with SessionLogWriter(path, **header, **({"generator_seed": gseed} if gseed is not None else {})) as w:
         for ev in convert(orch, user_events, t0=t0, speed=speed):
             w.write(ev)

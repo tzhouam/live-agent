@@ -56,6 +56,7 @@ class Segment:
     revision: int | None = None  # chain revision count this segment was planned under
     action_text: str = ""  # open loop: the LLM's own visible-action phrase
     min_request: int = 0  # reserved slot: do not lock before this request index
+    memory_ids: list[str] | None = None  # memories the responder saw when writing this line (None = unknown)
 
 
 @dataclass
@@ -143,6 +144,26 @@ class Director:
 
     async def on_user_utterance(self, utt: Utterance, memories: list[str] | None = None) -> dict:
         """Interpret an utterance and update the plan. Returns the parsed decision."""
+        d = await self.decide(utt, memories)
+        self.apply(utt, d)
+        return d
+
+    def apply(self, utt: Utterance, d: dict, memory_ids: list[str] | None = None) -> None:
+        """Apply a decision to the plan (the caller may first discard a superseded decision).
+        ``memory_ids``: exactly the memories given to the responder for this decision (lineage)."""
+        before = {id(x) for x in self.queue}
+        self._apply_decision(utt, d)
+        for seg in self.queue:
+            if id(seg) not in before:
+                seg.memory_ids = list(memory_ids) if memory_ids is not None else None
+        for steps in self.held.values():
+            for segs in steps.values():
+                for seg in segs:
+                    if seg.memory_ids is None and id(seg) not in before:
+                        seg.memory_ids = list(memory_ids) if memory_ids is not None else None
+
+    async def decide(self, utt: Utterance, memories: list[str] | None = None) -> dict:
+        """Responder LLM call only; no state is changed."""
         open_chains = [{"chain_id": c.chain_id, "intent": c.final_intent} for c in self._open_chains()]
         if self.closed:
             intents = ", ".join(sorted({c.intent for c in self.manifest.caps.values()
@@ -160,8 +181,14 @@ class Director:
             d = parse_json(raw)
         except ValueError:
             d = {"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "抱歉，我没听清，可以再说一次吗？"}]}
-        self._apply_decision(utt, d)
         return d
+
+    def _declined_request(self, utt_text: str, kind: TaskKind, steps: list[dict]) -> bool:
+        """Independent of the LLM's ``kind``: an imperative / ability request for the persona that
+        the reply declines is an unsupported action request (a refusal chain), not chat."""
+        asks = bool(_REQUEST.search(utt_text))
+        declines = any(_DECLINE.search(st.get("line") or "") for st in steps)
+        return self.closed and asks and declines and kind not in (TaskKind.ACTION, TaskKind.MULTISTEP)
 
     def _validate(self, kind: TaskKind, steps: list[dict]) -> str | None:
         """Closed loop: enforce the contract in code. Returns a refusal reason or None."""
@@ -195,6 +222,8 @@ class Director:
         kind = TaskKind(d.get("kind", "chat")) if d.get("kind") in TaskKind._value2member_map_ else TaskKind.CHAT
         steps = [dict(s) for s in d.get("steps", []) if isinstance(s, dict)]
         refusal = self._validate(kind, steps) if self.closed else None
+        if self._declined_request(utt.text, kind, steps):
+            kind, relation, refusal = TaskKind.ACTION, "new", "declined by responder (unsupported request)"
         for st in steps:
             st["line"] = self._guard(st.get("line") or "")
         target = self.chains.get(d.get("target_chain") or "")
@@ -360,7 +389,7 @@ class Director:
                 # chain's remaining spoken content, if any).
                 released.append(Segment(chain_id=chain_id, plan_version=self.plan_version,
                                         line="好了。", is_completion_remark=True,
-                                        revision=len(chain.revisions)))
+                                        revision=len(chain.revisions), memory_ids=[]))  # template
         for seg in reversed(released):
             self.queue.appendleft(seg)
         return True
@@ -408,6 +437,11 @@ class Director:
 
     # ------------------------------------------------------------ script building
     def _pop_segment(self, request_index: int) -> Segment | None:
+        # A repair reserved for exactly this request takes the slot before anything else.
+        for i, seg in enumerate(self.queue):
+            if seg.retry_of is not None and seg.min_request == request_index:
+                del self.queue[i]
+                return seg
         for i, seg in enumerate(self.queue):
             if seg.min_request <= request_index:
                 del self.queue[i]
@@ -471,7 +505,7 @@ class Director:
                              chain_ids=[seg.chain_id] if seg.chain_id else [],
                              capability_ids=cap_ids,
                              provenance={"intent": seg.intent, "step": seg.step, "retry_of": seg.retry_of,
-                                         "revision": seg.revision,
+                                         "revision": seg.revision, "memory_ids": seg.memory_ids,
                                          "completion_remark": seg.is_completion_remark})
         if seg.chain_id and seg.chain_id in self.chains:
             self.chains[seg.chain_id].requests.append(request_index)
@@ -505,8 +539,18 @@ def _split_line(line: str, n: int = CHARS_PER_REQUEST) -> list[str]:
     return [x for x in out if re.search(r"[\w一-鿿]", x)]
 
 
-_COMPLETION = re.compile(r"(做完|喝完|吃完|写完|翻好|做好了|完成了|搞定|好了[。！!]?$|已经(做|喝|吃|写|翻|挥|放|拿|站|坐)|done|finished)")
+# Completion meaning (claims an act already happened), incl. the proposal's example
+# 「刚才那首歌你喜欢吗」: past-reference markers (刚才/刚刚/已经 ... 了), completive verb
+# complements (…完/…好了/…过了) and explicit completion words. Deliberately broad: a guarded line
+# loses a clause, a missed claim is a false completion.
+_COMPLETION = re.compile(
+    r"(刚才|刚刚|方才|已经|完成|搞定|好了|[做喝吃写翻唱讲说画看读挥放拿站坐跳弹]完|"
+    r"[做写画]好|[唱讲说看读]过了|done|finished)")
 
 
 def _claims_completion(line: str) -> bool:
     return bool(_COMPLETION.search(line or ""))
+
+
+_REQUEST = re.compile(r"(请|吧|给我|帮我|能不能|能否|可以.{0,6}吗|你能.{0,8}吗|来.{0,4}一下|一下)")
+_DECLINE = re.compile(r"(做不到|不能|没法|无法|不会|飞不|办不到|做不了)")
