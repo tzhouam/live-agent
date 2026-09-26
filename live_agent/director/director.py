@@ -372,10 +372,36 @@ class Director:
                                line=line, step=i if n_steps > 1 else None, revision=len(chain.revisions)))
         return [x for x in out if x.intent or x.action_text or x.line]
 
+    @staticmethod
+    def _one_line(steps: list[dict]) -> list[dict]:
+        """A multi-action command is presented as ONE response: the action steps' announcements are
+        merged into a single line on the first action step and the later action steps run silently
+        back to back (the step split stays internal). Content steps (no intent) keep their own lines."""
+        acts = [i for i, st in enumerate(steps) if st.get("intent") or st.get("action")]
+        lines = [(steps[i].get("line") or "").strip() for i in acts]
+        if len(acts) < 2 or sum(1 for x in lines if x) < 2:
+            return steps
+        parts = []
+        for x in (x for x in lines if x):
+            x = x.rstrip("。！!.")
+            if parts:
+                x = re.sub(r"^(好的?|嗯|行)[，,]?\s*", "", x)
+                x = re.sub(r"^(我|再|然后|接着)+", "", x)
+            parts.append(x)
+        combined = "，再".join(parts) + "。"
+        if len(combined) > CHARS_PER_REQUEST * 2:
+            combined = lines[0]
+        out = [dict(st) for st in steps]
+        for n, i in enumerate(acts):
+            out[i]["line"] = combined if n == 0 else ""
+        return out
+
     def _enqueue_chain(self, chain: IntentChain, steps: list[dict]) -> None:
         """All steps are released back to back (fluent on screen: no filler between steps). Each
         action step is still verified in order; if one fails, later steps are pulled back and
         replayed after its repair is verified (`queue_retry` / `on_verified`)."""
+        if chain.kind == TaskKind.MULTISTEP and len(steps) > 1:
+            steps = self._one_line(steps)
         per_step = [self._segments_for_step(chain, i, s, len(steps)) for i, s in enumerate(steps)]
         if self.closed and chain.kind == TaskKind.MULTISTEP and len(steps) > 1:
             self.plan_steps[chain.chain_id] = per_step

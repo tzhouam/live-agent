@@ -415,3 +415,18 @@ def test_bridge_note_fits_the_compiler_limit():
     assert len(note) <= 200
     compile_prompt(BlockScript(request_index=5, plan_version=1, canon=d.ledger.canon, action="", transcript="",
                                corrections=[note]))  # must not raise
+
+
+def test_corrections_always_fit_the_compiler_limit():
+    import asyncio as aio
+
+    from live_agent.prompt.h3_compiler import compile_prompt
+    from live_agent.qc.judge import ForwardCorrector
+    from live_agent.types import BlockScript
+
+    d = make(TEA)
+    for cap in d.manifest.caps.values():  # every capability's template correction must compile
+        text = aio.run(ForwardCorrector(None).correction(cap.phrase, [], {}))
+        assert len(text) <= 200
+        compile_prompt(BlockScript(request_index=3, plan_version=1, canon=d.ledger.canon, action=cap.phrase,
+                                   transcript="", corrections=[text]))

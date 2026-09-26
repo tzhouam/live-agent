@@ -74,7 +74,10 @@ def compile_prompt(script: BlockScript, *, first_request: bool = False) -> str:
         parts.append(_sentence(_clean(fix, field="correction", max_len=200)))
 
     if action and line:
-        parts.append(f"{_sentence(action)[:-1]}, then says once: <d>[{c.language}] {line}</d> Her lips close.")
+        # Announce first, then act: the action gets the rest of the 5 s (actions placed before the
+        # line started late and were cut by the next request), and she cannot drink while talking.
+        parts.append(f"S1 looks into the lens and says once: <d>[{c.language}] {line}</d> Her lips close. "
+                     f"Then {_sentence(action)}")
     elif line:
         parts.append(f"S1 looks into the lens and says once: <d>[{c.language}] {line}</d> Her lips close.")
     elif action:

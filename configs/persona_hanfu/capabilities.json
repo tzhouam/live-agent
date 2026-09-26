@@ -5,7 +5,7 @@
   {
    "cap_id": "cap-00-drink_tea",
    "intent": "drink_tea",
-   "phrase": "she lifts the teacup with both hands, takes one small sip, and sets it back down",
+   "phrase": "she lifts the teacup to her lips and clearly takes a sip, the rim touching her lips, then sets the cup back down",
    "aliases": [
     "喝茶",
     "喝口茶",
@@ -18,7 +18,7 @@
    "p_ci": null,
    "tvc_median_s": null,
    "side_effects": [],
-   "check_question": "人物是否举起茶杯喝了一口茶？",
+   "check_question": "人物是否把茶杯送到嘴边、杯沿碰到嘴唇并喝了一口？只是举起或拿着茶杯而没有送到嘴边喝，回答 no。",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
@@ -165,7 +165,7 @@
   {
    "cap_id": "cap-09-pour_tea",
    "intent": "pour_tea",
-   "phrase": "she lifts the teapot and pours tea into the cup, then puts the teapot down",
+   "phrase": "she lifts the teapot and visibly pours a stream of tea into the cup, then puts the teapot down",
    "aliases": [
     "倒茶",
     "倒杯茶",
@@ -176,13 +176,13 @@
    "p_ci": null,
    "tvc_median_s": null,
    "side_effects": [],
-   "check_question": "人物是否拿起茶壶倒茶？",
+   "check_question": "人物是否拿起茶壶并把茶倒进杯子（能看到倾倒动作）？只是拿起茶壶没有倒，回答 no。",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-10-eat_pastry",
    "intent": "eat_pastry",
-   "phrase": "she picks up one pastry from the plate and takes a small bite",
+   "phrase": "she picks up one pastry, brings it to her mouth and clearly takes a small bite",
    "aliases": [
     "吃点心",
     "吃一口点心",
@@ -194,7 +194,7 @@
    "p_ci": null,
    "tvc_median_s": null,
    "side_effects": [],
-   "check_question": "人物是否拿起点心咬了一口？",
+   "check_question": "人物是否把点心送到嘴边并咬了一口？只是拿起点心而没有咬，回答 no。",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
