@@ -404,3 +404,27 @@ Incorrect API key provided`, after 5 reconnects (see `docs/reviews/impl1b_events
 none is simulated here. The meta files' `rollout_models` line (gpt-6-sol) is from these threads' own rollouts: the
 session was created with the requested model, but every model request was rejected, so it is not evidence of a review. Next step: the owner re-authenticates Codex (`codex login`), then round 2 is
 re-run with the same prompts (`docs/reviews/impl{1,2}b_prompt.md`).
+
+### impl1c + impl2c: round 2 (commit ba9b6c0)
+
+Model gpt-6-sol, verified in both rollouts.
+- **impl1c:** 8 of 19 round-1 findings RESOLVED or scoped, 11 PARTIAL, plus 5 new findings (4 blocking). Verdict: **not ready**.
+- **impl2c:** 6 of 16 RESOLVED, 10 PARTIAL, plus 11 new findings (3 blocking). Verdict: **not ready**.
+
+Every finding was accepted. Fixed in commits e9f6546 and the one after it (164 tests pass). Highlights:
+- A superseded decision is discarded by input epoch.
+- Deadlines start at the client-stamped utterance end.
+- QC evidence is restricted to the frames actually painted.
+- Media is evicted after QC.
+- The generator reset is confirmed by the workers and adapter buffers are cleared; erasure fails closed and redacts every erased value.
+- Public persona lines need complete lineage; the memory mode is fixed at construction; memory runs a paraphrase sweep; correction is atomic.
+- Adjudication:
+  - negative labels need review through the deadline;
+  - media is delivered as metadata-stripped copies;
+  - finalized batches are immutable;
+  - an audio claim sweep covers FCR;
+  - the primary report refuses to run with unobserved windows;
+  - RQ2 is analysed per failure point;
+  - time to success is reported per kind.
+
+Real-stack verification is in `docs/implementation.md` (server path with erasure). Documented limits: no content-moderation model (audit = blocklist); cross-lingual paraphrases are not caught by the erasure sweep.
