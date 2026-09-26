@@ -237,7 +237,9 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             if args.vlm_url == "mock":  # demo only: simulated verdicts (p=0.8), never a measurement
                 from live_agent.qc.judge import MockJudge
 
-                judge = MockJudge(p_default=0.8)
+                # the placeholder video always "performs" the locked action, so by default the simulated
+                # judge agrees (p=1); a lower --mock-judge-p demonstrates the repair loop
+                judge = MockJudge(p_default=args.mock_judge_p)
             elif args.vlm_url:
                 from live_agent.qc.judge import VLMJudge
 
@@ -405,6 +407,7 @@ def main() -> None:
     p.add_argument("--director-mode", default="closed_loop", choices=["closed_loop", "open_loop"])
     p.add_argument("--correction-mode", default="gradient", choices=["gradient", "repeat", "none"])
     p.add_argument("--lambda-prior", type=float, default=3.0)
+    p.add_argument("--mock-judge-p", type=float, default=1.0, help="with --vlm-url mock: P(action judged done)")
     p.add_argument("--dev-allow-uncalibrated", action="store_true",
                    help="allow capabilities that were never executed (development only)")
     p.add_argument("--host", default="127.0.0.1")

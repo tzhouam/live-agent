@@ -2,6 +2,7 @@
 # One-command launcher for the live agent (proposal v2.11 A2 system).
 #
 #   scripts/run_live.sh demo        # CPU only: mock video generator + rule-based responder (no GPUs, no models)
+#   scripts/run_live.sh hybrid      # real Qwen3-8B responder + Qwen3-ASR (1 GPU), placeholder video
 #   scripts/run_live.sh full        # TaoMate-H3 (6 GPUs) + Qwen3-8B / Qwen3-VL-8B / Qwen3-ASR (1 GPU)
 #
 # Options (env): PORT (default 8200), HOST (default 127.0.0.1), HOURS (GPU reservation, default 2h),
@@ -36,7 +37,7 @@ cleanup() {
   for p in "${pids[@]:-}"; do [ -n "$p" ] && { kill -9 -- "-$p" 2>/dev/null || kill -9 "$p" 2>/dev/null; } || true; done
   # canhazgpu can keep a reservation after its supervisor is interrupted: release exactly ours
   ids=$(reserved_ids "$SERVER_LOG" "$HELPER_LOG" | sort -u | paste -sd, -)
-  if [ "$mode" = "full" ] && [ -n "$ids" ] && command -v gpu >/dev/null; then
+  if [ "$mode" != "demo" ] && [ -n "$ids" ] && command -v gpu >/dev/null; then
     gpu release --gpu-ids "$ids" >/dev/null 2>&1 && echo "[run_live] released GPUs $ids"
   fi
 }
@@ -52,10 +53,10 @@ case "$mode" in
       --director-mode "$DIRECTOR" --host "$HOST" --port "$PORT" "${extra[@]}" &
     pids+=($!)
     ;;
-  full)
+  hybrid|full)
     command -v gpu >/dev/null || { echo "canhazgpu ('gpu') not found"; exit 1; }
     for p in 8101 8102 8103; do port_free $p || { echo "helper port $p already in use (models running?)"; exit 1; }; done
-    echo "[run_live] full: starting helper models on 1 GPU (log $HELPER_LOG) ..."
+    echo "[run_live] $mode: starting helper models on 1 GPU (log $HELPER_LOG) ..."
     : > "$HELPER_LOG"; : > "$SERVER_LOG"
     gpu run --gpus 1 --timeout "$HOURS" --note "live-agent helper models (run_live.sh)" -- \
       scripts/serve_models.sh > "$HELPER_LOG" 2>&1 &
@@ -69,14 +70,22 @@ case "$mode" in
       [ $((SECONDS - t0)) -gt 1200 ] && { echo "helper models not ready after 20 min:"; tail -20 "$HELPER_LOG"; exit 1; }
       sleep 5
     done
-    echo "[run_live] helper models ready; starting TaoMate-H3 server on 6 GPUs (start-up ~2-3 min) ..."
-    gpu run --gpus 6 --timeout "$HOURS" --note "live-agent server (run_live.sh)" -- \
-      python3 -m live_agent.server.app --generator taomate_h3 --director-mode "$DIRECTOR" \
+    if [ "$mode" = "hybrid" ]; then
+      # real Qwen3 responder / ASR, placeholder video (no TaoMate GPUs needed); the placeholder always
+      # shows the locked action, so the simulated judge agrees with it
+      echo "[run_live] helper models ready; starting hybrid server (real LLM + ASR, placeholder video) ..."
+      python3 -m live_agent.server.app --generator mock --vlm-url mock --director-mode "$DIRECTOR" \
         --host "$HOST" --port "$PORT" "${extra[@]}" > "$SERVER_LOG" 2>&1 &
+    else
+      echo "[run_live] helper models ready; starting TaoMate-H3 server on 6 GPUs (start-up ~2-3 min) ..."
+      gpu run --gpus 6 --timeout "$HOURS" --note "live-agent server (run_live.sh)" -- \
+        python3 -m live_agent.server.app --generator taomate_h3 --director-mode "$DIRECTOR" \
+          --host "$HOST" --port "$PORT" "${extra[@]}" > "$SERVER_LOG" 2>&1 &
+    fi
     echo "[run_live] server log: $SERVER_LOG"
     pids+=($!)
     ;;
-  *) echo "usage: $0 demo|full"; exit 2 ;;
+  *) echo "usage: $0 demo|hybrid|full"; exit 2 ;;
 esac
 
 for _ in $(seq 1 900); do
@@ -85,7 +94,7 @@ for _ in $(seq 1 900); do
     break
   fi
   for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null || { echo "[run_live] a process exited during start-up"; exit 1; }; done
-  if [ "$mode" = "full" ] && grep -q "reservation lost" "$SERVER_LOG" "$HELPER_LOG" 2>/dev/null; then
+  if [ "$mode" != "demo" ] && grep -q "reservation lost" "$SERVER_LOG" "$HELPER_LOG" 2>/dev/null; then
     echo "[run_live] a GPU reservation was lost during start-up"; exit 1
   fi
   sleep 1

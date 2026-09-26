@@ -11,6 +11,10 @@ implementation status, measurements and known limits are in `docs/implementation
 # CPU only, no GPUs or model servers: mock video, rule-based responder, simulated judge
 scripts/run_live.sh demo
 
+# Real language/speech models on 1 GPU (Qwen3-8B responder, Qwen3-ASR), placeholder video: follows free-form
+# commands; use when the 6 video GPUs are busy
+scripts/run_live.sh hybrid
+
 # Full stack: TaoMate-H3 on 6 GPUs + Qwen3-8B / Qwen3-VL-8B / Qwen3-ASR on 1 GPU (via canhazgpu)
 scripts/run_live.sh full
 ```
