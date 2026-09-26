@@ -213,18 +213,20 @@ python3 -m pytest
 
 ## Not yet verified
 
-- **GPU re-check of rounds 5–11 (pending).** The last real-stack run (server path with erasure, all checks passing)
-  was at commit e9f6546+2. Later changes that touch the TaoMate path were verified only by the CPU fake-worker tests:
-  - the rank-PID gather at worker start-up;
-  - the `reset_done` acknowledgements;
-  - the `/dev/shm` sweeps;
-  - the warm-up timeout;
-  - the corrupt-payload path.
-
-  The re-check was queued but not run, because all suitable GPUs were held by other users. Run:
-  `gpu run --gpus 1 --timeout 6h --note "helper models" -- scripts/serve_models.sh` and then
-  `gpu run --gpus 6 --timeout 1h --note "server-path check" -- scripts/server_check.sh`.
-
+- **GPU re-check of rounds 5–11 (done, measured locally, 2026-09-26, commit c07e5ea).** The server path ran with
+  TaoMate-H3 on GPUs 0–5 and the headless client (tea, then a barge-in with wave, a private fact, an erasure):
+  - The first attempt **found a bug**: the expanded barge-in bridge note exceeded the compiler's 200-character
+    correction limit (314), and the resulting `PromptError` ended the session. Fixed: the bridge fits the limit, and
+    an invalid correction is an audit issue, never fatal.
+  - Second run, clean:
+    - Both actions were judge-verified, and each "好了。" was heard after its verdict.
+    - The bridges after the barge-ins fit the limit.
+    - The erasure completed with no pending targets, and neither "妹妹" nor "杭州" remains in the log.
+    - The verified confirmation was spoken after the erasure.
+    - 51 chunks were presented, with no gaps except around barge-ins.
+    - No `/dev/shm` files and no worker processes remained after shutdown.
+  - **Regression to chase:** recurring event-loop stalls of 0.24–0.37 s (five in 80 s). The earlier clean run had
+    none. They are under the watchdog's 0.5 s stack-capture threshold, so the cause is not identified yet.
 - **E1:** a judge-only pilot ran (24 × 5 trials on TaoMate-H3, `docs/e1_pilot.md`). It showed the VLM judge failing
   in both directions, so every capability stays `executed`. Next: two raters label the stratified sample
   (`scripts/e1_validate.py`), then full E1 runs with the validated judge.
