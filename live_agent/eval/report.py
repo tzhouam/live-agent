@@ -183,7 +183,12 @@ def condition_section(cond: str, sessions: list[SessionScore], n_boot: int = 400
     tf = [c for c in eff if c.tfmr is not None]
     if tf:
         km_row("TFMR (on-topic speech onset)", [c.tfmr for c in tf], [c.tfmr_event for c in tf],
-               max(c.tfmr for c in tf))
+               ScoringConfig().tfmr_horizon_s)
+        n_unobs = sum(c.tfmr_window_unobserved for c in tf)
+        if n_unobs:
+            L.append(f"\nTFMR censored before 15 s because the onset window was not fully observed: {n_unobs} "
+                     "chain(s): " + "; ".join(f"{c.session_id} {c.chain_id} ({c.outcome.value}, at {c.tfmr:.2f} s)"
+                                              for c in tf if c.tfmr_window_unobserved))
 
     # Success by deadline per kind (common D within each group). Every chain is followed to
     # its full deadline D (unobserved windows are excluded), so nothing is censored before D:

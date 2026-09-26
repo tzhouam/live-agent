@@ -490,3 +490,24 @@ Model gpt-6-sol, verified.
 Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit.
 
 **Documented residual (impl1 #36):** the narration guard is a pattern-based mitigation (explicit markers; action verb + perfective or resultative in one clause; questions exempt). It cannot recognise every paraphrase of completion. The outcome measure does not depend on it: false completion claims are counted from the recorded audio by the adjudicated claim sweep (FCR, H1b).
+
+### impl1i + impl2i: round 8
+
+Model gpt-6-sol, verified. The worker services and the M0 document were inlined this time.
+- **impl1i:** 43 of 45 prior findings RESOLVED or scoped, 2 PARTIAL, plus 4 new major findings. No blocking findings.
+- **impl2i:** 15 of 16 RESOLVED (the remaining one concerned diagnostic fields only), plus 4 new major findings.
+
+Codex found no issue in the inlined M0 figures or the prompt compiler; it confirmed that the M0 figures support short-run generator throughput only. Every finding was accepted and fixed in the next commit (all tests pass).
+- **Control path:**
+  - Action checks drive control independently of the (later) speech check.
+  - Action deadlines do not apply to content replies.
+  - Inputs keep the epoch from when they were received.
+  - Audit-withheld segments refuse their chain.
+  - Audibility of speech in a cut chunk is marked uncertain.
+  - `stop` awaits the generator close to completion.
+  - LOCK and onset events map to ground truth per served utterance.
+- **Evaluation:** `observation_end` is validated against the presented media; the TFMR window is checked.
+- **Memory:**
+  - Learned ledger entries need lineage.
+  - Pending-erasure receipts can be resumed and hold no erased content.
+  - A session start with a pending receipt fails closed.

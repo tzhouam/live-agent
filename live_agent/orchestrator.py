@@ -147,6 +147,7 @@ class Orchestrator:
         self._decisions_at_interrupt = 0
         self._locking: int | None = None
         self._qc_epoch = 0  # bumped by erasure: pending QC results are discarded
+        self._onset_uncertain: set[int] = set()
 
     @property
     def n_chunks(self) -> int:
@@ -154,6 +155,15 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
+        pending = getattr(self.memory, "pending_erasures", lambda: [])() if self.memory else []
+        if pending:
+            # An earlier erasure is not complete (e.g. a purge target failed): fail closed — no
+            # content is generated until an operator resumes it (MemoryBridge.resume_erasure).
+            self._ready.clear()
+            self.log.emit(EventType.ERROR, now(), where="erasure",
+                          error="pending erasure receipt(s): session paused (fail closed)",
+                          receipts=[getattr(r, "receipt_id", None) or (r.get("receipt_id") if isinstance(r, dict) else str(r))
+                                    for r in pending])
         await self.gen.start()
         self._tasks = [asyncio.create_task(self._guarded(self._lock_loop(), "lock_loop")),
                        asyncio.create_task(self._guarded(self._chunk_loop(), "chunk_loop")),
@@ -232,12 +242,15 @@ class Orchestrator:
         except asyncio.CancelledError as e:
             cancelled = cancelled or e
         self.log.emit(EventType.OBSERVATION_END, self.last_presented_end or now())
-        try:
-            await asyncio.shield(self.gen.close())
-        except asyncio.CancelledError as e:
-            cancelled = cancelled or e
-        finally:
-            self.log.close()
+        close = asyncio.ensure_future(self.gen.close())
+        while not close.done():  # finish worker shutdown even if this call is cancelled meanwhile
+            try:
+                await asyncio.shield(close)
+            except asyncio.CancelledError as e:
+                cancelled = cancelled or e
+            except Exception:  # noqa: BLE001 - close errors are logged by the adapter
+                break
+        self.log.close()
         if cancelled is not None:
             raise cancelled
 
@@ -329,7 +342,12 @@ class Orchestrator:
                 issues.append("erased_term")
         for term in self.cfg.blocklist:
             if term and (term in script.transcript or term in script.action):
-                script.transcript, script.action = "", ""  # withhold the whole segment
+                # withhold the whole segment; its chain is refused and nothing can verify it later
+                script.transcript, script.action, script.checks = "", "", []
+                for cid in script.chain_ids:
+                    self.director._fail_chain(cid, ChainStatus.REFUSED)
+                    self.director.events.refusals.append((cid, "audit: blocklisted content withheld"))
+                script.chain_ids = []
                 issues.append("blocklisted")
                 break
         if len(script.transcript) > 2 * CHARS_PER_REQUEST:
@@ -426,9 +444,9 @@ class Orchestrator:
         """Wall-clock deadline of the step this request serves: D (the check's ``deadline_s``,
         15 s for actions) from the chain origin, or from the previous step's verification."""
         c = self.director.chains.get(script.chain_ids[0]) if script.chain_ids else None
-        if c is None:
-            return None
-        d = next((q.deadline_s for q in script.checks if q.kind == "action"), 15.0)
+        d = next((q.deadline_s for q in script.checks if q.kind == "action"), None)
+        if c is None or d is None:
+            return None  # no action check: content/speech replies are not cut by an action deadline
         return self.director.step_base_t.get(c.chain_id, c.clock_origin) + d
 
     def _qc_budget(self, script: BlockScript) -> float:
@@ -471,11 +489,14 @@ class Orchestrator:
             return
         t = t_start + off
         self._onset_done.add(k)
+        uncertain = k in self._onset_uncertain
         self.log.emit(EventType.SPEECH_ONSET, t, request_index=k, chain_ids=script.chain_ids,
-                      onset_source="audio_energy")
+                      onset_source="audio_energy_cut" if uncertain else "audio_energy",
+                      revision=script.provenance.get("revision"), audibility="uncertain" if uncertain else "heard")
         for chain_id, step in self._claims.pop(k, []):
             self.log.emit(EventType.COMPLETION_CLAIM, t, request_index=k, chain_id=chain_id, step=step,
-                          text=script.transcript, revision=self._claim_rev.get(k))
+                          text=script.transcript, revision=self._claim_rev.get(k),
+                          audibility="uncertain" if uncertain else "heard")
 
     def _audible_before_cut(self, k: int, ci: int, t_start: float) -> None:
         """A request cut while chunk ``ci`` was playing: speech onset (and a completion claim)
@@ -485,6 +506,8 @@ class Orchestrator:
         chunk = next((c for c in self.chunks.get(k, []) if c.chunk_index == ci), None)
         off = audio_onset_s(chunk) if chunk is not None else None
         if off is not None and t_start + off <= now():
+            # energy onset within the played interval: *possibly* the line (a clink is also energy)
+            self._onset_uncertain.add(k)
             self._maybe_onset(k, ci, t_start)
 
     def _maybe_finish(self) -> None:
@@ -541,10 +564,10 @@ class Orchestrator:
             self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["frames_not_presented"],
                           painted_fraction=shown / total)
             return
-        action_verdicts: list[Verdict] = []
         revision, step = script.provenance.get("revision"), script.provenance.get("step")
         qc_epoch = self._qc_epoch
-        if self._qc_budget(script) <= 0 and script.chain_ids:
+        deadline = self._chain_deadline(script)  # action steps only (content has its own D, not enforced here)
+        if deadline is not None and deadline <= now() and script.chain_ids:
             # past the step's deadline: no check, no late control transition (verification,
             # step release, repair); the step has failed by the preregistered rule
             for cid in script.chain_ids:
@@ -552,44 +575,57 @@ class Orchestrator:
             self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["check_after_deadline"])
             self._drain_director_events(now())
             return
-        for q in script.checks:
-            if q.kind == "speech":
-                if self.speech_check is None:
-                    continue
-                call = asyncio.to_thread(self.speech_check.check, q, script.transcript, chunks, k, t_evidence)
-            elif self.judge is not None:
-                call = self.judge.judge(q, chunks, k, t_evidence)
-            else:
-                continue
-            budget = self._qc_budget(script)
-            if budget <= 0:
-                break  # the deadline passed during earlier checks of this request
-            try:
-                v = await asyncio.wait_for(call, timeout=budget)
-            except asyncio.TimeoutError:
-                # a stalled judge/ASR must not hold verification, repair or the session: abstain
-                v = Verdict(q.qid, k, VerdictLabel.UNKNOWN, 0.0, f"timeout after {budget:.2f} s",
-                            t_evidence, now())
-            if k in self.dropped or qc_epoch != self._qc_epoch:
-                return  # interrupted, or invalidated by an erasure (no late writes)
-            if q.kind == "action":
-                action_verdicts.append(v)
-            self.log.emit(EventType.VERDICT, v.t_verdict, request_index=k, qid=v.qid, kind=q.kind,
-                          label=v.label.value, confidence=v.confidence, rationale=v.rationale,
-                          t_evidence=t_evidence, source="online_monitor", chain_ids=script.chain_ids,
-                          revision=revision, step=step, qc_budget_s=budget,
-                          after_deadline=self._chain_deadline(script) is not None
-                          and v.t_verdict > self._chain_deadline(script))
-            self.director.ledger.record_verdict(k, v.qid, v.label.value)
-        if qc_epoch != self._qc_epoch or (self._qc_budget(script) <= 0 and script.chain_ids):
-            return  # erasure happened, or the verdict came after the deadline: no transition
-        intent = script.provenance.get("intent", "")
-        for chain_id in script.chain_ids:
-            if action_verdicts and all(v.label == VerdictLabel.COMPLIED for v in action_verdicts):
-                self.director.on_verified(chain_id, intent, k, t_evidence, revision=revision, step=step)
-            elif any(v.label == VerdictLabel.NOT_COMPLIED for v in action_verdicts):
-                await self._repair(chain_id, intent, script, action_verdicts, t_evidence)
-        self._drain_director_events(now())
+        actions = [q for q in script.checks if q.kind == "action"]
+        speech = [q for q in script.checks if q.kind == "speech"]
+        # 1) Action checks first: they alone drive control (verification, next step, repair).
+        action_verdicts: list[Verdict] = []
+        for q in actions:
+            if self.judge is None:
+                break
+            v = await self._one_check(q, self.judge.judge(q, chunks, k, t_evidence), k, t_evidence, deadline)
+            if v is None or k in self.dropped or qc_epoch != self._qc_epoch:
+                return  # interrupted, invalidated by an erasure, or past the deadline
+            action_verdicts.append(v)
+            self._log_verdict(script, q, v, t_evidence, deadline)
+        if qc_epoch != self._qc_epoch:
+            return
+        timely = deadline is None or all(v.t_verdict <= deadline for v in action_verdicts)
+        if action_verdicts and timely:
+            intent = script.provenance.get("intent", "")
+            for chain_id in script.chain_ids:
+                if all(v.label == VerdictLabel.COMPLIED for v in action_verdicts):
+                    self.director.on_verified(chain_id, intent, k, t_evidence, revision=revision, step=step)
+                elif any(v.label == VerdictLabel.NOT_COMPLIED for v in action_verdicts):
+                    await self._repair(chain_id, intent, script, action_verdicts, t_evidence)
+            self._drain_director_events(now())
+        # 2) Speech checks: logged evidence only; they never gate or expire the chain.
+        for q in speech:
+            if self.speech_check is None:
+                break
+            call = asyncio.to_thread(self.speech_check.check, q, script.transcript, chunks, k, t_evidence)
+            v = await self._one_check(q, call, k, t_evidence, None)
+            if v is None or k in self.dropped or qc_epoch != self._qc_epoch:
+                return
+            self._log_verdict(script, q, v, t_evidence, None)
+
+    async def _one_check(self, q, call, k: int, t_evidence: float, deadline: float | None) -> Verdict | None:
+        budget = self.cfg.qc_timeout_s if deadline is None else min(self.cfg.qc_timeout_s, deadline - now())
+        if budget <= 0:
+            call.close() if hasattr(call, "close") else None
+            return None
+        try:
+            return await asyncio.wait_for(call, timeout=budget)
+        except asyncio.TimeoutError:
+            # a stalled judge/ASR must not hold verification, repair or the session: abstain
+            return Verdict(q.qid, k, VerdictLabel.UNKNOWN, 0.0, f"timeout after {budget:.2f} s", t_evidence, now())
+
+    def _log_verdict(self, script: BlockScript, q, v: Verdict, t_evidence: float, deadline: float | None) -> None:
+        self.log.emit(EventType.VERDICT, v.t_verdict, request_index=script.request_index, qid=v.qid, kind=q.kind,
+                      label=v.label.value, confidence=v.confidence, rationale=v.rationale,
+                      t_evidence=t_evidence, source="online_monitor", chain_ids=script.chain_ids,
+                      revision=script.provenance.get("revision"), step=script.provenance.get("step"),
+                      after_deadline=deadline is not None and v.t_verdict > deadline)
+        self.director.ledger.record_verdict(script.request_index, v.qid, v.label.value)
 
     async def _repair(self, chain_id: str, intent: str, script: BlockScript, failed: list[Verdict],
                       t_evidence: float) -> None:
@@ -667,12 +703,17 @@ class Orchestrator:
         self._decisions_at_interrupt = self._decisions
         await self.transport.stop_playback()
 
-    async def on_user_utterance(self, utt: Utterance) -> dict[str, Any]:
-        return await self._on_user_utterance(utt)
+    async def on_user_utterance(self, utt: Utterance, epoch: int | None = None) -> dict[str, Any]:
+        """``epoch``: the input epoch when the utterance was *received* (queued inputs must not
+        inherit a later barge-in's epoch); default = now."""
+        return await self._on_user_utterance(utt, self._input_epoch if epoch is None else epoch)
 
-    async def _on_user_utterance(self, utt: Utterance) -> dict[str, Any]:
+    @property
+    def input_epoch(self) -> int:
+        return self._input_epoch
+
+    async def _on_user_utterance(self, utt: Utterance, epoch: int) -> dict[str, Any]:
         self.log.emit(EventType.UTTERANCE_END, utt.t_end, uid=utt.uid, speaker=utt.speaker, text=utt.text)
-        epoch = self._input_epoch
         # A forget request must not recall the very fact it asks to erase into the responder.
         memories, memory_ids, recall_id = None, [], None
         if self.memory and not _FORGET.search(utt.text):

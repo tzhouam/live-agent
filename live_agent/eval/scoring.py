@@ -228,6 +228,7 @@ class ChainOutcome:
     onset_ok: bool | None = None
     tfmr: float | None = None
     tfmr_event: bool = False
+    tfmr_window_unobserved: bool = False  # TFMR censored before the horizon at observation end
     steps_complied: int = 0
     n_claims: int = 0  # audible completion claims (all, incl. withdrawn chains)
     n_false_claims: int = 0
@@ -659,12 +660,16 @@ def rq2_problems(session: SessionLog, chains: dict[str, Chain],
 
 
 def observation_end(session: SessionLog) -> float | None:
-    """Last presented media time: the ``observation_end`` event, else the end of the last
-    presented chunk, else None (hand-built logs without media: no check)."""
+    """Last presented media time. The ``observation_end`` event is validated against the
+    presented media: the result is min(observation_end, end of the last presented chunk), so
+    a claimed observation past the last presented frame never counts. Without chunks: the
+    event, else None (hand-built logs without media: no check)."""
     ends = [float(e["t"]) for e in session.of_type("observation_end")]
+    ch = [float(e["t_end"]) for e in session.of_type("chunk_presented")]
+    if ends and ch:
+        return min(max(ends), max(ch))
     if ends:
         return max(ends)
-    ch = [float(e["t_end"]) for e in session.of_type("chunk_presented")]
     return max(ch) if ch else None
 
 
@@ -790,6 +795,11 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
             first = min(on) if on else None
             if first is not None and first <= cfg.tfmr_horizon_s:
                 rec.tfmr, rec.tfmr_event = first, True
+            elif obs_end is not None and o + cfg.tfmr_horizon_s > obs_end + _EPS:
+                # onset window not fully observed (e.g. a skipped chain near the end of the
+                # recording): censor at the actual observation end, labelled
+                rec.tfmr, rec.tfmr_event = max(0.0, obs_end - o), False
+                rec.tfmr_window_unobserved = True
             else:
                 rec.tfmr, rec.tfmr_event = cfg.tfmr_horizon_s, False
         # every audible completion claim, withdrawn chains included

@@ -833,6 +833,10 @@ def _load_ratings(path: Path, annotator: str, items: dict[str, Any]) -> dict[str
             r["v_watched"] = iv
             if need is not None:
                 r["t_review_needed"] = min(need, video_to_session(segs, v_len))
+                if r["label"] != "complied" and need > video_to_session(segs, v_len) + _EPS:
+                    # the deadline window runs past the presented media: this label cannot show
+                    # a fully observed failure (scoring treats it as insufficient observation)
+                    r["window_unobserved"] = True
     return out
 
 
@@ -1194,6 +1198,8 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
         for x in ("t_first_compliant", "t_evidence"):
             if v.get(x) is not None:
                 ev[x] = v[x]
+        if a.get("window_unobserved") or b.get("window_unobserved"):
+            ev["window_unobserved"] = True
         if step == 0:  # every chain: the response-onset decision (content: on-topic speech)
             ev["onset_reviewed"] = True
             ev["t_onset"] = v.get("t_onset")

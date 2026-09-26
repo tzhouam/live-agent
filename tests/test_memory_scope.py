@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -676,3 +677,118 @@ def test_confirmation_subject_must_be_the_clause_subject(mem):
             mem.confirm(e.id, turn.id)
     ok = mem.ingest_user_utterance(utt("对，我住在北京", session="c"), user_id=U).episode
     assert mem.confirm(e.id, ok.id).status == Status.ACTIVE
+
+
+# ---------------------------------------------------------------- round 8: #19 ledger lineage
+
+
+def test_learned_ledger_needs_lineage_and_derives_scope(mem):
+    ep = mem.ingest_user_utterance(utt("我妹妹住在巴黎"), user_id=U).episode
+    pub = mem.ingest_viewer_chat("主播换了发簪", "v1", S)
+    anchor = mem.add_ledger("persona wears a jade hairpin", CANON, canonical=True)
+    with pytest.raises(ValueError):
+        mem.add_ledger("postcard promised", public_scope(S))  # no lineage, not curated
+    with pytest.raises(ValueError):
+        mem.add_ledger("postcard promised", curated=True)  # curated needs an explicit scope
+    led = mem.add_ledger("persona promised a postcard", derived_from=[ep.id, pub.id])
+    assert led.scope == private_scope(U) and led.provenance.user_id == U
+    with pytest.raises(ScopeViolationError):
+        mem.add_ledger("persona promised a postcard", public_scope(S), derived_from=[ep.id])
+    p = mem.add_ledger("hairpin moved to the left", derived_from=[pub.id, anchor.id])
+    assert p.scope == public_scope(S)
+    with pytest.raises(ValueError):
+        mem.add_ledger("from canon only", derived_from=[anchor.id])  # needs an explicit scope
+    q = mem.add_ledger("from canon only", public_scope(S), derived_from=[anchor.id])
+    assert q.source_scopes == {public_scope(S), CANON}
+    c = mem.add_ledger("teacup on the left", public_scope(S), curated=True)
+    assert c.meta["curated"] and c.provenance.speaker == "operator"
+
+
+# ---------------------------------------------------------------- round 8: #20 pending-erasure receipts
+
+
+def _receipt_rows(mem):
+    return mem.db.execute("SELECT * FROM erasure_receipts").fetchall()
+
+
+def test_failed_purge_leaves_receipt_and_retry_by_id_resumes(tmp_path):
+    mem = MemoryStore(tmp_path / "r.sqlite", clock=Clock(), journal_mode="wal")
+    (f,) = mem.ingest_user_utterance(utt("我妹妹住在巴黎", session="s9"), user_id=U).facts
+    calls = {"rec": 0, "kv": 0}
+    state = {"rec_ok": False}
+
+    def recordings(report):
+        calls["rec"] += 1
+        if not state["rec_ok"]:
+            raise RuntimeError("storage offline")
+        assert "巴黎" in report.terms and not report.content_lost  # content still in memory
+        return "deleted"
+
+    def kv(report):
+        calls["kv"] += 1
+        return True
+
+    mem.register_purge_target("recordings", recordings)
+    mem.register_purge_target("kv", kv)
+    rep = mem.forget("巴黎", U)
+    assert not rep.complete and rep.pending_targets == ["recordings"] and rep.receipt_id
+    (row,) = _receipt_rows(mem)
+    persisted = " ".join(str(x) for x in row)
+    assert "巴黎" not in persisted and "妹妹" not in persisted  # no erased content on disk
+    assert f.id in json.loads(row["deleted_ids"]) and json.loads(row["sessions"]) == ["s9"]
+    assert mem.pending_erasures(U)[0]["pending"] == ["recordings"]
+    for p in tmp_path.iterdir():
+        assert "巴黎".encode() not in p.read_bytes(), p
+    # retry by record id: resumes the receipt instead of an empty new erasure
+    state["rec_ok"] = True
+    rep2 = mem.forget(f.id, U)
+    assert rep2.receipt_id == rep.receipt_id and rep2.complete and f.id in rep2.deleted_ids
+    assert calls == {"rec": 2, "kv": 1}  # acked targets are not re-run
+    assert _receipt_rows(mem) == [] and mem.pending_erasures(U) == []
+    mem.close()
+
+
+def test_retry_by_term_and_late_ack_resume_receipt(mem):
+    b = bridge(mem, mode="private", required_purge_targets=("recordings",))
+    b.on_user_utterance(utt("I work at Acme"))
+    rep = b.forget("Acme")
+    assert not rep.complete and len(b.pending_erasures()) == 1
+    again = b.forget("Acme")  # nothing matches any more: resumes the pending receipt
+    assert again.receipt_id == rep.receipt_id and not again.complete
+    assert b.acknowledge_erasure(again, "recordings", detail="deleted")  # persisted on ack
+    assert b.pending_erasures() == [] and _receipt_rows(mem) == []
+
+
+def test_receipt_survives_restart_with_content_lost(tmp_path):
+    from live_agent.memory import store as store_mod
+
+    path = tmp_path / "k.sqlite"
+    mem = MemoryStore(path, clock=Clock())
+    mem.ingest_user_utterance(utt("I work at Acme", session="s7"), user_id=U)
+    rep = mem.forget("Acme", U, require=["generator_state"])
+    rid = rep.receipt_id
+    mem.close()
+    store_mod._RECEIPT_CONTENT.clear()  # process restart: in-memory content is gone
+    mem2 = MemoryStore(path, clock=Clock())
+    (p,) = mem2.pending_erasures(U)
+    assert p["receipt_id"] == rid and p["content_lost"] and p["sessions"] == ["s7"]
+    with pytest.raises(PermissionError):
+        mem2.forget(rid, V, resume=rid)
+    seen = []
+    mem2.register_purge_target("generator_state", lambda r: seen.append(r) or "reset sessions " + ",".join(r.sessions))
+    r2 = mem2.forget(rid, U, resume=rid)
+    assert seen[0].content_lost and seen[0].terms == set() and seen[0].sessions == {"s7"}
+    assert r2.complete and mem2.pending_erasures(U) == []
+    mem2.close()
+
+
+def test_forget_async_writes_receipt_and_resume_async(tmp_path):
+    mem = MemoryStore(tmp_path / "q.sqlite", clock=Clock())
+    b = bridge(mem, mode="private", required_purge_targets=("recordings",))
+    b.on_user_utterance(utt("I work at Acme"))
+    rep = _run(b.forget_async("Acme"))
+    assert not rep.complete and b.pending_erasures()[0]["receipt_id"] == rep.receipt_id
+    mem.register_purge_target("recordings", lambda r: True)
+    rep2 = _run(b.resume_erasure_async(rep.receipt_id))
+    assert rep2.complete and b.pending_erasures() == []
+    mem.close()

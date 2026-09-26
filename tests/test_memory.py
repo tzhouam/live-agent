@@ -337,7 +337,7 @@ def test_fresh_public_session_after_private_leaks_nothing(mem):
     assert s.source_scopes == {public_scope(S)}
     # legacy row with a mixed public/private tag (written before the write-time check):
     # retrieval's SQL filter still excludes it
-    leg = mem.add_ledger("legacy postcard note", public_scope(S))
+    leg = mem.add_ledger("legacy postcard note", public_scope(S), curated=True)
     mem.db.execute("INSERT INTO record_scopes VALUES (?, ?)", (leg.id, private_scope(U)))
     assert leg.id not in {h.record.id for h in mem.retrieve("legacy postcard", "public", stream_id=S, k=50)}
     # SQL filter is the first gate: unfiltered candidate set excludes private rows
@@ -420,7 +420,7 @@ def test_forget_cascades_and_verify_erased_empty(tmp_path, clock):
     g = mem.record_generated_event("巴黎现在很冷吧？", "e1", private_scope(U))
     led = mem.add_ledger("postcard to sister", private_scope(U), derived_from=[f.id])
     # a public artifact repeating the user's data without lineage (mis-tagged): still erased
-    pub_led = mem.add_ledger("persona mentioned a postcard to 巴黎", public_scope(S))
+    pub_led = mem.add_ledger("persona mentioned a postcard to 巴黎", public_scope(S), curated=True)
     belief = mem.record_inference("sister speaks French", user_id=U, derived_from=[f.id])
     summ = mem.consolidate("e1")
     anchor = mem.add_ledger("canon anchor", CANON, canonical=True)
@@ -524,8 +524,8 @@ def test_episode_log_append_only(mem):
 
 
 def test_ledger_key_supersedes(mem):
-    a = mem.add_ledger("teacup on the left", public_scope(S), key="prop:teacup")
-    b = mem.add_ledger("teacup on the right", public_scope(S), key="prop:teacup")
+    a = mem.add_ledger("teacup on the left", public_scope(S), key="prop:teacup", curated=True)
+    b = mem.add_ledger("teacup on the right", public_scope(S), key="prop:teacup", curated=True)
     assert mem.get(a.id).status == Status.SUPERSEDED and mem.get(b.id).status == Status.ACTIVE
 
 

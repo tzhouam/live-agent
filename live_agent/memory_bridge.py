@@ -275,6 +275,17 @@ class MemoryBridge:
             self._ingested.pop(rid, None)
         return report
 
+    def pending_erasures(self) -> list[dict[str, Any]]:
+        """This user's unfinished erasures (see ``MemoryStore.pending_erasures``)."""
+        return self.store.pending_erasures(self.user_id)
+
+    def resume_erasure(self, receipt_id: str) -> ErasureReport:
+        """Retry the pending purge targets of an unfinished erasure (no new deletion)."""
+        return self.store.forget(receipt_id, self.user_id, resume=receipt_id)
+
+    async def resume_erasure_async(self, receipt_id: str) -> ErasureReport:
+        return await self.store.forget_async(receipt_id, self.user_id, resume=receipt_id)
+
     @staticmethod
     def acknowledge_erasure(report: ErasureReport, target: str, ok: bool = True, detail: str = "") -> bool:
         """Ack one purge target (e.g. after ``gen.reset()``); returns ``report.complete``."""

@@ -28,8 +28,10 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
+import threading
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -101,6 +103,11 @@ CREATE TABLE IF NOT EXISTS embeddings (
 );
 CREATE TABLE IF NOT EXISTS tombstones (
     id_hash TEXT NOT NULL, t REAL NOT NULL, reason TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS erasure_receipts (
+    id TEXT PRIMARY KEY, user_hash TEXT NOT NULL, t REAL NOT NULL, reason TEXT NOT NULL,
+    deleted_ids TEXT NOT NULL, kinds TEXT NOT NULL, sessions TEXT NOT NULL,
+    required TEXT NOT NULL, acks TEXT NOT NULL, content_lost INTEGER NOT NULL DEFAULT 0
 );
 CREATE VIEW IF NOT EXISTS generated_event_log AS
     SELECT id, text, scope, session_id, t, provenance FROM records WHERE kind = 'generated_event';
@@ -269,6 +276,12 @@ class ErasureReport:
     # in-memory only (never persisted): embeddings and texts of the erased content, for verification
     query_vecs: Any = field(default=None, repr=False)
     erased_texts: list[str] = field(default_factory=list, repr=False)
+    # pending-erasure receipt (persisted until every required target acks; see MemoryStore.forget)
+    receipt_id: str = ""
+    # True when resumed after the in-memory content (terms / texts) was lost: purge targets
+    # must then purge every session in ``sessions`` wholesale
+    content_lost: bool = False
+    _on_change: Any = field(default=None, repr=False, compare=False)
 
     def acknowledge(self, target: str, ok: bool = True, detail: str = "") -> None:
         if target not in self.required_targets:
@@ -277,6 +290,8 @@ class ErasureReport:
         if prev is not None and not prev.ok and ok:
             detail = f"{detail} (after earlier failure: {prev.detail})".strip()
         self.acks[target] = PurgeAck(bool(ok), detail)
+        if self._on_change is not None:
+            self._on_change(self)
 
     @property
     def pending_targets(self) -> list[str]:
@@ -303,6 +318,16 @@ def _atomic(fn: Callable[..., Any]) -> Callable[..., Any]:
             return fn(self, *a, **kw)
 
     return wrapper
+
+
+# Erased content needed to retry external purges (terms, texts, vectors) lives only in this
+# process's memory, keyed by (db path, receipt id); it is never written to disk.
+_RECEIPT_CONTENT: dict[tuple[str, str], dict[str, Any]] = {}
+_RECEIPT_LOCK = threading.Lock()
+
+
+def _user_hash(user_id: str) -> str:
+    return hashlib.sha256(user_id.encode()).hexdigest()
 
 
 def _hook_name(hook: Callable[..., Any]) -> str:
@@ -356,6 +381,8 @@ class MemoryStore:
             "viewer_max_len": viewer_max_len, "recency_tau_s": recency_tau_s, "weights": weights}
         self._erasing = False
         self._async_lock: asyncio.Lock | None = None
+        self._content_key = os.path.abspath(self.path) if self.path != ":memory:" else f":memory:{id(self)}"
+        self._deferred_receipts: list[ErasureReport] = []
         self.clock = clock
         self.echo_threshold = echo_threshold
         # estimate (HashingEmbedder cosine), not calibrated: see forget()
@@ -910,32 +937,65 @@ class MemoryStore:
     def add_ledger(
         self,
         text: str,
-        scope: str,
+        scope: str | None = None,
         *,
         canonical: bool = False,
         key: str | None = None,
         derived_from: Sequence[str] = (),
         session_id: str = "",
         user_id: str = "",
+        curated: bool = False,
     ) -> Record:
         """Persona / world continuity entry. Canonical anchors are immutable and canon-only.
 
-        A non-canonical entry with a ``key`` supersedes the previous entry with the same key
-        in the same scope (bi-temporal: old one keeps ``valid_to``).
+        Learned (non-canonical) entries must name their sources (``derived_from``); their
+        scope is derived from the sources, the most restrictive one wins (a user's private
+        scope > a public stream), and an explicit ``scope`` may only be narrower. Sources
+        that are all canon give no scope: pass one. Entries without sources are allowed
+        only as operator-authored ``curated=True`` entries with an explicit scope (never a
+        public default). A non-canonical entry with a ``key`` supersedes the previous entry
+        with the same key in the same scope (bi-temporal: old one keeps ``valid_to``).
         """
-        if canonical and scope != CANON:
-            raise ValueError("canonical anchors must have scope 'canon'")
-        if not canonical and scope == CANON:
-            raise ValueError("only canonical anchors live in scope 'canon'")
+        parents = [self._require(pid) for pid in dict.fromkeys(derived_from)]
+        if canonical:
+            if scope not in (None, CANON):
+                raise ValueError("canonical anchors must have scope 'canon'")
+            scope = CANON
+        else:
+            if scope == CANON:
+                raise ValueError("only canonical anchors live in scope 'canon'")
+            if not parents:
+                if not curated:
+                    raise ValueError("learned ledger entries require derived_from (source lineage); "
+                                     "operator-authored entries pass curated=True and an explicit scope")
+                if scope is None:
+                    raise ValueError("curated ledger entries need an explicit scope")
+            else:
+                scopes = frozenset().union(*(p.source_scopes for p in parents))
+                privs = sorted(x for x in scopes if is_private(x))
+                pubs = sorted(x for x in scopes if x.startswith("public:"))
+                if len(privs) > 1:
+                    raise ScopeViolationError(f"ledger entry would mix private scopes {privs}")
+                derived = privs[0] if privs else (pubs[0] if pubs else None)
+                if scope is None:
+                    if derived is None:
+                        raise ValueError("ledger entry derived only from canon needs an explicit scope")
+                    scope = derived
+                elif derived is not None and scope != derived and not (is_private(scope) and not is_private(derived)):
+                    raise ScopeViolationError(f"ledger scope {scope!r} is wider than its sources ({derived!r})")
+            validate_scope(scope)
         if key and not canonical:
             old = self._load(self._ids(
                 "SELECT id FROM records WHERE kind = 'ledger' AND scope = ? AND status = 'active'"
                 " AND json_extract(meta, '$.key') = ?", (scope, key)))
             self._supersede(old)
-        prov = Provenance(speaker="system", session_id=session_id, timestamp=self.clock(), user_id=user_id)
+        if not user_id and is_private(scope):
+            user_id = scope.split(":", 1)[1]
+        prov = Provenance(speaker="operator" if curated else "system", session_id=session_id,
+                          timestamp=self.clock(), user_id="" if canonical else user_id)
         return self.add_record(
-            Kind.LEDGER, scope, text, ClaimType.SYSTEM_OBSERVATION, prov, derived_from=derived_from,
-            immutable=canonical, meta={"key": key, "canonical": canonical},
+            Kind.LEDGER, scope, text, ClaimType.SYSTEM_OBSERVATION, prov, derived_from=[p.id for p in parents],
+            immutable=canonical, meta={"key": key, "canonical": canonical, "curated": curated},
         )
 
     @_atomic
@@ -1408,8 +1468,18 @@ class MemoryStore:
         *,
         regenerate: bool | Summarizer = True,
         require: Iterable[str] = (),
+        resume: str | None = None,
     ) -> ErasureReport:
         """Physically erase a fact (by record id / Record) or everything matching a query term.
+
+        Pending-erasure receipts: every erasure writes a receipt (ids, kinds, sessions,
+        required targets, ok flags; **no erased content**) that stays until every required
+        target acked ok. ``resume=<receipt id>`` retries its pending targets instead of
+        erasing anew; a record-id target that an unfinished receipt already deleted (or a
+        term it erased, while nothing matches it any more) resumes that receipt automatically. The erased terms / texts needed by retries are kept in
+        this process's memory only; if they are gone (restart), the resumed report has
+        ``content_lost=True`` and purge targets must purge the listed sessions wholesale.
+        See :meth:`pending_erasures`.
 
         Cascade: matched records -> source episodes (id link) -> every erasable record
         mentioning the value/term (this user's records of any kind, and public records
@@ -1426,9 +1496,108 @@ class MemoryStore:
         acked ok; a hook error never un-deletes anything.
         """
         hook_names = self._purge_hook_names()
+        resume = resume or self._receipt_for_target(target, user_id)
+        if resume:
+            return self._run_purge_hooks(self._resume_report(resume, user_id), hook_names)
         report = self._forget_db(target, user_id, reason, regenerate=regenerate,
                                  require=self._required_names(hook_names, require))
         return self._run_purge_hooks(report, hook_names)
+
+    # ------------------------------------------------------------------ erasure receipts
+
+    def pending_erasures(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """Unfinished erasures (receipt id, time, sessions, pending targets, content_lost)."""
+        sql, args = "SELECT * FROM erasure_receipts", []
+        if user_id is not None:
+            sql, args = sql + " WHERE user_hash = ?", [_user_hash(user_id)]
+        out = []
+        for r in self.db.execute(sql + " ORDER BY t", args).fetchall():
+            acks = json.loads(r["acks"])
+            with _RECEIPT_LOCK:
+                lost = bool(r["content_lost"]) or (self._content_key, r["id"]) not in _RECEIPT_CONTENT
+            out.append({"receipt_id": r["id"], "t": r["t"], "sessions": json.loads(r["sessions"]),
+                        "pending": [x for x in json.loads(r["required"]) if not acks.get(x)],
+                        "content_lost": lost})
+        return out
+
+    def _receipt_for_target(self, target: str | Record, user_id: str) -> str | None:
+        rid = target.id if isinstance(target, Record) else str(target).strip()
+        if not rid or self.get(rid) is not None:
+            return None
+        rows = self.db.execute("SELECT id, deleted_ids FROM erasure_receipts WHERE user_hash = ? ORDER BY t DESC",
+                               [_user_hash(user_id)]).fetchall()
+        for r in rows:  # a record id this receipt deleted
+            if rid in json.loads(r["deleted_ids"]):
+                return r["id"]
+        if rows and not self._content_match(rid, user_id):  # a term it erased (content in memory)
+            with _RECEIPT_LOCK:
+                for r in rows:
+                    content = _RECEIPT_CONTENT.get((self._content_key, r["id"]))
+                    if content and rid.lower() in {t.lower() for t in content["terms"]}:
+                        return r["id"]
+        return None
+
+    def _write_receipt(self, report: ErasureReport) -> None:
+        report.receipt_id = report.receipt_id or new_id("erasure")
+        with _RECEIPT_LOCK:
+            _RECEIPT_CONTENT[(self._content_key, report.receipt_id)] = {
+                "terms": set(report.terms), "erased_texts": list(report.erased_texts),
+                "query_vecs": report.query_vecs}
+        self.db.execute(
+            "INSERT OR REPLACE INTO erasure_receipts (id, user_hash, t, reason, deleted_ids, kinds, sessions,"
+            " required, acks, content_lost) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (report.receipt_id, _user_hash(report.user_id), report.t, report.reason, json.dumps(report.deleted_ids),
+             json.dumps(report.kinds), json.dumps(sorted(report.sessions)), json.dumps(report.required_targets),
+             json.dumps({k: a.ok for k, a in report.acks.items()}), int(report.content_lost)))
+        self._commit()
+
+    def _save_receipt(self, report: ErasureReport) -> None:
+        """Persist ack state (ok flags only; details can name content); drop when complete."""
+        if not report.receipt_id:
+            return
+        if self._erasing:  # another erasure holds the DB: flushed when it finishes
+            self._deferred_receipts.append(report)
+            return
+        if report.complete:
+            self.db.execute("DELETE FROM erasure_receipts WHERE id = ?", [report.receipt_id])
+            with _RECEIPT_LOCK:
+                _RECEIPT_CONTENT.pop((self._content_key, report.receipt_id), None)
+        else:
+            self.db.execute("UPDATE erasure_receipts SET required = ?, acks = ?, content_lost = ? WHERE id = ?",
+                            (json.dumps(report.required_targets),
+                             json.dumps({k: a.ok for k, a in report.acks.items()}), int(report.content_lost),
+                             report.receipt_id))
+        self.db.commit()
+        self._truncate_journals()  # receipt pages only, but keep the journals as clean as after the purge
+
+    def _flush_deferred_receipts(self) -> None:
+        pending, self._deferred_receipts = self._deferred_receipts, []
+        for r in pending:
+            self._save_receipt(r)
+
+    def _resume_report(self, receipt_id: str, user_id: str) -> ErasureReport:
+        row = self.db.execute("SELECT * FROM erasure_receipts WHERE id = ?", [receipt_id]).fetchone()
+        if row is None:
+            raise KeyError(f"no pending erasure receipt {receipt_id!r}")
+        if row["user_hash"] != _user_hash(user_id):
+            raise PermissionError("erasure receipt does not belong to this user")
+        with _RECEIPT_LOCK:
+            content = _RECEIPT_CONTENT.get((self._content_key, receipt_id))
+        acks = json.loads(row["acks"])
+        report = ErasureReport(
+            user_id=user_id, reason=row["reason"], t=row["t"], deleted_ids=json.loads(row["deleted_ids"]),
+            kinds=json.loads(row["kinds"]), sessions=set(json.loads(row["sessions"])),
+            terms=set(content["terms"]) if content else set(), required_targets=json.loads(row["required"]),
+            acks={k: PurgeAck(bool(v), "from receipt") for k, v in acks.items()},
+            erased_texts=list(content["erased_texts"]) if content else [],
+            query_vecs=content["query_vecs"] if content else None,
+            receipt_id=receipt_id, content_lost=bool(row["content_lost"]) or content is None)
+        if MEMORY_DB_TARGET in report.pending_targets:
+            physical = self._physical_purge()
+            report.verification = self.verify_erasure(report, raw_file=True)
+            ok = report.verification.ok and not physical
+            report.acknowledge(MEMORY_DB_TARGET, ok, "re-verified" if ok else f"residue: {report.verification.hits[:10]}")
+        return report
 
     @property
     def erasing(self) -> bool:
@@ -1446,6 +1615,7 @@ class MemoryStore:
         *,
         regenerate: bool | Summarizer = True,
         require: Iterable[str] = (),
+        resume: str | None = None,
     ) -> ErasureReport:
         """:meth:`forget` without blocking the event loop (VACUUM / checkpoint can be slow).
 
@@ -1462,6 +1632,9 @@ class MemoryStore:
         async with self._async_lock:
             hook_names = self._purge_hook_names()
             required = self._required_names(hook_names, require)
+            resume = resume or self._receipt_for_target(target, user_id)
+            if resume:  # retry of external purges; DB work only if memory_db is still pending
+                return self._run_purge_hooks(self._resume_report(resume, user_id), hook_names)
             if self.path == ":memory:":
                 report = self._forget_db(target, user_id, reason, regenerate=regenerate, require=required)
             else:
@@ -1474,6 +1647,7 @@ class MemoryStore:
                                                      regenerate, required, mode)
                 finally:
                     self._erasing = False
+                    self._flush_deferred_receipts()
             return self._run_purge_hooks(report, hook_names)
 
     def _forget_in_worker(self, target: str | Record, user_id: str, reason: str,
@@ -1566,6 +1740,7 @@ class MemoryStore:
                 new = self.consolidate(s, summ)
                 if new is not None:
                     report.regenerated.append(new.id)
+        self._write_receipt(report)  # before the purge, so the journals are cleaned after it too
         physical = self._physical_purge()
         # raw-file verification is mandatory for a file-backed DB before acking memory_db
         report.verification = self.verify_erasure(report, raw_file=True)
@@ -1577,7 +1752,10 @@ class MemoryStore:
 
     def _run_purge_hooks(self, report: ErasureReport,
                          hook_names: list[tuple[str, Callable[[ErasureReport], Any]]]) -> ErasureReport:
+        report._on_change = self._save_receipt  # later acks (e.g. the orchestrator's) are persisted
         for name, hook in hook_names:
+            if name in report.acks and report.acks[name].ok:
+                continue  # acked before (resumed receipt)
             try:
                 ack = hook(report)
             except Exception as e:  # noqa: BLE001 -- any failure leaves the erasure incomplete (never undone)
@@ -1588,8 +1766,9 @@ class MemoryStore:
                 continue  # the hook acknowledged through the report itself
             report.acknowledge(name, bool(ack), ack if isinstance(ack, str) else ("" if ack else "no ack"))
         if not report.complete:
-            log.error("erasure for %s incomplete; pending purge targets %s", hashlib.sha256(report.user_id.encode())
-                      .hexdigest()[:12], report.pending_targets)
+            log.error("erasure for %s incomplete; pending purge targets %s (receipt %s)",
+                      _user_hash(report.user_id)[:12], report.pending_targets, report.receipt_id)
+        self._save_receipt(report)
         return report
 
     def _erasure_query_vecs(self, ids: Iterable[str], terms: Iterable[str]) -> np.ndarray | None:
@@ -1654,15 +1833,25 @@ class MemoryStore:
 
     def _physical_purge(self) -> str:
         """Make an erasure physical: commit, VACUUM (rebuilds the file; freed pages were
-        already zeroed by ``secure_delete``), then in WAL mode checkpoint and TRUNCATE the
-        WAL so no old frame keeps erased bytes; in PERSIST / TRUNCATE journal mode switch
-        to DELETE and back so the old rollback journal file is removed. Returns "" on
+        already zeroed by ``secure_delete``), then :meth:`_truncate_journals`. Returns "" on
         success, else the problem."""
         if self.path == ":memory:":
             return ""
         try:
             self.db.commit()
             self.db.execute("VACUUM")
+        except sqlite3.Error as e:
+            return f"sqlite error: {e!r}"
+        return self._truncate_journals()
+
+    def _truncate_journals(self) -> str:
+        """WAL mode: checkpoint and TRUNCATE the WAL so no old frame keeps erased bytes;
+        PERSIST / TRUNCATE journal mode: switch to DELETE and back so the old rollback
+        journal file is removed. Returns "" on success, else the problem."""
+        if self.path == ":memory:":
+            return ""
+        try:
+            self.db.commit()
             mode = self.journal_mode
             if mode in ("persist", "truncate"):
                 self.db.execute("PRAGMA journal_mode = DELETE")

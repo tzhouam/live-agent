@@ -325,3 +325,37 @@ def test_expired_step_fails_without_late_transitions():
     assert chain.status == ChainStatus.FAILED
     assert not d.on_verified(chain.chain_id, "drink_tea", 0, 99.0, revision=0, step=0)  # no late release
     assert not d.held.get(chain.chain_id)
+
+
+def test_blocklisted_segment_refuses_its_chain_and_drops_checks():
+    from live_agent.generator.mock import MockGenerator
+    from live_agent.orchestrator import Orchestrator, OrchestratorConfig
+    from live_agent.sim import SimClient
+
+    d = make(TEA)
+    say(d, "喝口茶")
+    orch = Orchestrator(MockGenerator(speed=50.0), d, LockScheduler(), SimClient(speed=50.0),
+                        cfg=OrchestratorConfig(blocklist=("茶",)))
+    s = d.next_script(0)
+    orch._audit(s)
+    assert not s.checks and not s.chain_ids and not s.transcript
+    assert next(iter(d.chains.values())).status == ChainStatus.REFUSED
+
+
+def test_queued_input_keeps_its_receipt_epoch():
+    import asyncio as aio
+
+    from live_agent.generator.mock import MockGenerator
+    from live_agent.orchestrator import Orchestrator
+    from live_agent.sim import SimClient
+
+    async def main():
+        d = make(TEA)
+        orch = Orchestrator(MockGenerator(speed=50.0), d, LockScheduler(), SimClient(speed=50.0))
+        received_at = orch.input_epoch  # stamped when the input arrived
+        await orch.on_speech_start()  # a newer barge-in before the queued input is processed
+        await orch.on_user_utterance(Utterance("u1", "user", "喝口茶", 0.0), epoch=received_at)
+        return d
+
+    d = aio.run(main())
+    assert not d.chains  # the superseded decision did not change the plan

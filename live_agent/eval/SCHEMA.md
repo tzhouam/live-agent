@@ -82,8 +82,9 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   `on_topic: true` does (diagnostic scoring also accepts `script` onsets as unverified).
 * **`capacity_skip`** carries `chain_id`, `t` and `revision` when admission control
   displaces an open chain.
-* **`observation_end`**: last presented media time of the session. Without it the scorer
-  falls back to the end of the last `chunk_presented`.
+* **`observation_end`**: last presented media time of the session. The scorer validates
+  it against the presented media and uses min(`observation_end`, end of the last
+  `chunk_presented`). Without the event it uses the last chunk end.
 
 ## Time fields on verdicts
 
@@ -157,6 +158,9 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   **Positive marks** need continuous coverage from the request to the mark: the first
   compliant frame, the response onset, and the answer end of a content "done". A
   repair-target "done" needs coverage from the window start to its first compliant frame.
+  A negative label whose deadline window extends past the presented media is merged with
+  `window_unobserved: true`; scoring treats the chain as `insufficient_observation`, not
+  as a fully observed failure.
   A sweep must cover the whole recording. If either primary review is too short, the item
   stays **unresolved and must be relabelled**; the arbiter never replaces an insufficient
   primary review.
@@ -267,7 +271,10 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   sensitivity analyses.
 * **TVC** (action chains): first compliant frame − origin, censored at 15 s.
   **TFMR** (every chain kind): first accepted `speech_onset` − origin, censored at 15 s.
-  Primary uses the adjudicated meaningful-response onset.
+  Primary uses the adjudicated meaningful-response onset. If no onset was seen and the
+  onset window (origin + 15 s) extends past the observation end, as for a chain skipped
+  near the end, TFMR is censored at the observation end (`tfmr_window_unobserved`) and
+  listed. The chain's outcome is unchanged.
   **Visual-ack latency**: `visual_ack.t` minus the utterance's `t_end`, or its `t_start`
   for a barge-in.
   **Barge-in stop latency**: the first `playback_stop` at or after a barge-in

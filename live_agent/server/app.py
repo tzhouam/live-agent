@@ -230,7 +230,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 """Utterances are processed in order, off the receive loop, so presentation acks
                 and barge-in keep being read (and timestamped) while ASR / the LLM run."""
                 while True:
-                    kind, payload, t_end = await inputs.get()
+                    kind, payload, t_end, epoch = await inputs.get()  # epoch stamped at receipt
                     try:
                         if kind == "audio":
                             from live_agent.asr import decode_audio_bytes
@@ -244,7 +244,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                             # t_end = when the user stopped speaking / sent (client clock, mapped), so
                             # ASR and queueing delay count toward the deadlines (proposal §7)
                             await orch.on_user_utterance(Utterance(new_id("utt"), "user", text, t_end,
-                                                                   session_id=session_id, scope=mode))
+                                                                   session_id=session_id, scope=mode),
+                                                         epoch=epoch)
                     except Exception:  # noqa: BLE001
                         log.exception("input handling failed")
 
@@ -268,7 +269,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                     break
                 if msg.get("bytes") is not None:
                     if asr is not None:
-                        inputs.put_nowait(("audio", msg["bytes"], audio_end))
+                        inputs.put_nowait(("audio", msg["bytes"], audio_end, orch.input_epoch))
                     continue
                 data = json.loads(msg["text"])
                 t = data.get("type")
@@ -279,7 +280,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 elif t == "text" and data.get("text", "").strip():
                     # a typed instruction interrupts like speech does (before its LLM work is queued)
                     await orch.on_speech_start()
-                    inputs.put_nowait(("text", data["text"].strip(), transport._to_server(data)))
+                    inputs.put_nowait(("text", data["text"].strip(), transport._to_server(data), orch.input_epoch))
                 elif t == "audio_end":  # precedes the recorded audio bytes
                     audio_end = transport._to_server(data)
                 elif t == "ping":

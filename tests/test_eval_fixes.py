@@ -1129,6 +1129,7 @@ def _rq2_revised_log():
     L.recs[0]["chunks_per_request"] = 1
     L.new(0.0, chain="c1")
     L.ev(type="chunk_presented", request=3, chunk=0, t_start=8.0, t_end=12.0)
+    L.ev(type="chunk_presented", request=9, chunk=0, t_start=55.0, t_end=60.0)  # media through 60 s
     L.ev(type="observation_end", t=60.0)
     L.ev(type="repair_assignment", chain_id="c1", arm="repeat", failure_request=1, target_request=3, t=6.0,
          arm_drawn=True, revision=0)
@@ -1332,3 +1333,44 @@ def test_pairing_validates_script_and_criteria_against_registered_task():
         build_report(bad, n_boot=100, **reg)
     with pytest.raises(PairingError, match="task scripts not validated"):
         build_report(ss, n_boot=100, expected=_exp(12, 2))
+
+
+# --------------------------------------------------------------------------- round 8 (impl2i)
+
+
+def test_observation_end_is_validated_against_presented_media():
+    L = Log()
+    L.new(0.0)
+    L.verdict(None, label="not_complied")
+    L.ev(type="chunk_presented", request=0, chunk=0, t_start=0.0, t_end=10.0)
+    L.ev(type="observation_end", t=30.0)  # claims 30 s, but media stops at 10 s
+    c = L.one()
+    assert c.outcome == Outcome.INSUFFICIENT_OBSERVATION and "observed to 10.00" in c.missing
+
+
+def test_merge_marks_negative_labels_whose_window_lacks_media(tmp_path):
+    log, batch, items, sw = _one_item(tmp_path, name="t", length=12.0)  # window needs 18 s
+    j, sk = items[0]["id"], f"{sw['id']}/0"
+    lab = {f"{j}/0": {"v_onset": 4.0, "label": "not_complied", "v_watched": [[0.0, 12.0]]},
+           sk: dict(SWEEP_NONE, v_watched=[[0.0, 12.0]])}
+    merge(batch, [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
+    (v,) = [e for e in load_session(log).of_type("verdict") if e.get("item") == j]
+    assert v["window_unobserved"] is True
+    assert score_session(load_session(log)).chains[0].outcome == Outcome.INSUFFICIENT_OBSERVATION
+
+
+def test_tfmr_censored_at_observation_end_for_skipped_chain():
+    L = Log()
+    L.new(0.0, chain="c1")
+    L.verdict(3.0, chain="c1")
+    L.new(20.0, chain="c2")  # opened late, then skipped
+    L.ev(type="capacity_skip", chain_id="c2", t=21.0)
+    L.verdict(None, chain="c2", label="not_complied", onset_reviewed=True)  # no onset seen
+    L.ev(type="chunk_presented", request=0, chunk=0, t_start=0.0, t_end=26.0)
+    L.ev(type="observation_end", t=26.0)  # c2's onset window needs 35 s
+    sc = L.score()
+    c2 = next(c for c in sc.chains if c.chain_id == "c2")
+    assert c2.outcome == Outcome.CAPACITY_SKIPPED and c2.in_primary  # failure outcome kept
+    assert c2.tfmr == pytest.approx(6.0) and not c2.tfmr_event and c2.tfmr_window_unobserved
+    md = build_report([sc], n_boot=50)
+    assert "onset window was not fully observed: 1 chain(s)" in md

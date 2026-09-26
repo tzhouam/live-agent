@@ -110,7 +110,7 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
         dchains = script.chain_ids if script is not None else []
         if ev.type == EventType.LOCK and k is not None:
             out.append({"type": "lock", "t": ts(ev.t), "request": k,
-                        "chain_ids": [dchain_to_gt[c] for c in dchains if c in dchain_to_gt],
+                        "chain_ids": [g for g in (gt_of(c, d.get("revision")) for c in dchains) if g],
                         "plan_version": d.get("plan_version")})
         elif ev.type == EventType.CHUNK_PRESENTED:
             out.append({"type": "chunk_presented", "request": k, "chunk": ev.chunk_index,
@@ -140,7 +140,7 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
                 out.append(c)
         elif ev.type == EventType.SPEECH_ONSET:
             for cid in d.get("chain_ids", []):
-                gt = dchain_to_gt.get(cid)
+                gt = gt_of(cid, d.get("revision"))
                 if gt:  # scripted for this chain; on-topic only a human can confirm
                     out.append({"type": "speech_onset", "t": ts(ev.t), "on_topic": None, "source": "script",
                                 "onset_source": d.get("onset_source"), "chain_id": gt, "request": k})
