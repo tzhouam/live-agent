@@ -3,6 +3,7 @@
 #
 #   scripts/run_live.sh demo        # CPU only: mock video generator + rule-based responder (no GPUs, no models)
 #   scripts/run_live.sh hybrid      # real Qwen3-8B responder + Qwen3-ASR (1 GPU), placeholder video
+#   scripts/run_live.sh packed      # TaoMate-H3 (colocated teacher) + all helper models on 4 GPUs
 #   scripts/run_live.sh full        # TaoMate-H3 (6 GPUs) + Qwen3-8B / Qwen3-VL-8B / Qwen3-ASR (1 GPU)
 #
 # Options (env): PORT (default 8200), HOST (default 127.0.0.1), HOURS (GPU reservation, default 2h),
@@ -53,6 +54,18 @@ case "$mode" in
       --director-mode "$DIRECTOR" --host "$HOST" --port "$PORT" "${extra[@]}" &
     pids+=($!)
     ;;
+  packed)
+    command -v gpu >/dev/null || { echo "canhazgpu ('gpu') not found"; exit 1; }
+    for p in 8101 8102 8103; do port_free $p || { echo "helper port $p already in use (models running?)"; exit 1; }; done
+    : > "$SERVER_LOG"
+    echo "[run_live] packed: TaoMate-H3 + helper models together on 4 GPUs (start-up ~6-8 min) ..."
+    sel=(--gpus 4); [ -n "${GPU_IDS:-}" ] && sel=(--gpu-ids "$GPU_IDS")  # pin cards (e.g. avoid shared ones)
+    gpu run "${sel[@]}" --timeout "$HOURS" --note "live-agent packed (TaoMate-H3 + helpers, run_live.sh)" -- \
+      scripts/packed_stack.sh --director-mode "$DIRECTOR" --host "$HOST" --port "$PORT" "${extra[@]}" \
+      > "$SERVER_LOG" 2>&1 &
+    pids+=($!)
+    echo "[run_live] server log: $SERVER_LOG"
+    ;;
   hybrid|full)
     command -v gpu >/dev/null || { echo "canhazgpu ('gpu') not found"; exit 1; }
     for p in 8101 8102 8103; do port_free $p || { echo "helper port $p already in use (models running?)"; exit 1; }; done
@@ -85,10 +98,10 @@ case "$mode" in
     echo "[run_live] server log: $SERVER_LOG"
     pids+=($!)
     ;;
-  *) echo "usage: $0 demo|hybrid|full"; exit 2 ;;
+  *) echo "usage: $0 demo|hybrid|packed|full"; exit 2 ;;
 esac
 
-for _ in $(seq 1 900); do
+for _ in $(seq 1 "${READY_TIMEOUT:-900}"); do  # seconds; raise it when gpu run may queue for GPUs
   if curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
     echo "[run_live] ready: http://$HOST:$PORT   (Ctrl-C to stop)"
     break
