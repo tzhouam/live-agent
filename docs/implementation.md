@@ -213,6 +213,18 @@ python3 -m pytest
 
 ## Not yet verified
 
+- **GPU re-check of rounds 5–11 (pending).** The last real-stack run (server path with erasure, all checks passing)
+  was at commit e9f6546+2. Later changes that touch the TaoMate path were verified only by the CPU fake-worker tests:
+  - the rank-PID gather at worker start-up;
+  - the `reset_done` acknowledgements;
+  - the `/dev/shm` sweeps;
+  - the warm-up timeout;
+  - the corrupt-payload path.
+
+  The re-check was queued but not run, because all suitable GPUs were held by other users. Run:
+  `gpu run --gpus 1 --timeout 6h --note "helper models" -- scripts/serve_models.sh` and then
+  `gpu run --gpus 6 --timeout 1h --note "server-path check" -- scripts/server_check.sh`.
+
 - **E1:** a judge-only pilot ran (24 × 5 trials on TaoMate-H3, `docs/e1_pilot.md`). It showed the VLM judge failing
   in both directions, so every capability stays `executed`. Next: two raters label the stratified sample
   (`scripts/e1_validate.py`), then full E1 runs with the validated judge.
