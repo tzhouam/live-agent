@@ -293,7 +293,7 @@ def test_chunk_lookup_for_compliance_time():
     L.new(0.0)
     L.ev(type="chunk_presented", request=2, chunk=1, t_start=7.0, t_end=8.4)
     L.ev(type="verdict", chain_id="c1", source="adjudicated", label="complied",
-         request=2, chunk=1, t_evidence=8.4)
+         request=2, chunk=1, t_evidence=8.4, onset_reviewed=True)
     assert L.one().tvc == pytest.approx(7.0)
 
 
@@ -375,7 +375,7 @@ def test_writer_roundtrip(tmp_path):
         w.write({"type": "chain_annotation", "uid": "u1", "action": "new", "chain_id": "c",
                  "kind": "action"})
         w.write({"type": "verdict", "chain_id": "c", "source": "adjudicated", "label": "complied",
-                 "t_evidence": 5.0})
+                 "t_evidence": 5.0, "onset_reviewed": True})
     s = load_session(p)
     assert "喝茶" in p.read_text(encoding="utf-8")
     assert score_session(s).chains[0].success
@@ -509,7 +509,7 @@ def test_sim_user_emits_annotations_and_scores():
     recs = [{"type": "session", "session_id": "s1", "condition": "A2", "task_id": task.task_id,
              "seed": 0}, *events,
             {"type": "verdict", "chain_id": "s1:c2", "source": "adjudicated", "label": "complied",
-             "t_evidence": 16.0}]
+             "t_evidence": 16.0, "onset_reviewed": True}]
     sc = score_session(parse_session(recs))
     s = summarize(sc.chains)
     assert s["n_withdrawn"] == 1 and s["n_effective"] == 1 and s["n_success"] == 1

@@ -128,6 +128,7 @@ class Orchestrator:
         self._checked: set[int] = set()
         self._onset_done: set[int] = set()
         self._claims: dict[int, list[tuple[str, int | None]]] = {}  # request -> [(chain, step)]
+        self._claim_rev: dict[int, int | None] = {}
         self.dropped: set[int] = set()  # requests discarded by a barge-in / erasure (never fully shown)
         self.error: BaseException | None = None
         self.last_presented_end: float | None = None
@@ -245,6 +246,8 @@ class Orchestrator:
                     await asyncio.sleep(0.01)
             if self._stop.is_set():
                 return
+            for tm in self.gen.timings:  # refresh: t_done etc. arrive after the last chunk
+                self.sched.observe_timing(tm)
             script = self.director.next_script(k)
             self._audit(script)
             prompt = compile_prompt(script, first_request=(k == 0))
@@ -259,16 +262,19 @@ class Orchestrator:
                           chain_ids=script.chain_ids, corrections=script.corrections,
                           capability_ids=script.capability_ids, prompt=prompt,
                           step=script.provenance.get("step"), revision=script.provenance.get("revision"),
+                          retry_of=script.provenance.get("retry_of"),
                           checks=[{"qid": q.qid, "text": q.text, "kind": q.kind} for q in script.checks])
             if script.transcript and self.memory:
                 # lineage: None = linked to every memory recalled this session (over-links, so
                 # erasure/correction reach it); a None return is a refused (scope-violating) write
-                ids = script.provenance.get("memory_ids")
-                lineage = None if ids is None else ("complete" if ids else "none")
+                # The bridge computes lineage from the recall token it issued for this line's
+                # decision; template / verified lines (no memory input) get an empty token.
+                token = script.provenance.get("recall_id")
+                if token is None and script.provenance.get("memory_ids") == [] and hasattr(self.memory, "no_recall"):
+                    token = self.memory.no_recall()
                 try:
                     rec = self.memory.on_persona_line(script.transcript, session_id=self.cfg.session_id,
-                                                      scope=self.cfg.scope, source_ids=ids, lineage=lineage,
-                                                      request_index=k)
+                                                      scope=self.cfg.scope, recall_id=token, request_index=k)
                 except TypeError:  # simple memory ports without lineage support
                     rec = self.memory.on_persona_line(script.transcript, session_id=self.cfg.session_id,
                                                       scope=self.cfg.scope)
@@ -277,6 +283,7 @@ class Orchestrator:
                                   issues=["persona_line_not_recorded"],
                                   detail=str(self.memory.scope_violations[-1]))
             claims = [(c, s) for c, rid, s in self._drain(self.director.events.completion_claims) if rid == k]
+            self._claim_rev[k] = script.provenance.get("revision")
             if claims:
                 self._claims[k] = claims  # logged when the line is actually heard (speech onset)
             self._drain_director_events(t)
@@ -363,11 +370,25 @@ class Orchestrator:
         self._maybe_onset(request_index, chunk_index, t_start)
         if len(self.presented[request_index]) == self.n_chunks and request_index not in self._checked:
             self._checked.add(request_index)
+            if request_index in self.scripts:
+                self.director.on_request_presented(self.scripts[request_index])
             if self.cfg.qc_enabled:
-                self._spawn(self._run_checks(request_index, t_evidence=t_end), "qc")
+                self._spawn(self._run_checks(request_index, t_evidence=self._evidence_time(request_index, t_end)),
+                            "qc")
             else:
                 self._evict(request_index)
         self._maybe_finish()
+
+    def _evidence_time(self, k: int, t_end: float) -> float:
+        """E = presentation time of the last *painted* frame of the request (nominal end if the
+        client does not report painted frames)."""
+        last = self.n_chunks - 1
+        idx = self.painted.get((k, last))
+        ch = next((c for c in self.chunks.get(k, []) if c.chunk_index == last), None)
+        start = self.chunk_start.get((k, last))
+        if not idx or ch is None or start is None or not ch.n_frames:
+            return t_end
+        return start + (max(idx) + 1) * ch.duration_s / ch.n_frames
 
     def _maybe_onset(self, k: int, ci: int, t_start: float) -> None:
         """Speech onset / completion claim time = presentation time of the first audible audio
@@ -392,7 +413,7 @@ class Orchestrator:
                       onset_source="audio_energy")
         for chain_id, step in self._claims.pop(k, []):
             self.log.emit(EventType.COMPLETION_CLAIM, t, request_index=k, chain_id=chain_id, step=step,
-                          text=script.transcript)
+                          text=script.transcript, revision=self._claim_rev.get(k))
 
     def _maybe_finish(self) -> None:
         m = self.cfg.max_requests
@@ -497,10 +518,14 @@ class Orchestrator:
         cost = (now() - t_evidence) + self.cfg.text_encode_s
         self._chain_costs.append(cost)
         j = self.sched.earliest_correctable(t_evidence, cost, self.next_lock)
+        # REPEAT arm = the original instruction unchanged (same action and line); GRADIENT arm =
+        # same action plus the forward correction, no repeated line. The LOCK of the carrying
+        # request logs its exact prompt and retry_of.
         queued = self.director.queue_retry(chain_id, intent, correction=sentence,
                                            failed_request=script.request_index,
                                            revision=script.provenance.get("revision"),
-                                           step=script.provenance.get("step"), min_request=j)
+                                           step=script.provenance.get("step"), min_request=j,
+                                           line=script.transcript if mode == CorrectionMode.REPEAT else "")
         self.log.emit(EventType.REPAIR, now(), request_index=script.request_index,
                       chain_id=chain_id, mode=mode.value, correction=sentence, queued=queued,
                       earliest_correctable=j, next_unlocked=self.next_lock, chain_cost_s=cost,
@@ -540,23 +565,23 @@ class Orchestrator:
         await self.transport.stop_playback()
 
     async def on_user_utterance(self, utt: Utterance) -> dict[str, Any]:
-        try:
-            return await self._on_user_utterance(utt)
-        finally:
-            self._decisions += 1
+        return await self._on_user_utterance(utt)
 
     async def _on_user_utterance(self, utt: Utterance) -> dict[str, Any]:
         self.log.emit(EventType.UTTERANCE_END, utt.t_end, uid=utt.uid, speaker=utt.speaker, text=utt.text)
         epoch = self._input_epoch
         # A forget request must not recall the very fact it asks to erase into the responder.
-        memories, memory_ids = None, []
+        memories, memory_ids, recall_id = None, [], None
         if self.memory and not _FORGET.search(utt.text):
             hits_fn = getattr(self.memory, "recall_hits", None)
             if hits_fn is not None:
                 hits = hits_fn(utt.text, mode=self.cfg.scope)
                 memories, memory_ids = [h.rendered for h in hits], [h.id for h in hits]
+                recall_id = getattr(hits, "recall_id", None)
             else:
                 memories, memory_ids = self.memory.recall(utt.text, mode=self.cfg.scope), None
+        elif self.memory and hasattr(self.memory, "no_recall"):
+            recall_id = self.memory.no_recall()  # nothing recalled for a forget request
         if self.memory:
             self.memory.on_user_utterance(utt)
         decision = await self.director.decide(utt, memories)
@@ -568,7 +593,8 @@ class Orchestrator:
         else:
             if term:  # the confirmation is spoken only after the erasure is verified (below)
                 decision = {**decision, "steps": []}
-            self.director.apply(utt, decision, memory_ids=memory_ids)
+            self.director.apply(utt, decision, memory_ids=memory_ids, recall_id=recall_id)
+            self._decisions += 1  # only applied decisions end the post-interruption wait
         self._drain_director_events(now())  # before the erasure, so its redaction covers these events
         if term and self.memory is not None and hasattr(self.memory, "forget"):
             complete = await self._erase(term)
@@ -608,6 +634,7 @@ class Orchestrator:
                 for k, sc in self.scripts.items():
                     sc.transcript = sc.transcript.replace(x, "[已删除]")
                     sc.action = sc.action.replace(x, "[已删除]")
+                    sc.corrections = [c.replace(x, "[已删除]") for c in sc.corrections]
                     if x in self.prompts.get(k, ""):
                         self.prompts[k] = self.prompts[k].replace(x, "[已删除]")
                 self.log.redact(x)  # in memory and in the JSONL file

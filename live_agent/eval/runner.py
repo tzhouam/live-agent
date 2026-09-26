@@ -76,6 +76,14 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
             if uid in uid_to_chain:
                 dchain_to_gt[c.chain_id] = uid_to_chain[uid]
 
+    def gt_of(dchain: str, drev: int | None) -> str | None:
+        """GT chain of the utterance that defined director revision ``drev`` (a director chain
+        revised by an utterance the ground truth treats as a new chain maps per revision)."""
+        uids = dchain_uids.get(dchain, [])
+        if drev is not None and 0 <= drev < len(uids):
+            return uid_to_chain.get(uids[drev])
+        return dchain_to_gt.get(dchain)
+
     def gt_revision(dchain: str, drev: int | None) -> int | None:
         """Director revision r -> GT revision index of the utterance that defined it."""
         uids = dchain_uids.get(dchain, [])
@@ -84,6 +92,9 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
             return None
         return gt_uids[gt].index(uids[drev])
 
+    # failure (request, director chain) -> earliest correctable request computed by the repair step
+    ec = {(ev.request_index, ev.data.get("chain_id")): ev.data.get("earliest_correctable")
+          for ev in orch.log.events if ev.type == EventType.REPAIR}
     out: list[dict[str, Any]] = []
     for e in user_events:  # already on the shared clock (monotonic) -> rescale
         e = dict(e)
@@ -104,7 +115,7 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
                         "t_start": ts(ev.t), "t_end": ts(d["t_end"])})
         elif ev.type == EventType.VERDICT and d.get("kind") == "action":
             for cid in d.get("chain_ids") or []:  # only the chain(s) the judged request served (exact)
-                gt = dchain_to_gt.get(cid)
+                gt = gt_of(cid, d.get("revision"))
                 if gt is None:
                     continue
                 v = {"type": "verdict", "source": "judge", "label": d["label"], "chain_id": gt,
@@ -114,9 +125,11 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
                     v["revision"] = rev
                 if d.get("step") is not None:  # multistep: the director's step index (action steps)
                     v["step"] = d["step"]
+                if d["label"] == "not_complied":  # RQ2 eligibility audit
+                    v["earliest_correctable"] = ec.get((k, cid))
                 out.append(v)
         elif ev.type == EventType.COMPLETION_CLAIM:
-            gt = dchain_to_gt.get(d.get("chain_id", ""))
+            gt = gt_of(d.get("chain_id", ""), d.get("revision"))
             if gt:
                 c = {"type": "completion_claim", "chain_id": gt, "t": ts(ev.t), "request": k,
                      "text": d.get("text", "")}
@@ -135,19 +148,20 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
                 out.append({"type": "refusal", "chain_id": gt, "t": ts(ev.t),
                             "kind": "degraded" if d.get("degraded") else "refused", "reason": d.get("reason", "")})
         elif ev.type == EventType.CAPACITY_SKIP:
-            gt = dchain_to_gt.get(d.get("chain_id", ""))
+            gt = gt_of(d.get("chain_id", ""), d.get("revision")) if d.get("chain_id") else uid_to_chain.get(d.get("uid", ""))
             if gt:
                 sk = {"type": "capacity_skip", "chain_id": gt, "t": ts(ev.t)}
-                rev = gt_revision(d["chain_id"], d.get("revision"))
+                rev = gt_revision(d["chain_id"], d.get("revision")) if d.get("chain_id") else None
                 if rev is not None:
                     sk["revision"] = rev
                 out.append(sk)
         elif ev.type == EventType.PLAYBACK_STOP:
             out.append({"type": "playback_stop", "t": ts(ev.t), "reason": "erasure" if d.get("erasure") else "barge_in"})
         elif ev.type == EventType.REPAIR:
-            gt = dchain_to_gt.get(d.get("chain_id", ""))
+            gt = gt_of(d.get("chain_id", ""), d.get("revision"))
             if gt:
-                r = {"type": "repair_assignment", "chain_id": gt, "E": ts(d["t_evidence"]) if d.get("t_evidence") else None,
+                r = {"type": "repair_assignment", "chain_id": gt, "t": ts(ev.t),
+                     "E": ts(d["t_evidence"]) if d.get("t_evidence") else None,
                      "arm_drawn": bool(d.get("arm_drawn")),
                      "arm": "forward_correction" if d.get("mode") == "gradient" else "repeat",
                      "failure_request": k, "target_request": d.get("earliest_correctable"),

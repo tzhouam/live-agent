@@ -326,10 +326,12 @@ class TaoMateH3Generator(Generator):
             return
         session = int(message.get("session", -1))
         if kind == P.ERROR:
+            P.discard_shm(message)
             if session == self._session:
                 self._fail({"role": role, **message})
             return
         if session != self._session:
+            P.discard_shm(message)  # stale media from before a reset/erasure must not linger
             return  # stale reply from a reset session
         k = int(message.get("request_index", -1))
         timing = self._timings.get(k)
@@ -492,7 +494,10 @@ class TaoMateH3Generator(Generator):
         return await asyncio.wait_for(future, timeout)
 
     async def close(self) -> None:
+        """Cancellation-safe: workers are always terminated and resources released, then a
+        cancellation is re-raised."""
         self._closing = True
+        cancelled = None
         for role in list(self._channels):
             try:
                 self._send(role, {"type": P.SHUTDOWN})
@@ -502,16 +507,37 @@ class TaoMateH3Generator(Generator):
             try:
                 await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=120)
             except asyncio.TimeoutError:
+                pass
+            except asyncio.CancelledError as e:
+                cancelled = e
+                break
+        for proc in self._procs.values():  # bounded, synchronous: runs even when cancelled
+            if proc.poll() is None:
                 proc.terminate()
                 try:
-                    await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=30)
-                except asyncio.TimeoutError:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
                     proc.kill()
+                    proc.wait(timeout=10)
+        pids = [proc.pid for proc in self._procs.values()]
         for channel in self._channels.values():
-            channel.close()
+            try:
+                channel.close()
+            except OSError:
+                pass
         if self._listener is not None:
             self._listener.close()
+        P.sweep_shm(pids + list(self._worker_pids()))
         self._out.put_nowait(None)
+        if cancelled is not None:
+            raise cancelled
+
+    def _worker_pids(self) -> list[int]:
+        """Rank pids reported by the workers (torchrun children write the payload files)."""
+        out = []
+        for info in self.worker_info.values():
+            out += [int(x) for x in info.get("pids", []) if str(x).isdigit()]
+        return out
 
     @property
     def timings(self) -> list[RequestTiming]:

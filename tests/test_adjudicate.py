@@ -74,8 +74,9 @@ def test_adjudication_roundtrip(tmp_path):
     it = next(i for i in items if i["type"] == "chain")
     sw = next(i for i in items if i["type"] == "sweep")
     assert it["criteria"]["checks"]  # preregistered checks frozen into the item
-    lab = {f"{it['id']}/0": {"label": "complied", "v_first": it["v_origin"] + 2.0},
-           f"{sw['id']}/0": {"complete": True, "v_seen": sw["v_len"], "claims": []}}
+    lab = {f"{it['id']}/0": {"label": "complied", "v_first": it["v_origin"] + 2.0,
+                                   "v_onset": it["v_origin"] + 1.0},
+           f"{sw['id']}/0": {"complete": True, "v_watched": [[0.0, sw["v_len"]]], "claims": []}}
     ratings = []
     for name in ("R1", "R2"):  # two independent raters who agree
         p = tmp_path / f"labels-{name}.json"

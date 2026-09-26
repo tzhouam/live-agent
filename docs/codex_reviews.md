@@ -428,3 +428,17 @@ Every finding was accepted. Fixed in commits e9f6546 and the one after it (164 t
   - time to success is reported per kind.
 
 Real-stack verification is in `docs/implementation.md` (server path with erasure). Documented limits: no content-moderation model (audit = blocklist); cross-lingual paraphrases are not caught by the erasure sweep.
+
+### impl1d + impl2d: round 3 (commit a1d-prep, see git log)
+
+Model gpt-6-sol, verified.
+- **impl1d:** 13 of 24 prior findings RESOLVED or scoped, 11 PARTIAL, plus 5 new material findings (1 blocking: A1 chains never
+  closed). Verdict: **not ready**.
+- **impl2d:** 15 of 27 RESOLVED, 11 PARTIAL, 1 OPEN, plus 6 new material findings (1 blocking: incomplete pair sets). Verdict:
+  **not ready**.
+
+Every finding was accepted, with one explained exception. impl1d #12 says misclassified action requests "can disappear from the
+scoring denominator". The E2 denominator comes from ground-truth chain annotations (`chain_annotation` from the task
+script or annotator), independent of the director's classification (`runner.convert`, `scoring.score_session`), so
+a misclassified request is scored as a failure, not dropped. No code change for that point, but the declined-request
+heuristic remains. All other items are fixed (182 tests pass): see the commit message.

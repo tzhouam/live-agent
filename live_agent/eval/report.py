@@ -29,6 +29,7 @@ from collections.abc import Iterable, Sequence
 from live_agent.eval import stats
 from live_agent.eval.schema import load_session
 from live_agent.eval.scoring import (
+    RQ2_CONDITIONS,
     ChainOutcome,
     IncompleteAdjudicationError,
     InsufficientObservationError,
@@ -50,6 +51,7 @@ H1C_FAMILY: tuple[tuple[str, str], ...] = (  # H1c ablations: each is expected t
     ("A2", "A2-nocorrection"),
 )
 MISSING_RULES = ("rerun-required", "worst-case")  # preregistered; see build_report
+MIN_TASKS = 10  # *proposed target*: fewest independent task clusters for any inferential decision
 FAMILIES: dict[str, tuple[tuple[str, str], ...]] = {
     "primary (H1a)": PRIMARY_FAMILY,
     "secondary (H1c ablations)": H1C_FAMILY,
@@ -214,12 +216,34 @@ def condition_section(cond: str, sessions: list[SessionScore], n_boot: int = 400
     return L + [""]
 
 
+class PairingError(ValueError):
+    """The preregistered pair set is incomplete or has duplicate keys."""
+
+
+def _pair_keys(ss: list[SessionScore]) -> tuple[dict[tuple, ChainOutcome], list[tuple]]:
+    """(task, seed, chain label) -> primary chain; plus duplicate keys (over all chains)."""
+    seen: dict[tuple, int] = defaultdict(int)
+    for s in ss:
+        for c in s.chains:
+            seen[_key(c)] += 1
+    keyed = {_key(c): c for s in ss for c in s.chains if c.in_primary}
+    return keyed, sorted(k for k, n in seen.items() if n > 1)
+
+
+def pair_problems(by_cond: dict[str, list[SessionScore]], a: str, b: str) -> dict[str, list]:
+    """Duplicate pair keys (in either condition) and keys present in only one condition."""
+    ca, da = _pair_keys(by_cond[a])
+    cb, db = _pair_keys(by_cond[b])
+    return {"duplicate": [(a, k) for k in da] + [(b, k) for k in db],
+            "missing": [(b, k) for k in sorted(set(ca) - set(cb))] + [(a, k) for k in sorted(set(cb) - set(ca))]}
+
+
 def _paired(by_cond: dict[str, list[SessionScore]], a: str, b: str, n_boot: int,
             conf: float = 0.95) -> dict | None:
     if a not in by_cond or b not in by_cond:
         return None
-    ca = {_key(c): c for s in by_cond[a] for c in s.chains if c.in_primary}
-    cb = {_key(c): c for s in by_cond[b] for c in s.chains if c.in_primary}
+    ca, _ = _pair_keys(by_cond[a])
+    cb, _ = _pair_keys(by_cond[b])
     keys = sorted(set(ca) & set(cb))
     if not keys:
         return None
@@ -233,8 +257,30 @@ def _paired(by_cond: dict[str, list[SessionScore]], a: str, b: str, n_boot: int,
     else:
         r["slo"], r["shi"] = r["lo"], r["hi"]
     r["n"] = len(keys)
+    r["n_tasks"] = len(set(cl))
     r["unpaired"] = len(set(ca) ^ set(cb))
     return r
+
+
+def _check_pairs(by_cond: dict[str, list[SessionScore]], pairs: Iterable[tuple[str, str]],
+                 allow_incomplete: bool) -> dict[tuple[str, str], int]:
+    """Raise PairingError on duplicate keys, and on missing pairs unless allowed; returns
+    the number of missing keys per pair."""
+    missing, errs = {}, []
+    for a, b in pairs:
+        if a not in by_cond or b not in by_cond:
+            continue
+        pr = pair_problems(by_cond, a, b)
+        if pr["duplicate"]:
+            errs.append(f"{a} - {b}: duplicate pair keys " + "; ".join(f"{c} {k}" for c, k in pr["duplicate"][:20]))
+        if pr["missing"]:
+            missing[(a, b)] = len(pr["missing"])
+            if not allow_incomplete:
+                errs.append(f"{a} - {b}: {len(pr['missing'])} (task, seed, chain) key(s) missing: "
+                            + "; ".join(f"missing in {c}: {k}" for c, k in pr["missing"][:20]))
+    if errs:
+        raise PairingError("the preregistered pair set is not complete:\n  " + "\n  ".join(errs))
+    return missing
 
 
 def compare(
@@ -242,67 +288,98 @@ def compare(
     display: Iterable[tuple[str, str]] | None = None,
     n_boot: int = 4000,
     alpha: float = 0.05,
+    allow_incomplete_pairs: bool = False,
 ) -> list[str]:
     """Preregistered families, Holm over the preregistered family size. ``display``
     (default: every family member present) only selects the rows shown; it never changes
-    the family or the adjustment. Displayed pairs outside the families are exploratory."""
+    the family or the adjustment. Displayed pairs outside the families are exploratory.
+
+    A primary decision needs the complete pair set: every (task, seed, chain label) in both
+    conditions, no duplicate keys (``PairingError`` otherwise). With
+    ``allow_incomplete_pairs`` an incomplete comparison is shown as EXPLORATORY, without p
+    or decision. Below ``MIN_TASKS`` independent task clusters the p-value and decision are
+    suppressed. Suppressed members count as p = 1 in Holm."""
     display = list(display) if display is not None else None
     fam_pairs = {p for fam in FAMILIES.values() for p in fam}
+    extra = [tuple(p) for p in (display or []) if tuple(p) not in fam_pairs]
+    missing = _check_pairs(by_cond, [*fam_pairs, *extra], allow_incomplete_pairs)
     L = ["## Paired comparisons (instruction-level success; cluster = task)", "",
          (f"Families are fixed before data collection; Holm is applied over the preregistered "
           f"family size (alpha = {alpha}); family members not run count as p = 1. "
-          "The simultaneous CI is Bonferroni at 1 - alpha/m."), ""]
-    unp = []
+          "The simultaneous CI is Bonferroni at 1 - alpha/m. A decision needs the complete pair "
+          f"set and at least MIN_TASKS = {MIN_TASKS} independent task clusters (*proposed target*)."), ""]
     for name, fam in FAMILIES.items():
         m = len(fam)
         res = {p: _paired(by_cond, *p, n_boot=n_boot, conf=1 - alpha / m) for p in fam}
-        tested = [p for p in fam if res[p] is not None]
+
+        def why_not(p: tuple[str, str], res: dict = res) -> str:
+            r = res[p]
+            if r is None:
+                return "not tested"
+            if p in missing:
+                return f"EXPLORATORY: {missing[p]} pair key(s) missing"
+            if r["n_tasks"] < MIN_TASKS:
+                return f"no inference: {r['n_tasks']} < {MIN_TASKS} task clusters"
+            return ""
+
+        tested = [p for p in fam if not why_not(p)]
         adj = dict(zip(tested, stats.holm([res[p]["p_value"] for p in tested], alpha, m=m)["adjusted"]))
         shown = [p for p in fam if (display is None and res[p] is not None)
                  or (display is not None and p in display)]
         L += [f"**Family: {name}** (m = {m}; tested: {len(tested)})", "",
-              ("| Comparison | paired chains | difference | 95% CI | simultaneous CI | bootstrap p "
+              ("| Comparison | paired chains | tasks | difference | 95% CI | simultaneous CI | bootstrap p "
                "| Holm-adjusted p | decision (Holm) |"),
-              "|---|---|---|---|---|---|---|---|"]
+              "|---|---|---|---|---|---|---|---|---|"]
         for a, b in shown:
-            r = res[(a, b)]
+            r, w = res[(a, b)], why_not((a, b))
             if r is None:
-                L.append(f"| {a} - {b} | 0 | n/a | n/a | n/a | n/a | n/a | not tested |")
+                L.append(f"| {a} - {b} | 0 | 0 | n/a | n/a | n/a | n/a | n/a | not tested |")
+                continue
+            if w:
+                L.append(f"| {a} - {b} | {r['n']} | {r['n_tasks']} | {_f(r['estimate'], True)} | "
+                         f"{_ci(r['lo'], r['hi'])} | {_ci(r['slo'], r['shi'])} | n/a | n/a | {w} |")
                 continue
             p_adj = adj[(a, b)]
             dec = ("reject H0" + (" (A > B)" if r["estimate"] > 0 else " (A < B)")) if p_adj <= alpha \
                 else "do not reject"
-            L.append(f"| {a} - {b} | {r['n']} | {_f(r['estimate'], True)} | {_ci(r['lo'], r['hi'])} | "
-                     f"{_ci(r['slo'], r['shi'])} | {r['p_value']:.4f} | {p_adj:.4f} | {dec} |")
-            if r["unpaired"]:
-                unp.append(f"{a}-{b}: {r['unpaired']}")
+            L.append(f"| {a} - {b} | {r['n']} | {r['n_tasks']} | {_f(r['estimate'], True)} | "
+                     f"{_ci(r['lo'], r['hi'])} | {_ci(r['slo'], r['shi'])} | {r['p_value']:.4f} | "
+                     f"{p_adj:.4f} | {dec} |")
         L.append("")
-    extra = [p for p in (display or []) if tuple(p) not in fam_pairs]
     if extra:
         L += ["**Exploratory (not preregistered; unadjusted, no decision)**", "",
-              "| Comparison | paired chains | difference | 95% CI | bootstrap p |", "|---|---|---|---|---|"]
+              "| Comparison | paired chains | tasks | difference | 95% CI | bootstrap p |", "|---|---|---|---|---|---|"]
         for a, b in extra:
             r = _paired(by_cond, a, b, n_boot=n_boot)
             if r is None:
-                L.append(f"| {a} - {b} | 0 | n/a | n/a | n/a |")
+                L.append(f"| {a} - {b} | 0 | 0 | n/a | n/a | n/a |")
                 continue
-            L.append(f"| {a} - {b} | {r['n']} | {_f(r['estimate'], True)} | {_ci(r['lo'], r['hi'])} | "
-                     f"{r['p_value']:.4f} |")
-            if r["unpaired"]:
-                unp.append(f"{a}-{b}: {r['unpaired']}")
+            p = f"{r['p_value']:.4f}" if r["n_tasks"] >= MIN_TASKS else "n/a"
+            L.append(f"| {a} - {b} | {r['n']} | {r['n_tasks']} | {_f(r['estimate'], True)} | "
+                     f"{_ci(r['lo'], r['hi'])} | {p} |")
         L.append("")
-    if unp:
-        L.append("Chains present in only one condition (dropped from pairing): " + "; ".join(unp))
+    if missing:
+        L.append("Incomplete pair sets (allowed explicitly; EXPLORATORY): "
+                 + "; ".join(f"{a}-{b}: {n} missing" for (a, b), n in missing.items()))
     L.append("\nH1a target (*proposed target*, §8): A2 - A1 >= +10 pp with the paired CI excluding 0.")
     return L + [""]
 
 
 def repair_comparison(by_cond: dict[str, list[SessionScore]], n_boot: int = 4000) -> list[str]:
-    """RQ2: arms randomised per eligible failure point within a condition (e.g. A2-rq2);
-    the unit is the failure point, clustered by task."""
-    L = []
+    """RQ2: arms randomised per eligible failure point in the RQ2 conditions
+    (``scoring.RQ2_CONDITIONS``); the unit is the failure point, clustered by task. Sessions
+    failing the RQ2 audit (an eligible failure without an assignment, or an assignment
+    without ``arm_drawn``) are excluded and listed."""
+    L, flagged = [], []
     for cond, ss in sorted(by_cond.items()):
-        allp = [(c.task_id, r) for s in ss for c in s.chains for r in c.repairs]
+        if cond not in RQ2_CONDITIONS:
+            continue
+        bad = [s for s in ss if s.rq2_problems]
+        flagged += [f"{s.session_id}: {p}" for s in bad for p in s.rq2_problems]
+        allp = [(c.task_id, r) for s in ss if not s.rq2_problems for c in s.chains for r in c.repairs
+                if r["arm_drawn"]]
+        if bad:
+            L.append(f"| {cond} | excluded: {len(bad)} session(s) failing the RQ2 audit | | | |")
         if {r["arm"] for _, r in allp} != {"forward_correction", "repeat"}:
             continue
         for name, keep in (("primary: withdrawal after assignment = failure", ("success", "failure", "withdrawn")),
@@ -322,11 +399,16 @@ def repair_comparison(by_cond: dict[str, list[SessionScore]], n_boot: int = 4000
             L.append(f"| {cond} | flagged: target request not observed (excluded, rerun) | {n_miss} | | |")
     if not L:
         return []
-    return ["## RQ2 repair: forward correction - repeat (earliest eligible request)", "",
-            ("Every randomised eligible failure point is analysed by its assigned arm, including "
-             "those on chains later withdrawn or excluded from the chain-level analysis."), "",
-            "| Condition | analysis | failure points | difference | 95% CI (task-clustered) |",
-            "|---|---|---|---|---|", *L, ""]
+    out = ["## RQ2 repair: forward correction - repeat (earliest eligible request)", "",
+           ("Every randomised eligible failure point is analysed by its assigned arm, including "
+            "those on chains later withdrawn or excluded from the chain-level analysis. Eligible "
+            "failure point (preregistered): an online `not_complied` action verdict on an open chain "
+            "whose earliest correctable request started before `observation_end`."), "",
+           "| Condition | analysis | failure points | difference | 95% CI (task-clustered) |",
+           "|---|---|---|---|---|", *L, ""]
+    if flagged:
+        out += ["RQ2 audit failures (sessions excluded from RQ2): " + "; ".join(flagged), ""]
+    return out
 
 
 def build_report(
@@ -335,6 +417,7 @@ def build_report(
     title: str = "E2 evaluation report",
     n_boot: int = 4000,
     missing_rule: str = "rerun-required",
+    allow_incomplete_pairs: bool = False,
 ) -> str:
     """``pairs`` selects displayed comparisons (None = all preregistered ones present).
 
@@ -383,7 +466,7 @@ def build_report(
                  f"{_ci(*stats.wilson(sm['n_success'], sm['n_effective']))} | "
                  f"{sm['n_insufficient_observation']} |")
     L.append("")
-    L += compare(by_cond, pairs, n_boot=n_boot)
+    L += compare(by_cond, pairs, n_boot=n_boot, allow_incomplete_pairs=allow_incomplete_pairs)
     L += repair_comparison(by_cond, n_boot=n_boot)
     for cond, ss in sorted(by_cond.items()):
         L += condition_section(cond, ss, n_boot=n_boot)
@@ -402,6 +485,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--missing-rule", choices=MISSING_RULES, default="rerun-required",
                     help="unobserved deadline windows: rerun-required (default: refuse) or worst-case "
                          "(counted as failures; SENSITIVITY report)")
+    ap.add_argument("--allow-incomplete-pairs", action="store_true",
+                    help="show comparisons with missing (task, seed, chain) pairs as EXPLORATORY (no decision) "
+                         "instead of refusing")
     ap.add_argument("--n-boot", type=int, default=4000)
     ap.add_argument("-o", "--out", default=None)
     args = ap.parse_args(argv)
@@ -412,9 +498,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     scores = [score_session(load_session(p), cfg) for p in args.logs]
     pairs = [tuple(p.split(":", 1)) for p in args.compare] if args.compare else None
     try:
-        md = build_report(scores, pairs, n_boot=args.n_boot, missing_rule=args.missing_rule)
+        md = build_report(scores, pairs, n_boot=args.n_boot, missing_rule=args.missing_rule,
+                          allow_incomplete_pairs=args.allow_incomplete_pairs)
     except IncompleteAdjudicationError as e:
         print(f"error: {e}\n(use --source judge for a DIAGNOSTIC report)", file=sys.stderr)
+        raise SystemExit(2) from e
+    except PairingError as e:
+        print(f"error: {e}\n(rerun the missing trials, or --allow-incomplete-pairs for an EXPLORATORY report)",
+              file=sys.stderr)
         raise SystemExit(2) from e
     except InsufficientObservationError as e:
         print(f"error: {e}\n(rerun, or --missing-rule worst-case for a labelled SENSITIVITY report)",

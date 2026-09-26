@@ -140,6 +140,34 @@ def to_shm(message: dict[str, Any], keys: tuple[str, ...] = ("video", "audio")) 
     return message
 
 
+def discard_shm(message: dict[str, Any], keys: tuple[str, ...] = ("video", "audio")) -> None:
+    """Adapter side: delete the payload files of a message that will not be loaded (stale
+    session, error, shutdown) so private media never lingers in /dev/shm."""
+
+    for key in keys:
+        value = message.get(key)
+        if isinstance(value, dict) and "shm" in value:
+            try:
+                os.unlink(value["shm"])
+            except OSError:
+                pass
+
+
+def sweep_shm(pids: list[int]) -> int:
+    """Remove payload files left by the given worker processes (shutdown)."""
+    import glob
+
+    n = 0
+    for pid in pids:
+        for path in glob.glob(os.path.join(SHM_DIR, f"la-taomate-{pid}-*.npy")):
+            try:
+                os.unlink(path)
+                n += 1
+            except OSError:
+                pass
+    return n
+
+
 def from_shm(value: Any) -> Any:
     """Adapter side: load (and delete) a payload written by ``to_shm``."""
 

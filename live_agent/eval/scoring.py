@@ -264,6 +264,7 @@ class SessionScore:
     sources: tuple[str, ...] = PRIMARY_SOURCES
     observation_end: float | None = None
     claim_sweep: bool = False  # an adjudicated audio claim sweep covers this session
+    rq2_problems: list[str] = field(default_factory=list)  # RQ2 audit (RQ2_CONDITIONS only)
 
 
 def _vtime(v: dict[str, Any], chunks: dict[tuple[int, int], dict[str, Any]]) -> float | None:
@@ -324,9 +325,10 @@ def _adjudication_gap(ch: Chain, vs: list[dict[str, Any]], adj_onsets: list[dict
     """'' when the final intent is fully adjudicated, else what is missing."""
     if not vs:
         return "no adjudicated verdict for the final intent"
+    if not (any(v.get("onset_reviewed") for v in vs) or adj_onsets):
+        # every chain: the meaningful (on-topic) response onset, or "none by the deadline"
+        return f"{ch.kind.value}: response onset not adjudicated"
     if ch.kind == TaskKind.CONTENT:
-        if not (any(v.get("onset_reviewed") for v in vs) or adj_onsets):
-            return "content: speech onset not adjudicated"
         return ""
     if ch.kind == TaskKind.MULTISTEP:
         for i in range(ch.n_steps):
@@ -390,10 +392,12 @@ def _score_chain(
         info["deadline"] = prev - o + D  # censor point if we stop here
         if not ok:
             window = [v for v in step_vs if v["_tc"] is None or prev <= v["_tc"] <= prev + D]
+            # a step seen only before its predecessor is nonqualifying evidence: the failure
+            # (order_fail) is certain only once its own window [prev, prev + D] was observed
+            info["needs_until"] = prev + D
             if any(v["label"] == "complied" and v["_tc"] < prev for v in step_vs):
-                out = Outcome.ORDER_FAIL  # step done only before its predecessor: deterministic
+                out = Outcome.ORDER_FAIL
             else:
-                info["needs_until"] = prev + D
                 out = Outcome.UNKNOWN if any(v["label"] == "unknown" for v in window) else Outcome.NEVER
             info["steps_complied"] = done_steps
             return out, info
@@ -483,11 +487,14 @@ def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, A
             chunks: dict[tuple[int, int], dict[str, Any]], obs_end: float | None) -> dict[str, Any]:
     """One RQ2 failure point (preregistered handling):
 
+    * ``withdrawn`` (checked first): the user withdrew the chain at or after the
+      assignment time (``t``, else ``E``): a repair failure in the primary analysis,
+      excluded in a sensitivity row, whatever the target request later showed;
+    * ``ineligible``: the chain had already been withdrawn when the arm was assigned
+      (excluded, flagged);
     * ``success``: a complied verdict (for the assigned step) whose request -- explicit
       ``request``, else the presented chunk containing its compliance time -- is the
       target request j;
-    * ``withdrawn``: the user withdrew the chain after the assignment: a repair failure
-      in the primary analysis, excluded in a sensitivity row;
     * ``insufficient_observation``: request j was not fully presented before
       ``observation_end``: flagged, excluded, rerun;
     * ``unadjudicated``: the chain lacks adjudication (the primary report refuses);
@@ -505,10 +512,13 @@ def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, A
         for v in vs
     )
     ends = [float(c["t_end"]) for (k, _), c in chunks.items() if k == tgt]
-    if ok:
-        status = "success"
+    ta = r.get("t", r.get("E"))
+    if ch.withdrawn and ta is not None and ch.withdrawn_t is not None and ch.withdrawn_t < float(ta) - _EPS:
+        status = "ineligible"
     elif ch.withdrawn:
         status = "withdrawn"
+    elif ok:
+        status = "success"
     elif tgt is not None and obs_end is not None and (not ends or max(ends) > obs_end + _EPS):
         status = "insufficient_observation"
     elif outcome == Outcome.UNADJUDICATED:
@@ -523,7 +533,46 @@ def _repair(r: dict[str, Any], ch: Chain, outcome: Outcome, vs: list[dict[str, A
         "offset": (tgt - int(r["failure_request"])) if tgt is not None else None,
         "status": status,
         "success": status == "success",
+        "arm_drawn": bool(r.get("arm_drawn")),
     }
+
+
+RQ2_CONDITIONS = ("A2-rq2",)  # conditions whose repair arm is randomised per failure point
+
+
+def rq2_problems(session: SessionLog, chains: dict[str, Chain],
+                 chunks: dict[tuple[int, int], dict[str, Any]], obs_end: float | None) -> list[str]:
+    """Audit an RQ2 session (preregistered definition). An **eligible failure point** is an
+    online ``judge`` verdict ``not_complied`` on a chain open at its evidence time (opened,
+    not withdrawn, verdict revision = the revision then in force), whose
+    ``earliest_correctable`` request j exists and started presenting before
+    ``observation_end``. Every eligible point needs a ``repair_assignment`` with the same
+    chain and ``failure_request``, and every assignment needs ``arm_drawn: true``."""
+    probs = []
+    assigned = {(r["chain_id"], int(r["failure_request"])) for r in session.of_type("repair_assignment")}
+    for r in session.of_type("repair_assignment"):
+        if r.get("arm_drawn") is not True:
+            probs.append(f"assignment {r['chain_id']} k={r['failure_request']}: arm not randomised (arm_drawn)")
+    starts: dict[int, float] = {}
+    for (k, _), c in chunks.items():
+        starts[k] = min(starts.get(k, math.inf), float(c["t_start"]))
+    for v in session.of_type("verdict"):
+        if v["source"] != "judge" or v["label"] != "not_complied" or v.get("request") is None:
+            continue
+        ch = chains.get(v.get("chain_id"))
+        t = _vtime(v, chunks)
+        if ch is None or t is None or t < ch.origins[0]:
+            continue
+        if ch.withdrawn and ch.withdrawn_t is not None and ch.withdrawn_t <= t:
+            continue
+        if v.get("revision") is not None and int(v["revision"]) != ch.revision_at(t):
+            continue
+        j = v.get("earliest_correctable")
+        if j is None or int(j) not in starts or (obs_end is not None and starts[int(j)] >= obs_end):
+            continue
+        if (ch.chain_id, int(v["request"])) not in assigned:
+            probs.append(f"eligible failure {ch.chain_id} k={v['request']} (j={j}) has no repair_assignment")
+    return probs
 
 
 def observation_end(session: SessionLog) -> float | None:
@@ -690,6 +739,7 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
         sources=tuple(cfg.source_preference),
         observation_end=obs_end,
         claim_sweep=any(e.get("source") == "adjudicated" for e in session.of_type("claim_sweep")),
+        rq2_problems=rq2_problems(session, chains, chunks, obs_end) if session.condition in RQ2_CONDITIONS else [],
     )
 
 
@@ -765,6 +815,7 @@ def _repair_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
     return {"n": n, "k": k, "n_withdrawn": st.count("withdrawn"),
             "n_insufficient_observation": st.count("insufficient_observation"),
             "n_unadjudicated": st.count("unadjudicated"),
+            "n_ineligible": st.count("ineligible"),
             "n_excl_withdrawn": n - st.count("withdrawn"),
             "offsets": sorted(r["offset"] for r in rs if r["offset"] is not None)}
 

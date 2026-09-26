@@ -45,6 +45,7 @@ class StateLedger:
         self.pose: str = "seated at the desk"
         self.history: list[RequestState] = []
         self.generated_not_presented: list[int] = []  # requests generated but never shown
+        self.bridge_request: int | None = None  # request carrying the bridge (divergence kept until shown)
 
     # ---------------------------------------------------------------- canon
     @property
@@ -85,6 +86,14 @@ class StateLedger:
                 r.presented = True
         if request_index in self.generated_not_presented:
             self.generated_not_presented.remove(request_index)
+        if self.bridge_request is not None and request_index == self.bridge_request:
+            # the bridge has been shown: the divergence is reconciled
+            self.generated_not_presented.clear()
+            self.bridge_request = None
+
+    def unseen(self) -> list[RequestState]:
+        """Generated-but-unpresented requests (their action and speech exist in generator state)."""
+        return [r for r in self.history if r.request_index in self.generated_not_presented]
 
     def mark_generated_not_presented(self, request_index: int) -> None:
         """Interrupt case (proposal §10.5, option 3): content exists in generator state but was not shown."""
@@ -119,9 +128,14 @@ class StateLedger:
         return ", ".join(parts)
 
     def bridging_note(self) -> str | None:
-        """If generated-but-unshown content exists, return an explicit bridging instruction."""
-        if not self.generated_not_presented:
+        """If generated-but-unshown content exists, return an explicit bridging instruction that
+        names what the viewer did not see (so later video does not silently continue from it)."""
+        if not self.generated_not_presented or self.bridge_request is not None:
             return None
+        unseen = [r.action for r in self.unseen() if r.action]
+        if unseen:
+            return ("S1 did not do the following on screen and does not continue it: "
+                    + "; ".join(unseen) + ". S1 calmly returns to her previous posture and looks into the lens")
         return "S1 calmly returns to her previous posture and looks into the lens"
 
     @staticmethod

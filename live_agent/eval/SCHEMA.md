@@ -35,7 +35,7 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
 | `lock` | `t`, `request` | `chain_ids`, `plan_version` | orchestrator (diagnostic; not needed for scoring) |
 | `chunk_presented` | `request`, `chunk`, `t_start`, `t_end` | `frame_hash` | client presentation ack |
 | `observation_end` | `t` (last presented media time of the session) | | runner |
-| `verdict` | `source` (`adjudicated`/`human`/`judge`), `label` (`complied`/`not_complied`/`unknown`), and `chain_id` **or** `claim_id` | `revision`, `step` (multistep, 0-based), `request`, `chunk`, `t_first_compliant`, `t_evidence`, `t_review_start`, `t_review_end`, `claim_t` (claim-level verdict), `onset_reviewed`, `t_onset`, `annotators`, `reconciliation` (`agreement`/`arbitration`), `batch`, `item`, `criteria_sha256`, `qid` | judge / adjudication tool |
+| `verdict` | `source` (`adjudicated`/`human`/`judge`), `label` (`complied`/`not_complied`/`unknown`), and `chain_id` **or** `claim_id` | `revision`, `step` (multistep, 0-based), `request`, `chunk`, `earliest_correctable` (judge `not_complied`: request j), `t_first_compliant`, `t_evidence`, `t_review_start`, `t_review_end`, `claim_t` (claim-level verdict), `onset_reviewed`, `t_onset`, `annotators`, `reconciliation` (`agreement`/`arbitration`), `batch`, `item`, `criteria_sha256`, `qid` | judge / adjudication tool |
 | `rating` | `annotator`, `chain_id`, `label` | `role` (`primary`/`arbiter`), `kind` (`claim_sweep` for a swept claim), `step`, `revision`, `claim_t`, the same time fields as a verdict, `onset_none`, `review_ok`, `t_review_needed`, `batch`, `item` | adjudication tool (one annotator's independent label; kept for agreement statistics, **never scored**) |
 | `completion_claim` | `chain_id`, `t` | `source` (`system` (default) / `adjudicated`), `step`, `claim_id`, `request`, `text`, `batch`, `item` | orchestrator (`system`, diagnostic) / audio claim sweep (`adjudicated`, primary) |
 | `claim_sweep` | `source` (`adjudicated`) | `n_claims`, `annotators`, `reconciliation`, `t_review_end`, `batch`, `item` | adjudication tool: the session's recording was swept for audible completion claims (required per session in primary scoring) |
@@ -44,7 +44,7 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
 | `speech_onset` | `t`, `on_topic` (`true`/`false`/`null`) | `source` (`script` (default) / `adjudicated` / `human`), `chain_id` (**required for the onset to count toward a chain**), `request` | runner (`script`) / adjudication tool (`adjudicated`) |
 | `visual_ack` | `t`, `uid` (the utterance acknowledged) | `kind` (`reaction_clip`/`freeze`) | client |
 | `playback_stop` | `t` | `reason` | client |
-| `repair_assignment` | `chain_id`, `arm` (`forward_correction`/`repeat`), `failure_request` (k), `target_request` (j = earliest request with P_j ≥ E + C) | `step`, `E`, `C` | orchestrator (RQ2: arm randomised per eligible failure point, e.g. condition `A2-rq2`) |
+| `repair_assignment` | `chain_id`, `arm` (`forward_correction`/`repeat`), `failure_request` (k), `target_request` (j = earliest request with P_j ≥ E + C) | `t` (assignment time), `arm_drawn` (bool: the arm was randomised), `step`, `E`, `C`, `actual_request` | orchestrator (RQ2: arm randomised per eligible failure point, condition `A2-rq2`) |
 
 ## Contract the runner must satisfy
 
@@ -57,8 +57,16 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
   are emitted for chains that are later withdrawn too. Logged claims (no `source`, i.e.
   `system`) are **diagnostic only**: primary FCR uses the claims found in the recorded
   audio by the adjudicated claim sweep.
-* **`repair_assignment`**: one per randomised eligible failure point, with `step` if any;
-  `target_request` may be null.
+* **`repair_assignment`**: one per randomised eligible failure point, with `t` (assignment
+  time), `arm_drawn: true` in `A2-rq2`, and `step` if any; `target_request` may be null.
+* **RQ2 eligibility (preregistered).** An eligible failure point is an online `judge`
+  verdict `not_complied` on a chain open at its evidence time (opened, not withdrawn, and
+  the verdict's `revision` equal to the one then in force), whose `earliest_correctable`
+  request j exists and started presenting before `observation_end`. So judge
+  `not_complied` verdicts must carry `request` and `earliest_correctable` (null if none).
+  In `A2-rq2` sessions every eligible point needs an assignment with the same chain and
+  `failure_request`, and every assignment needs `arm_drawn: true`. A session that fails
+  this audit is excluded from RQ2 and listed.
 * **`speech_onset`** from the runner has `source: "script"` and `on_topic: null`: the line
   was scripted for that chain and `t` is the energy-based audio onset in the presented
   chunk. Nobody has verified it is on topic, so it **never** passes the content onset
@@ -103,8 +111,10 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
   multistep step's `intent` and `checks`) and the **absolute deadlines** in video time from
   the end of the final request: action/step 1 by origin + 15 s; content onset by origin +
   15 s and complete answer by origin + 15 s + duration (the D table); later multistep steps
-  within 15 s of the previous. An item without criteria is an error. Content items also
-  ask for the on-topic speech onset (a time, or "no on-topic speech").
+  within 15 s of the previous. An item without criteria is an error. **Every** request
+  item also asks for the response onset: on-topic speech for content, the first meaningful
+  spoken response otherwise (a time, or "none by the onset deadline"). Merge writes it as
+  an adjudicated `speech_onset` and marks the verdict `onset_reviewed`.
 * **Claim sweep items**: one per session. The rater watches the **whole** recording
   without seeing the logged claims, marks every audible completion claim, chooses its
   referent request (and step), and judges it against the request as it stood at that
@@ -113,19 +123,30 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
 * **Validation (`merge`)**: labels must lie inside the recording and after the request;
   "done" needs its time; content needs one onset decision and onset ≤ answer end; claim
   evidence must not follow the claim. Any error rejects the whole file (`LabelError`).
-* **Review coverage**: each label records the reviewed interval (to the furthest point the
-  rater played in that item). "Not done", "cannot tell" and "no on-topic speech" count only
-  if it reaches the applicable deadline (action origin + 15 s; content origin + 15 s +
-  duration, or origin + 15 s for the onset; multistep step *i* the rater's step *i−1*
-  time + 15 s), clipped to the recording end. A sweep must reach the recording end.
-  Shorter reviews are **escalated** to the arbiter, not accepted.
+* **Review coverage**: the page records the intervals each rater actually played
+  (`v_watched`: continuous playback at ≤ 2× speed; seeking or skipping adds nothing). The
+  union of a rater's intervals in the item (gaps ≤ 0.5 s bridged) must cover **from the
+  request through the applicable deadline**, clipped to the recording end, for these
+  labels to count:
+  * "not done" or "cannot tell": action origin + 15 s; content origin + 15 s + duration;
+    multistep step *i* the rater's step *i−1* time + 15 s;
+  * "none by the onset deadline": origin + 15 s;
+  * a multistep step marked done only **before** its predecessor (nonqualifying
+    evidence): its own window, step *i−1* time + 15 s.
+
+  A sweep must cover the whole recording. Shorter reviews are **escalated** to the arbiter,
+  not accepted.
 * **Reconciliation**: two independent label files plus an optional **arbiter**. Every label
   is kept as a `rating` event. One reconciled `verdict` per item/step is written only when
   both raters reviewed enough and agree (same label; times within `--tol`, default 1 s; the
   later time is used), or else the arbiter (with sufficient review) labelled it. Sweep
-  claims are matched one-to-one by referent and time; agreed pairs are accepted, and label
-  disagreements and one-rater claims go to the arbiter (an arbiter who did not hear a
-  one-rater claim drops it). A resolved sweep writes adjudicated `completion_claim` +
+  claims are reconciled **strictly one-to-one across all three raters**. The referent is the
+  chain, step and intent revision in force at the claim. Rater A–B pairs with the same
+  referent within `--tol` are matched first, and agreed pairs are accepted. Arbiter marks
+  are then reserved for agreed pairs and assigned to at most one dispute each: a label
+  disagreement, or a claim heard by one rater only. Each audible claim is therefore
+  accepted at most once. A one-rater claim the arbiter did not hear is dropped; a claim
+  both raters heard but the arbiter did not rate stays unresolved. A resolved sweep writes adjudicated `completion_claim` +
   claim-level `verdict` (`chain_id` + `claim_t`) events and a `claim_sweep` marker.
   Unresolved and missing items are listed in `unresolved.json` next to the key.
 * **Immutability**: the inputs of a merged batch are fingerprinted (`merge_state.json` next
@@ -147,8 +168,8 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
   refused/degraded (fail, at or after the final origin) → adjudication completeness →
   deadline rules → observation check.
 * **Adjudication completeness (primary):** an attempted chain needs an adjudicated verdict
-  bound to its final intent. Content also needs an onset decision (`onset_reviewed` or an
-  adjudicated `speech_onset`). Multistep needs a verdict for every step up to the first
+  bound to its final intent. **Every** chain also needs a response-onset decision
+  (`onset_reviewed` or an adjudicated `speech_onset`). Multistep needs a verdict for every step up to the first
   one not done. Otherwise the outcome is `unadjudicated`, and the primary report refuses
   to run and lists the gaps. Every session also needs an adjudicated `claim_sweep`, and
   every adjudicated claim needs its claim-level verdict.
@@ -158,7 +179,10 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
     verdict with `t_evidence` ≤ 15 s + preregistered duration (qa 10, explain 30, sing 30,
     or `prereg_duration_s`);
   * multistep: step *i* complied ≤ 15 s after step *i−1*'s compliance (step 0: after the
-    origin), with every step in order.
+    origin), with every step in order. A step seen only before its predecessor is
+    nonqualifying evidence. The result is `order_fail` only once that step's own window
+    (step *i−1* time + 15 s) was observed without a qualifying occurrence; otherwise it is
+    `insufficient_observation`.
 * **Observation:** a chain that did not succeed, whose failure rests on the *absence* of
   compliance up to a time later than `observation_end`, is `insufficient_observation`.
   **Preregistered missing-data rule** (`report --missing-rule`): `rerun-required`
@@ -167,7 +191,7 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
 * **Outcomes:** `success`, `late`, `never` (censored at D), `unknown` (a "cannot tell"
   verdict inside the window decided the failure: counted as a failure in the primary
   analysis and excluded in the sensitivity analysis), `onset_fail`, `rubric_fail`,
-  `order_fail` (a step done only before its predecessor: a deterministic failure),
+  `order_fail` (a step done only before its predecessor and not within its own observed window),
   `refused`, `degraded`, `capacity_skipped`, `withdrawn`, `unadjudicated`,
   `insufficient_observation`.
 * **Time to success:** success time for a success, otherwise the chain's full deadline D.
@@ -188,15 +212,19 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
   is also reported. Both get task-clustered bootstrap CIs.
 * **Repair (RQ2):** the unit is **every** randomised failure point (one
   `repair_assignment` each), analysed by assigned arm, including those on chains later
-  withdrawn or excluded from the chain analysis. Status: `success` (a `complied` verdict
-  whose request, explicit or the presented chunk containing its compliance time, is
-  `target_request`); `withdrawn` (the chain was withdrawn after assignment: a failure in
-  the primary row, excluded in a sensitivity row); `insufficient_observation` (the target
+  withdrawn or excluded from the chain analysis. Only `arm_drawn` points in sessions
+  passing the RQ2 audit enter the comparison. Status is decided in this order:
+  `ineligible` (the chain was already withdrawn at assignment time `t`: excluded);
+  `withdrawn` (withdrawn at or after assignment: a failure in the primary row, excluded
+  in a sensitivity row, **whatever the target request later showed**); `success` (a
+  `complied` verdict whose request, explicit or the presented chunk containing its
+  compliance time, is `target_request`); `insufficient_observation` (the target
   request was not fully presented before `observation_end`: excluded, flagged for rerun);
   `unadjudicated` (blocks the primary report); otherwise `failure`. The offset j−k is
   reported.
 * **TVC** (action chains): first compliant frame − origin, censored at 15 s.
-  **TFMR**: first accepted on-topic `speech_onset` − origin, censored at 15 s.
+  **TFMR** (every chain kind): first accepted `speech_onset` − origin, censored at 15 s.
+  Primary uses the adjudicated meaningful-response onset.
   **Visual-ack latency**: `visual_ack.t` minus the utterance's `t_end`, or its `t_start`
   for a barge-in.
   **Barge-in stop latency**: the first `playback_stop` at or after a barge-in
@@ -208,6 +236,13 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
   over the preregistered family size (a member not run counts as p = 1), with a decision
   column and a Bonferroni simultaneous CI. `--compare` only selects displayed rows. Pairs
   outside the families are exploratory: unadjusted, no decision.
+  * **Complete pair set:** every (task, seed, chain label) must be present in both
+    conditions, and duplicate keys are always an error. Otherwise the report exits 2
+    and lists the missing keys. `--allow-incomplete-pairs` instead shows that comparison
+    as EXPLORATORY, with no p-value and no decision.
+  * **Minimum clusters:** below `MIN_TASKS` = 10 independent task clusters (*proposed
+    target*), the p-value and decision are suppressed ("no inference").
+  * Suppressed family members count as p = 1 in Holm.
 
 ## Minimal example
 
@@ -222,7 +257,8 @@ Required: `session_id`, `condition`, `task_id`, `seed`. `mode`, if present, must
 {"type":"observation_end","t":30.0}
 {"type":"rating","annotator":"R1","role":"primary","chain_id":"s1:c1","label":"complied","t_first_compliant":9.8,"t_review_start":3.1,"t_review_end":20.0}
 {"type":"rating","annotator":"R2","role":"primary","chain_id":"s1:c1","label":"complied","t_first_compliant":10.1,"t_review_start":3.1,"t_review_end":18.0}
-{"type":"verdict","chain_id":"s1:c1","source":"adjudicated","label":"complied","revision":0,"t_first_compliant":10.1,"t_evidence":10.1,"annotators":["R1","R2"],"reconciliation":"agreement","t_review_start":3.1,"t_review_end":20.0}
+{"type":"verdict","chain_id":"s1:c1","source":"adjudicated","label":"complied","revision":0,"t_first_compliant":10.1,"t_evidence":10.1,"annotators":["R1","R2"],"reconciliation":"agreement","t_review_start":3.1,"t_review_end":20.0,"onset_reviewed":true,"t_onset":4.2}
+{"type":"speech_onset","source":"adjudicated","on_topic":true,"t":4.2,"chain_id":"s1:c1"}
 {"type":"claim_sweep","source":"adjudicated","n_claims":1,"annotators":["R1","R2"],"reconciliation":"agreement"}
 {"type":"completion_claim","source":"adjudicated","chain_id":"s1:c1","t":12.1}
 {"type":"verdict","source":"adjudicated","chain_id":"s1:c1","claim_t":12.1,"label":"complied","revision":0,"t_evidence":10.1}

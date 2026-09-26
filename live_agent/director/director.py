@@ -57,6 +57,7 @@ class Segment:
     action_text: str = ""  # open loop: the LLM's own visible-action phrase
     min_request: int = 0  # reserved slot: do not lock before this request index
     memory_ids: list[str] | None = None  # memories the responder saw when writing this line (None = unknown)
+    recall_id: str | None = None  # memory recall token for that decision (lineage computed by the bridge)
 
 
 @dataclass
@@ -148,7 +149,8 @@ class Director:
         self.apply(utt, d)
         return d
 
-    def apply(self, utt: Utterance, d: dict, memory_ids: list[str] | None = None) -> None:
+    def apply(self, utt: Utterance, d: dict, memory_ids: list[str] | None = None,
+              recall_id: str | None = None) -> None:
         """Apply a decision to the plan (the caller may first discard a superseded decision).
         ``memory_ids``: exactly the memories given to the responder for this decision (lineage)."""
         before = {id(x) for x in self.queue}
@@ -156,11 +158,13 @@ class Director:
         for seg in self.queue:
             if id(seg) not in before:
                 seg.memory_ids = list(memory_ids) if memory_ids is not None else None
+                seg.recall_id = recall_id
         for steps in self.held.values():
             for segs in steps.values():
                 for seg in segs:
                     if seg.memory_ids is None and id(seg) not in before:
                         seg.memory_ids = list(memory_ids) if memory_ids is not None else None
+                        seg.recall_id = recall_id
 
     async def decide(self, utt: Utterance, memories: list[str] | None = None) -> dict:
         """Responder LLM call only; no state is changed."""
@@ -403,8 +407,19 @@ class Director:
     def schedule_correction(self, request_index: int, sentence: str) -> None:
         self.pending_corrections.setdefault(request_index, []).append(sentence)
 
+    def on_request_presented(self, script: BlockScript) -> None:
+        """Open loop (A1): no QC closes a chain, so a chain is closed as PRESENTED (unverified)
+        once its last planned segment has been presented. Lifecycle only, not compliance."""
+        if self.closed:
+            return
+        for cid in script.chain_ids:
+            c = self.chains.get(cid)
+            if c is not None and c.status == ChainStatus.OPEN and not self._unexecuted(cid):
+                c.status = ChainStatus.PRESENTED
+
     def queue_retry(self, chain_id: str, intent: str, *, correction: str, failed_request: int,
-                    revision: int | None = None, step: int | None = None, min_request: int = 0) -> bool:
+                    revision: int | None = None, step: int | None = None, min_request: int = 0,
+                    line: str = "") -> bool:
         """Forward repair: retry the action no earlier than ``min_request`` (the earliest
         correctable request). Dropped if the chain is no longer open, the verdict was about a
         superseded intent or another step, or a newer instruction exists (admission control:
@@ -417,7 +432,7 @@ class Director:
             self.events.capacity_skips.append((chain_id, len(chain.revisions)))
             return False
         self.queue.appendleft(Segment(chain_id=chain_id, plan_version=self.plan_version, intent=intent,
-                                      line="", correction=correction, retry_of=failed_request, step=step,
+                                      line=line, correction=correction, retry_of=failed_request, step=step,
                                       revision=len(chain.revisions), min_request=min_request))
         return True
 
@@ -504,7 +519,7 @@ class Director:
             bridge = self.ledger.bridging_note()
             if bridge:
                 corrections.append(bridge)
-                self.ledger.generated_not_presented.clear()  # bridge once, then continue normally
+                self.ledger.bridge_request = request_index  # divergence kept until this is presented
         script = BlockScript(request_index=request_index, plan_version=seg.plan_version,
                              canon=self.ledger.canon, action=action_phrase, transcript=line,
                              corrections=corrections, checks=checks,
@@ -512,6 +527,7 @@ class Director:
                              capability_ids=cap_ids,
                              provenance={"intent": seg.intent, "step": seg.step, "retry_of": seg.retry_of,
                                          "revision": seg.revision, "memory_ids": seg.memory_ids,
+                                         "recall_id": seg.recall_id,
                                          "completion_remark": seg.is_completion_remark})
         if seg.chain_id and seg.chain_id in self.chains:
             self.chains[seg.chain_id].requests.append(request_index)
@@ -551,7 +567,8 @@ def _split_line(line: str, n: int = CHARS_PER_REQUEST) -> list[str]:
 # loses a clause, a missed claim is a false completion.
 _COMPLETION = re.compile(
     r"(刚才|刚刚|方才|已经|完成|搞定|好了|[做喝吃写翻唱讲说画看读挥放拿站坐跳弹]完|"
-    r"[做写画]好|[唱讲说看读]过了|done|finished)")
+    r"[做写画]好|[唱讲说看读]过了|把.{1,8}[喝吃写翻挥放拿收摆倒]了|"
+    r"[喝吃写翻挥放拿站坐鞠点摇]了(?![吗呢])|done|finished)")
 
 
 def _claims_completion(line: str) -> bool:

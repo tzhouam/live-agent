@@ -165,20 +165,22 @@ def test_persona_line_lineage_from_recall(mem):
     assert mem.get(g.id) is None and mem.get(g2.id) is None and g.id in rep.deleted_ids
 
 
-def test_public_persona_line_requires_complete_lineage(mem):
+def test_public_persona_line_requires_recall_token(mem):
     priv = bridge(mem, mode="private")
     priv.on_user_utterance(utt("我妹妹住在巴黎"))
     fact_id = mem._ids("SELECT id FROM records WHERE kind = 'user_fact'")[0]
+    priv_token = priv.recall_hits("妹妹 巴黎", mode="private").recall_id
     pub = bridge(mem, mode="public")
     before = mem.db.execute("SELECT count(*) FROM records").fetchone()[0]
-    # unknown lineage (no ids, or ids without lineage="complete") is refused in public
-    assert pub.on_persona_line("大家好", session_id="live", scope="public") is None
-    assert pub.on_persona_line("大家好", session_id="live", scope="public", source_ids=[]) is None
-    assert "complete source lineage" in pub.scope_violations[-1]["reason"]
-    # complete lineage with a private input is refused too
-    assert pub.on_persona_line("她妹妹住在巴黎", session_id="live", scope="public", source_ids=[fact_id],
-                               lineage="complete") is None
-    assert "private inputs" in pub.scope_violations[-1]["reason"]
+    # caller assertions without a token are never enough in public
+    for kw in ({}, {"source_ids": []}, {"lineage": "none"}, {"source_ids": [], "lineage": "complete"},
+               {"source_ids": [fact_id], "lineage": "complete"}):
+        assert pub.on_persona_line("大家好", session_id="live", scope="public", **kw) is None
+        assert "recall token" in pub.scope_violations[-1]["reason"]
+    # a token not issued by this bridge session (forged / from the private session) is refused
+    for tok in ("recall-forged", priv_token):
+        assert pub.on_persona_line("她妹妹住在巴黎", session_id="live", scope="public", recall_id=tok) is None
+        assert "unknown recall token" in pub.scope_violations[-1]["reason"]
     assert mem.db.execute("SELECT count(*) FROM records").fetchone()[0] == before
     # direct store API fails closed as well
     for kw in ({}, {"derived_from": None}, {"derived_from": []}, {"derived_from": [], "lineage": "unknown"},
@@ -190,16 +192,33 @@ def test_public_persona_line_requires_complete_lineage(mem):
                        Provenance(speaker="persona"))
     with pytest.raises(ValueError):
         mem.record_generated_event("x", "live", public_scope(S), derived_from=[fact_id], lineage="none")
-    # explicit, complete, public-only lineage is accepted
-    hits = pub.recall_hits("大家", mode="public")
-    g = pub.on_persona_line("欢迎大家", session_id="live", scope="public", source_ids=[h.id for h in hits],
-                            lineage="complete")
+    # a valid token: lineage is exactly what the bridge handed out, computed by the bridge
+    mem.ingest_viewer_chat("大家好呀主播", "v1", S)
+    res = pub.recall_hits("大家好", mode="public")
+    assert res.ids and res.recall_id
+    g = pub.on_persona_line("欢迎大家", session_id="live", scope="public", recall_id=res.recall_id)
+    assert set(g.derived_from) == set(res.ids) and g.meta["lineage"] == "complete"
     assert g.scope == public_scope(S) and g.source_scopes <= {public_scope(S), CANON}
-    g0 = pub.on_persona_line("欢迎", session_id="live", scope="public", lineage="none")
+    # source_ids must be a subset of what was handed out under the token
+    assert pub.on_persona_line("x", session_id="live", scope="public", recall_id=res.recall_id,
+                               source_ids=[fact_id]) is None
+    # a decision without recall gets an empty token -> lineage "none"
+    g0 = pub.on_persona_line("好的，忘掉了", session_id="live", scope="public", recall_id=pub.no_recall())
     assert g0.derived_from == () and g0.meta["lineage"] == "none"
     # a persona utterance ingested in a public session has unknown lineage -> refused
     with pytest.raises(ScopeViolationError):
         mem.ingest_user_utterance(utt("hi", speaker="persona"), user_id=U, stream_id=S, mode="public")
+
+
+def test_recall_token_works_in_private_and_rejects_erased_sources(mem):
+    b = bridge(mem, mode="private")
+    b.on_user_utterance(utt("I work at Acme"))
+    res = b.recall_hits("Acme", mode="private")
+    g = b.on_persona_line("How is Acme?", session_id="sess", scope="private", recall_id=res.recall_id)
+    assert set(g.derived_from) == set(res.ids) and g.scope == private_scope(U)
+    b.forget("Acme")
+    assert b.on_persona_line("Acme again", session_id="sess", scope="private", recall_id=res.recall_id) is None
+    assert "erased" in b.scope_violations[-1]["reason"]
 
 
 def test_persona_line_with_erased_explicit_source_not_recorded(mem):
@@ -416,3 +435,54 @@ def test_sweep_deletes_similar_turns_that_back_no_fact(mem):
     rep = mem.forget("杭州", U)
     assert mem.get(req.episode.id) is None and req.episode.id in rep.swept_ids
     assert rep.review_ids == [] and rep.complete and mem.get(f.id) is None
+
+
+# ---------------------------------------------------------------- round 3: physical erasure (WAL)
+
+
+def _wal_store(tmp_path):
+    return MemoryStore(tmp_path / "wal.sqlite", clock=Clock(), journal_mode="wal")
+
+
+def test_wal_erasure_is_physical_and_verified(tmp_path):
+    mem = _wal_store(tmp_path)
+    assert mem.journal_mode == "wal"
+    assert mem.db.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    (f,) = mem.ingest_user_utterance(utt("我妹妹住在巴黎"), user_id=U).facts
+    mem.ingest_user_utterance(utt("我喜欢猫"), user_id=U)
+    wal = tmp_path / "wal.sqlite-wal"
+    assert wal.exists() and "巴黎".encode() in wal.read_bytes()  # the WAL holds the text before erasure
+    rep = mem.forget("巴黎", U)
+    assert rep.acks["memory_db"].ok and rep.complete
+    assert not wal.exists() or wal.stat().st_size == 0
+    for p in tmp_path.iterdir():
+        assert "巴黎".encode() not in p.read_bytes(), p
+    assert mem.verify_erased("巴黎", U, raw_file=True).ok
+    assert mem.get(f.id) is None
+    mem.close()
+
+
+def test_wal_residue_blocks_memory_db_ack(tmp_path, monkeypatch):
+    mem = _wal_store(tmp_path)
+    mem.ingest_user_utterance(utt("我妹妹住在巴黎"), user_id=U)
+    monkeypatch.setattr(mem, "_physical_purge", lambda: "")  # pretend the purge ran but it did not
+    rep = mem.forget("巴黎", U)
+    assert not rep.acks["memory_db"].ok and not rep.complete
+    assert any(h.startswith("file:") for h in rep.verification.file_hits)
+    mem.close()
+
+
+def test_wal_checkpoint_blocked_by_reader_fails_closed(tmp_path):
+    import sqlite3
+
+    mem = _wal_store(tmp_path)
+    mem.ingest_user_utterance(utt("我妹妹住在巴黎"), user_id=U)
+    reader = sqlite3.connect(tmp_path / "wal.sqlite")
+    reader.execute("BEGIN")
+    reader.execute("SELECT count(*) FROM records").fetchone()  # holds a WAL read snapshot
+    rep = mem.forget("巴黎", U)
+    assert not rep.acks["memory_db"].ok and not rep.complete
+    assert mem._ids("SELECT id FROM records WHERE text LIKE '%巴黎%'") == []  # never un-deleted
+    reader.rollback()
+    reader.close()
+    mem.close()

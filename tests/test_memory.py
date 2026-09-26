@@ -149,7 +149,11 @@ def test_echo_requires_confirmation(mem):
     res = mem.resolve(U, "user", "favorite_drink")
     assert res.value is None and res.needs_confirmation
     assert f.id not in {h.record.id for h in mem.retrieve("龙井", "private", user_id=U)}
-    ok = mem.confirm(f.id)
+    with pytest.raises(ValueError):
+        mem.confirm(f.id)  # an echo needs the user's later confirming turn
+    with pytest.raises(ValueError):
+        mem.confirm(f.id, f.derived_from[0])  # ...not the echoing turn itself
+    ok = mem.confirm(f.id, say(mem, "对，就是龙井").episode.id)
     assert ok.status == Status.ACTIVE and ok.echo  # echo flag kept for audit
     assert mem.resolve(U, "user", "favorite_drink").value == "龙井"
 
@@ -167,7 +171,7 @@ def test_paraphrase_lineage(mem):
     (f,) = say(mem, "我最喜欢喝龙井茶了").facts  # paraphrase, not verbatim
     assert f.echo and f.status == Status.PENDING
     assert gen.id in f.derived_from
-    confirmed = mem.confirm(f.id)
+    confirmed = mem.confirm(f.id, say(mem, "对，龙井").episode.id)
     # lineage survives confirmation: persona line -> echo fact
     assert gen.id in confirmed.derived_from
     assert confirmed.id in mem._descendants([gen.id])
@@ -265,7 +269,9 @@ def test_conflicting_user_facts_flagged(mem):
     assert b.status == Status.PENDING and b.meta["conflict_with"] == [a.id]
     res = mem.resolve(U, "user", "lives_in")
     assert res.value == "巴黎" and res.needs_confirmation
-    mem.confirm(b.id)
+    with pytest.raises(ValueError):
+        mem.confirm(b.id, say(mem, "嗯，好的").episode.id)  # not bound to the conflicting value
+    mem.confirm(b.id, say(mem, "对，是伦敦").episode.id)
     assert mem.resolve(U, "user", "lives_in").value == "伦敦"
     assert mem.get(a.id).status == Status.SUPERSEDED and mem.get(a.id).valid_to is not None
     # multi-valued predicates don't conflict

@@ -332,6 +332,7 @@ class MemoryStore:
         echo_threshold: float = 0.5,
         confirm_threshold: float = 0.5,
         erase_sim_threshold: float = 0.5,
+        journal_mode: str | None = None,
         echo_lexical_floor: float = 0.4,
         viewer_rate: tuple[int, float] = (5, 10.0),
         viewer_max_len: int = 200,
@@ -366,6 +367,12 @@ class MemoryStore:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA secure_delete = ON")
+        if int(self.db.execute("PRAGMA secure_delete").fetchone()[0]) != 1:
+            raise RuntimeError("SQLite build does not support secure_delete; erasure could not be physical")
+        if journal_mode:
+            if journal_mode.lower() not in ("delete", "truncate", "persist", "wal"):
+                raise ValueError(f"unsupported journal_mode {journal_mode!r}")
+            self.db.execute(f"PRAGMA journal_mode = {journal_mode}")
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(_SCHEMA)
         self.db.commit()
@@ -968,8 +975,8 @@ class MemoryStore:
         **required** for a candidate belief: the belief is not rewritten; a *new*
         ``own_assertion`` user fact (speaker="user", derived from the confirming episode and
         the belief) is created and returned, and the belief is kept as provenance (status
-        superseded, ``meta.confirmed_as``). For a pending user fact it is optional and, when
-        given, is linked into the fact's lineage.
+        superseded, ``meta.confirmed_as``). It is also required for a pending echo /
+        conflicting user fact, and is linked into that fact's lineage.
 
         Binding rule (the turn must confirm *this* proposition, see :meth:`_confirmation_binds`):
         either (a) the turn states it: it contains the record's value, or its embedding
@@ -986,14 +993,16 @@ class MemoryStore:
         if conf is not None:
             if conf.kind != Kind.EPISODE or conf.provenance.speaker != "user" or conf.provenance.user_id != owner:
                 raise ValueError("confirmation must be an episode spoken by the record's owner")
+            if conf.id in rec.derived_from or conf.created_at < rec.created_at:
+                raise ValueError("the confirming turn must be a later turn, not the record's own source")
             if conf.claim_type in (ClaimType.QUESTION, ClaimType.HYPOTHETICAL, ClaimType.QUOTE_OF_PERSONA):
                 raise ValueError(f"a {conf.claim_type.value} turn cannot confirm a memory")
             why = self._confirmation_binds(rec, conf, question_id)
             if why is None:
                 raise ValueError("confirming turn is not bound to this proposition "
                                  "(no value / semantic match and no answered question)")
-        elif rec.kind == Kind.CANDIDATE_BELIEF:
-            raise ValueError("confirming an agent inference requires the user's confirming episode")
+        else:
+            raise ValueError("confirmation requires the user's confirming turn (episode id)")
         now = self.clock()
         others: list[Record] = []
         if rec.subject and rec.predicate and is_single_valued(rec.predicate):
@@ -1449,9 +1458,13 @@ class MemoryStore:
                 new = self.consolidate(s, summ)
                 if new is not None:
                     report.regenerated.append(new.id)
-        report.verification = self.verify_erasure(report)
+        physical = self._physical_purge()
+        # raw-file verification is mandatory for a file-backed DB before acking memory_db
+        report.verification = self.verify_erasure(report, raw_file=True)
         v = report.verification
-        report.acknowledge(MEMORY_DB_TARGET, v.ok, "verified" if v.ok else f"residue: {v.hits[:10]}")
+        ok = v.ok and not physical
+        report.acknowledge(MEMORY_DB_TARGET, ok, "verified (logical + raw file)" if ok
+                           else f"residue: {v.hits[:10]}; physical purge: {physical or 'ok'}")
         for name, hook in hook_names:
             try:
                 ack = hook(report)
@@ -1523,6 +1536,30 @@ class MemoryStore:
                 (delete if kind in _SWEEP_DELETE else review).append(r["id"])
         return delete, review
 
+    @property
+    def journal_mode(self) -> str:
+        return str(self.db.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+
+    def _physical_purge(self) -> str:
+        """Make an erasure physical: commit, VACUUM (rebuilds the file; freed pages were
+        already zeroed by ``secure_delete``), then in WAL mode checkpoint and TRUNCATE the
+        WAL so no old frame keeps erased bytes. Returns "" on success, else the problem."""
+        if self.path == ":memory:":
+            return ""
+        try:
+            self.db.commit()
+            self.db.execute("VACUUM")
+            if self.journal_mode == "wal":
+                busy, _, _ = self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if busy:
+                    return "wal checkpoint busy (another connection holds the WAL)"
+                wal = Path(self.path + "-wal")
+                if wal.exists() and wal.stat().st_size:
+                    return f"wal not truncated ({wal.stat().st_size} bytes)"
+        except sqlite3.Error as e:
+            return f"sqlite error: {e!r}"
+        return ""
+
     def _scrub_refs(self, deleted: set[str]) -> None:
         """Remove references to erased ids from surviving records' meta (echo_of, supersedes ...)."""
         if not deleted:
@@ -1563,8 +1600,10 @@ class MemoryStore:
           tombstone reasons). Hits in records this user's erasure may touch fail the check;
           hits in other users' private records or canon-only records are listed in
           ``foreign_hits`` only.
-        * orphan index / embedding / edge rows; with ``raw_file``, the DB file bytes (only
-          meaningful if no other user legitimately stores the term).
+        * orphan index / embedding / edge rows; with ``raw_file`` (mandatory inside
+          :meth:`forget`), the bytes of the DB file and its ``-wal`` / ``-journal``: a hit
+          fails unless the term legitimately survives in a foreign / canon record (then it
+          is listed in ``foreign_hits``).
 
         * ``query_vecs`` (embeddings of the erased content, kept in memory on the report):
           surviving derived artifacts at or above ``erase_sim_threshold`` fail (``similar``);
@@ -1629,12 +1668,25 @@ class MemoryStore:
             out.similar = [f"records:{i}" for i in sim_del]
             out.review = [f"records:{i}" for i in sim_rev]
         if raw_file and self.path != ":memory:":
+            files = [p for p in (Path(self.path), Path(self.path + "-journal"), Path(self.path + "-wal"))
+                     if p.exists()]
+            blobs = {p.name: p.read_bytes() for p in files}
             for t in terms:
-                needle = t.encode("utf-8")
-                for p in (Path(self.path), Path(self.path + "-journal"), Path(self.path + "-wal")):
-                    if p.exists() and needle in p.read_bytes():
-                        out.file_hits.append(f"file:{p.name}")
+                needles = {v.encode("utf-8") for v in (t, t.lower(), t.upper(), t.title()) if v}
+                # the term legitimately survives in another user's / canon records: bytes are expected
+                legit = any(h for h in out.foreign_hits if self._record_has_term(h, t))
+                for name, blob in blobs.items():
+                    if any(n in blob for n in needles):
+                        (out.foreign_hits if legit else out.file_hits).append(f"file:{name}")
         return out
+
+    def _record_has_term(self, hit: str, term: str) -> bool:
+        kind, _, rid = hit.partition(":")
+        if kind != "records":
+            return False
+        r = self.db.execute("SELECT text, coalesce(value, '') AS v, meta, provenance FROM records WHERE id = ?",
+                            [rid]).fetchone()
+        return bool(r) and any(term.lower() in str(x).lower() for x in r)
 
 
 _AFFIRM = re.compile(r"^\W*(yes|yeah|yep|right|correct|exactly|sure|that'?s right|对|是的|是啊|是呀|没错|对的|嗯|确实|正确|当然)",

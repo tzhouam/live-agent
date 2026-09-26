@@ -160,6 +160,15 @@ python3 -m pytest
 - **Generator-path runs are not M1 qualification.** The §6.4 gate needs the client playback path and at least
   three 30-minute soak runs. The runs in `.cache/m1` are short generator-path diagnostics.
 
+- **Round-3 additions:**
+  - A1 chains close as `presented` (unjudged) once their planned segments are shown.
+  - The RQ2 repeat arm repeats the original action and line.
+  - The bridging note names the unseen action and is kept until the bridge is presented.
+  - Stale `/dev/shm` payloads are unlinked, and adapter shutdown is cancellation-safe.
+  - Public persona lines get lineage from a memory recall token issued by the bridge.
+  - Erasure is physical: `secure_delete`, `VACUUM` and WAL truncation with a raw-file check. `VACUUM` runs on the
+    event loop inside an erasure; the session is quiesced then, but the cost grows with the database size.
+
 ## Not yet verified
 
 - **E1:** a judge-only pilot ran (24 × 5 trials on TaoMate-H3, `docs/e1_pilot.md`). It showed the VLM judge failing

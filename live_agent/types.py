@@ -83,6 +83,7 @@ class ChainStatus(str, enum.Enum):
     WITHDRAWN = "withdrawn"  # user withdrew: excluded from the primary denominator
     CAPACITY_SKIPPED = "capacity_skipped"  # dropped by admission control: counts as failure
     REFUSED = "refused"  # compiler refused / degraded: counts as failure
+    PRESENTED = "presented"  # open loop (A1): all planned segments shown; compliance unjudged
 
 
 class TaskKind(str, enum.Enum):

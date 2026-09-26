@@ -179,3 +179,33 @@ def test_cut_step_is_capacity_skipped_by_newer_instruction_or_resumed_after_chat
     d.next_script(1)  # chat line first
     again = d.next_script(2)
     assert again.chain_ids == s.chain_ids and "teacup" in again.action
+
+
+def test_open_loop_chains_close_when_presented():
+    d = make({"relation": "new", "kind": "action", "steps": [{"action": "she waves", "line": "好"}]},
+             mode=DirectorMode.OPEN_LOOP)
+    say(d, "挥挥手")
+    s = d.next_script(0)
+    d.on_request_presented(s)
+    assert next(iter(d.chains.values())).status == ChainStatus.PRESENTED
+    assert not d._open_chains()
+
+
+def test_completion_guard_catches_ordinary_claims():
+    from live_agent.director.director import _claims_completion
+
+    for line in ["我把茶喝了。", "刚才那首歌你喜欢吗", "我已经翻好了", "挥完了"]:
+        assert _claims_completion(line), line
+    for line in ["好，我喝口茶。", "我来翻一页。", "你想喝了吗"]:
+        assert not _claims_completion(line), line
+
+
+def test_repeat_arm_retry_carries_original_line():
+    d = make(TEA)
+    say(d, "喝口茶")
+    chain = next(iter(d.chains.values()))
+    s0 = d.next_script(0)
+    assert d.queue_retry(chain.chain_id, "drink_tea", correction="", failed_request=0, revision=0,
+                         line=s0.transcript)
+    again = d.next_script(1)
+    assert again.transcript == s0.transcript and again.action == s0.action

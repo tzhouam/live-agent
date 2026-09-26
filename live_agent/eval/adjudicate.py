@@ -24,10 +24,13 @@ available; otherwise a hard link or copy, with a warning), never as symlinks, an
 is scanned for condition names, session ids, task ids and source paths before hand-off.
 
 Items:
-* **chain**: one per effective chain (final intent; per step for multistep; content items
-  also ask for the on-topic speech onset). A "not done" / "cannot tell" label (or "no
-  on-topic speech") is accepted only if the rater reviewed through the applicable deadline
-  (clipped to the recording end); otherwise the item is escalated, not accepted.
+* **chain**: one per effective chain (final intent; per step for multistep). Every chain
+  item also asks for the response onset: on-topic speech for content, the first meaningful
+  spoken response otherwise, or an explicit "none by the onset deadline". A "not done" /
+  "cannot tell" / "none" label (or a multistep step seen only before its predecessor) is
+  accepted only if the union of intervals the rater actually played covers the request
+  through the applicable deadline (clipped to the recording end); otherwise the item is
+  escalated, not accepted.
 * **sweep**: one per session. The rater watches the whole recording (the logged claims are
   not shown), marks every audible completion claim, assigns its referent request (and step)
   and judges it against what was requested at that moment, citing evidence at or before the
@@ -233,10 +236,12 @@ starts at the request. Judge only against the criteria of the <b>final</b> reque
 check. <b>Action</b>: pause at the <b>first frame that clearly shows it</b> and press "first compliant = now".
 <b>Multistep</b>: label each step; for step i mark the first frame showing it <b>after</b> step i−1 was done
 (if it was only done before, mark that time). <b>Content</b>: mark when on-topic speech starts (or "no on-topic
-speech"), judge the rubric over the whole answer, and if it passes mark when the answer ends.
-Before "not done", "cannot tell" or "no on-topic speech", <b>watch through the deadline</b> (or to the end of the
-recording): the furthest point you play is recorded, and shorter reviews are sent to a third annotator.
-<b>Claim sweep</b> items: watch the <b>whole</b> recording, press "claim heard = now" whenever the persona says it
+speech"), judge the rubric over the whole answer, and if it passes mark when the answer ends. <b>Every request</b>:
+mark when the persona's first meaningful spoken response to it starts (content: on-topic speech), or "none by the
+onset deadline". Before "not done", "cannot tell" or "none", <b>play the video continuously from the request through
+the deadline</b> (or to the end of the recording): only intervals actually played at normal speed count (skipping or
+seeking does not), and shorter reviews are sent to a third annotator.
+<b>Claim sweep</b> items: play the <b>whole</b> recording, press "claim heard = now" whenever the persona says it
 has done something, choose which request it refers to, and judge whether that request (as it stood at that
 moment) had visibly been done <b>before</b> the claim; cite the evidence frame, which must not be after the
 claim. Press "sweep complete" at the end (also when there were no claims). "Cannot tell" is allowed.
@@ -246,16 +251,20 @@ Do not guess the condition.</p>
 <script>
 const ITEMS = __ITEMS__;
 const BATCH = "__BATCH__";
-const L = {}, SEEN = {};
+const L = {}, PLAY = {};  // PLAY[id] = {last, iv}: intervals actually played (normal playback only)
 const NAMES = {complied: "done", not_complied: "not done", unknown: "cannot tell"};
 try { Object.assign(L, JSON.parse(localStorage.getItem("adj-" + BATCH) || "{}")); } catch (e) {}
 function esc(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]); }
 function save(){ try { localStorage.setItem("adj-" + BATCH, JSON.stringify(L)); } catch (e) {}
   document.getElementById("cnt").textContent = Object.keys(L).length + " labels"; }
 function vid(id){ return document.getElementById("v-" + id); }
-function seen(id){ const v = vid(id); return Math.max(SEEN[id] || 0, v ? v.currentTime : 0); }
+function mergeIv(iv){ const s = iv.map(x => [x[0], x[1]]).sort((a, b) => a[0] - b[0]), out = [];
+  for (const x of s) { const l = out[out.length - 1]; if (l && x[0] <= l[1] + 0.3) l[1] = Math.max(l[1], x[1]); else out.push(x); }
+  return out.map(x => [+x[0].toFixed(2), +x[1].toFixed(2)]); }
+function watched(id, prev){ return mergeIv([...(prev || []), ...((PLAY[id] || {}).iv || [])]); }
+function upto(iv){ return iv.length ? iv[iv.length - 1][1] : null; }
 function obj(id, step){ const k = id + "/" + step; return L[k] || (L[k] = {}); }
-function done(id, o){ o.v_seen = +Math.max(o.v_seen || 0, seen(id)).toFixed(2); save(); render(); }
+function done(id, o){ o.v_watched = watched(id, o.v_watched); save(); render(); }
 function set(id, step, key, val){ const o = obj(id, step); o[key] = val;
   if (key === "onset_none" && val) delete o.v_onset; if (key === "v_onset") delete o.onset_none; done(id, o); }
 function now(id, step, key){ set(id, step, key, +vid(id).currentTime.toFixed(2)); }
@@ -298,13 +307,14 @@ function chainItem(it, m){
     h += ["complied", "not_complied", "unknown"].map(x =>
       `<button class="${cur.label === x ? "sel" : ""}" onclick="set('${it.id}',${s},'label','${x}')">${NAMES[x]}</button>`).join("");
     if (it.kind !== "content") h += ` <button onclick="now('${it.id}',${s},'v_first')">first compliant = now</button>`;
-    else h += ` <button onclick="now('${it.id}',${s},'v_onset')">on-topic speech starts = now</button>` +
-      ` <button class="${cur.onset_none ? "sel" : ""}" onclick="set('${it.id}',${s},'onset_none',true)">no on-topic speech</button>` +
-      ` <button onclick="now('${it.id}',${s},'v_end')">answer ends = now</button>`;
+    else h += ` <button onclick="now('${it.id}',${s},'v_end')">answer ends = now</button>`;
+    if (s === 0) h += `<div>${it.kind === "content" ? "On-topic speech" : "First meaningful spoken response to this request"}: ` +
+      `<button onclick="now('${it.id}',0,'v_onset')">starts = now</button>` +
+      ` <button class="${cur.onset_none ? "sel" : ""}" onclick="set('${it.id}',0,'onset_none',true)">none by the onset deadline</button></div>`;
     const bad = cur.v_onset != null && cur.v_end != null && cur.v_end < cur.v_onset;
     h += ` <span class=mut>${cur.v_first != null ? "first " + cur.v_first + " s " : ""}${
       cur.v_onset != null ? "onset " + cur.v_onset + " s " : ""}${cur.v_end != null ? "end " + cur.v_end + " s " : ""}${
-      cur.v_seen != null ? "reviewed to " + cur.v_seen + " s" : ""}</span>` + (bad ? " <span class=bad>answer ends before onset</span>" : "");
+      cur.v_watched ? "watched " + cur.v_watched.map(x => x[0] + "–" + x[1]).join(", ") + " s" : ""}</span>` + (bad ? " <span class=bad>answer ends before onset</span>" : "");
     st.innerHTML = h; m.appendChild(st);
   }
 }
@@ -314,7 +324,7 @@ function sweepItem(it, m){
     "<div>Requests in this recording:</div><ol>" + it.refs.map(r => "<li>" + r.revisions.map(v =>
       "at video " + v.v_origin.toFixed(1) + " s: " + v.text + "<div class=crit>" + crit(v.criteria, null) + "</div>").join("") + "</li>").join("") + "</ol>";
   h += `<button onclick="addClaim('${it.id}')">claim heard = now</button> <button class="${cur.complete ? "sel" : ""}" onclick="complete('${it.id}')">sweep complete</button>` +
-    ` <span class=mut>${cur.v_seen != null ? "reviewed to " + cur.v_seen + " s" : ""}</span>`;
+    ` <span class=mut>${cur.v_watched ? "watched " + cur.v_watched.map(x => x[0] + "–" + x[1]).join(", ") + " s" : ""}</span>`;
   (cur.claims || []).forEach((c, i) => {
     const opts = ['<option value="|">refers to ...</option>'].concat(it.refs.flatMap((r, j) => {
       const o = [`<option value="${r.ref}|" ${c.ref === r.ref && c.step == null ? "selected" : ""}>request ${j + 1}</option>`];
@@ -338,7 +348,12 @@ function render(){
     let v = keep["v-" + it.id];
     if (!v) { v = Object.assign(document.createElement("video"),
       {id: "v-" + it.id, src: it.video + "#t=" + it.v_origin, controls: true, preload: "metadata"});
-      v.addEventListener("timeupdate", () => { SEEN[it.id] = Math.max(SEEN[it.id] || 0, v.currentTime); }); }
+      const p = PLAY[it.id] = {last: null, iv: []};
+      // an interval counts as watched only when played continuously (no seek, rate <= 2x)
+      v.addEventListener("timeupdate", () => { const t = v.currentTime;
+        if (!v.paused && !v.seeking && p.last != null && t >= p.last && t - p.last <= 1.5 && v.playbackRate <= 2) p.iv.push([p.last, t]);
+        p.last = t; });
+      v.addEventListener("seeking", () => { p.last = null; }); }
     d.appendChild(v);
     const m = document.createElement("div"); m.className = "meta";
     if (it.type === "sweep") sweepItem(it, m); else chainItem(it, m);
@@ -521,8 +536,43 @@ def _check_v(v: Any, lo: float, hi: float, what: str, where: str) -> float:
     return v
 
 
-def _to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str, where: str) -> dict[str, Any]:
-    """Validate one chain-item label and convert it to session time. Raises LabelError."""
+def _watched(lab: dict[str, Any], v_len: float, where: str) -> list[list[float]]:
+    """The intervals the rater actually played (``v_watched``: [[a, b], ...] in video time,
+    recorded by the page from continuous playback), validated and merged."""
+    iv = []
+    for x in lab.get("v_watched") or []:
+        if not (isinstance(x, (list, tuple)) and len(x) == 2):
+            raise LabelError(f"{where}: bad watched interval {x!r}")
+        a = _check_v(x[0], 0.0, v_len, "watched start", where)
+        b = _check_v(x[1], 0.0, v_len, "watched end", where)
+        if b < a:
+            raise LabelError(f"{where}: watched interval {x!r} ends before it starts")
+        iv.append([a, b])
+    return _merge_iv(iv)
+
+
+def _merge_iv(iv: Sequence[Sequence[float]], gap: float = REVIEW_TOL_S) -> list[list[float]]:
+    out: list[list[float]] = []
+    for a, b in sorted([float(x[0]), float(x[1])] for x in iv):
+        if out and a <= out[-1][1] + gap:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def covered(iv: Sequence[Sequence[float]], lo: float, hi: float, slack: float = REVIEW_TOL_S) -> bool:
+    """Is [lo, hi] inside the union of watched intervals (gaps <= slack are bridged)?"""
+    if hi <= lo + slack:
+        return True
+    return any(a <= lo + slack and b >= hi - slack for a, b in _merge_iv(iv, slack))
+
+
+def _to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str, where: str, step: int = 0) -> dict[str, Any]:
+    """Validate one chain-item label and convert it to session time. Raises LabelError.
+    Step 0 of every chain item carries the response-onset decision (a time, or "none by the
+    onset deadline"): on-topic speech for content, the first meaningful spoken response
+    otherwise."""
     segs = [tuple(x) for x in info["segments"]]
     v_len, v_origin = float(info["v_len"]), float(info["v_origin"])
     label = lab.get("label")
@@ -532,57 +582,61 @@ def _to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str, where
     for k in ("v_first", "v_end", "v_onset"):
         if lab.get(k) is not None:
             _check_v(lab[k], v_origin, v_len, k, where)  # inside the recording, after the request
-    if lab.get("v_seen") is not None:
-        _check_v(lab["v_seen"], 0.0, v_len, "v_seen", where)
     if label == "complied":
         need = "v_end" if info["kind"] == "content" else "v_first"
         if lab.get(need) is None:
             raise LabelError(f"{where}: 'done' needs {need}")
-    if info["kind"] == "content":
+    if step == 0:
         if (lab.get("v_onset") is None) == (not lab.get("onset_none")):
-            raise LabelError(f"{where}: content item needs exactly one of an onset time or 'no on-topic speech'")
+            raise LabelError(f"{where}: needs exactly one response-onset decision (a time, or 'none by the deadline')")
         if lab.get("v_onset") is not None and lab.get("v_end") is not None and float(lab["v_end"]) < float(lab["v_onset"]) - _EPS:
             raise LabelError(f"{where}: answer end {lab['v_end']} before onset {lab['v_onset']}")
+        r["onset_none"] = bool(lab.get("onset_none"))
     conv = {"v_first": "t_first_compliant", "v_end": "t_evidence", "v_onset": "t_onset"}
     for vk, tk in conv.items():
-        if lab.get(vk) is not None:
+        if lab.get(vk) is not None and (vk != "v_onset" or step == 0):
             r[tk] = video_to_session(segs, float(lab[vk]))
     if "t_first_compliant" in r and "t_evidence" not in r:
         r["t_evidence"] = r["t_first_compliant"]
-    if info["kind"] == "content":
-        r["onset_none"] = bool(lab.get("onset_none"))
-    marks = [float(lab[k]) for k in ("v_first", "v_end", "v_onset") if lab.get(k) is not None]
-    r["_seen_v"] = max([*marks, float(lab.get("v_seen") or 0.0)])
+    r["_watched"] = _watched(lab, v_len, where)
     return r
 
 
 def _review_need(info: dict[str, Any], r: dict[str, Any], step: int,
                  prev: dict[str, Any] | None) -> float | None:
-    """Session time through which a rater must have reviewed for this label to count:
-    negative labels need the applicable deadline (action origin+15; content origin+15+dur;
-    multistep step i: the rater's step i-1 compliance + 15, step 0 origin + 15); "no
-    on-topic speech" needs origin + 15. None = no requirement."""
+    """Session time through which a rater must have watched (from the request) for this
+    label to count. Negative labels: the applicable deadline (action origin + 15 s; content
+    origin + 15 s + duration; multistep step i: the rater's step i-1 time + 15 s, step 0
+    origin + 15 s). A multistep step marked done only *before* its predecessor is
+    nonqualifying evidence and needs the same window. "No response onset": origin + 15 s.
+    None = no requirement."""
     o, kind = float(info["origin"]), info["kind"]
+    prev_t = (float(prev["t_first_compliant"]) if prev is not None and prev["label"] == "complied"
+              and prev.get("t_first_compliant") is not None else None)
     need = None
     if r["label"] != "complied":
         if kind == "content":
             need = o + float(info["deadline_s"])
         elif kind == "multistep" and step > 0:
-            if prev is not None and prev["label"] == "complied" and prev.get("t_first_compliant") is not None:
-                need = float(prev["t_first_compliant"]) + STEP_D
+            if prev_t is not None:
+                need = prev_t + STEP_D
         else:
             need = o + STEP_D
-    if kind == "content" and r.get("onset_none"):
+    elif kind == "multistep" and step > 0 and prev_t is not None and r.get("t_first_compliant") is not None \
+            and float(r["t_first_compliant"]) < prev_t:
+        need = prev_t + STEP_D  # early: must show it did not also happen within its window
+    if r.get("onset_none"):
         need = max(need or 0.0, o + ONSET_D)
     return need
 
 
-def _sweep_to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str, where: str) -> dict[str, Any]:
+def _sweep_to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str, where: str,
+                      step: int = 0) -> dict[str, Any]:
     segs = [tuple(x) for x in info["segments"]]
     v_len = float(info["v_len"])
     if lab.get("complete") is not True:
         raise LabelError(f"{where}: claim sweep not marked complete")
-    seen = _check_v(lab.get("v_seen") or 0.0, 0.0, v_len, "v_seen", where)
+    watched = _watched(lab, v_len, where)
     claims = []
     for i, c in enumerate(lab.get("claims") or []):
         w = f"{where} claim {i}"
@@ -590,9 +644,9 @@ def _sweep_to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str,
         ref = info["refs"].get(c.get("ref") or "")
         if ref is None:
             raise LabelError(f"{w}: no referent request chosen")
-        step = c.get("step")
-        if step is not None and not 0 <= int(step) < int(ref["n_steps"]):
-            raise LabelError(f"{w}: step {step} out of range")
+        st = c.get("step")
+        if st is not None and not 0 <= int(st) < int(ref["n_steps"]):
+            raise LabelError(f"{w}: step {st} out of range")
         if c.get("label") not in VERDICT_LABELS:
             raise LabelError(f"{w}: missing or bad label {c.get('label')!r}")
         rev = max((j for j, o in enumerate(ref["origins_v"]) if o <= vc + _EPS), default=None)
@@ -602,16 +656,15 @@ def _sweep_to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str,
         if c["label"] == "complied" and ev is None:
             raise LabelError(f"{w}: 'done' needs an evidence time at or before the claim")
         out = {"t": video_to_session(segs, vc), "_v": vc, "chain_id": ref["chain_id"], "ref": c["ref"],
-               "step": None if step is None else int(step), "label": c["label"], "revision": rev}
+               "step": None if st is None else int(st), "label": c["label"], "revision": rev}
         if ev is not None:
             ev = _check_v(ev, float(ref["origins_v"][rev]), vc, "v_evidence (must be after the request and "
                           "at or before the claim)", w)
             out["t_evidence"] = video_to_session(segs, ev)
         claims.append(out)
-    seen = max([seen, *(c["_v"] for c in claims)])
-    return {"annotator": annotator, "claims": claims, "_seen_v": seen, "label": "complied",
-            "review_ok": seen >= v_len - REVIEW_TOL_S,
-            "t_review_end": video_to_session(segs, min(seen, v_len))}
+    return {"annotator": annotator, "claims": claims, "_watched": watched, "label": "complied",
+            "review_ok": covered(watched, 0.0, v_len),
+            "t_review_end": video_to_session(segs, watched[-1][1]) if watched else None}
 
 
 def _load_ratings(path: Path, annotator: str, items: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -633,12 +686,12 @@ def _load_ratings(path: Path, annotator: str, items: dict[str, Any]) -> dict[str
             continue
         try:
             conv = _sweep_to_session if info["type"] == "sweep" else _to_session
-            out[k] = conv(lab, info, annotator, f"{annotator} {k}")
+            out[k] = conv(lab, info, annotator, f"{annotator} {k}", step)
         except (LabelError, ValueError) as e:
             errs.append(str(e))
     if errs:
         raise LabelError(f"{path}: {len(errs)} invalid label(s); nothing merged:\n  " + "\n  ".join(errs))
-    # reviewed interval: the furthest point this rater played anywhere in the item
+    # review coverage: the union of intervals this rater actually played anywhere in the item
     by_item: dict[str, list[str]] = {}
     for k in out:
         by_item.setdefault(k.split("/")[0], []).append(k)
@@ -647,16 +700,19 @@ def _load_ratings(path: Path, annotator: str, items: dict[str, Any]) -> dict[str
         if info["type"] == "sweep":
             continue
         segs = [tuple(x) for x in info["segments"]]
-        seen_v = max(out[k]["_seen_v"] for k in ks)
+        iv = _merge_iv([x for k in ks for x in out[k]["_watched"]])
+        v_origin, v_len = float(info["v_origin"]), float(info["v_len"])
         for k in ks:
             r, step = out[k], int(k.split("/")[1])
+            r["_watched"] = iv
             need = _review_need(info, r, step, out.get(f"{iid}/{step - 1}") if step else None)
-            need_v = session_to_video(segs, need) if need is not None else None
-            r["review_ok"] = need_v is None or seen_v >= need_v - REVIEW_TOL_S
-            r["t_review_start"] = video_to_session(segs, min(float(info["v_origin"]), float(info["v_len"])))
-            r["t_review_end"] = video_to_session(segs, min(max(seen_v, float(info["v_origin"])), float(info["v_len"])))
+            need_v = session_to_video(segs, need) if need is not None else None  # clipped to the recording
+            r["review_ok"] = need_v is None or covered(iv, min(v_origin, v_len), need_v)
+            r["t_review_start"] = video_to_session(segs, min(v_origin, v_len))
+            r["t_review_end"] = video_to_session(segs, max([v_origin, *(b for _, b in iv)]) if iv else v_origin)
+            r["v_watched"] = iv
             if need is not None:
-                r["t_review_needed"] = min(need, video_to_session(segs, float(info["v_len"])))
+                r["t_review_needed"] = min(need, video_to_session(segs, v_len))
     return out
 
 
@@ -669,7 +725,7 @@ def _close(a: float | None, b: float | None, tol: float) -> bool:
     return abs(a - b) <= tol
 
 
-def _agree(a: dict[str, Any], b: dict[str, Any], kind: str, tol: float) -> bool:
+def _agree(a: dict[str, Any], b: dict[str, Any], kind: str, tol: float, step: int = 0) -> bool:
     if a["label"] != b["label"]:
         return False
     if a["label"] == "complied":
@@ -677,7 +733,7 @@ def _agree(a: dict[str, Any], b: dict[str, Any], kind: str, tol: float) -> bool:
             return False
         if kind == "content" and not _close(a.get("t_evidence"), b.get("t_evidence"), tol):
             return False
-    if kind == "content":
+    if step == 0:
         return _close(a.get("t_onset"), b.get("t_onset"), tol)
     return True
 
@@ -696,54 +752,69 @@ def _combine(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     return r
 
 
-def _match(xs: list[dict], ys: list[dict], tol: float) -> tuple[list[tuple[dict, dict]], list[dict]]:
-    """Greedy one-to-one matching of claims with the same referent (chain, step) within tol."""
-    cand = sorted(((abs(x["t"] - y["t"]), i, j) for i, x in enumerate(xs) for j, y in enumerate(ys)
-                   if x["chain_id"] == y["chain_id"] and x["step"] == y["step"] and abs(x["t"] - y["t"]) <= tol))
-    ux, uy, pairs = set(), set(), []
-    for _, i, j in cand:
-        if i not in ux and j not in uy:
-            ux.add(i)
-            uy.add(j)
-            pairs.append((xs[i], ys[j]))
-    rest = [x for i, x in enumerate(xs) if i not in ux] + [y for j, y in enumerate(ys) if j not in uy]
-    return pairs, rest
+def _ref(c: dict) -> tuple:
+    """Referent of a swept claim: chain, step and the intent revision in force."""
+    return (c["chain_id"], c["step"], c["revision"])
 
 
-def _find(c: dict, pool: list[dict], tol: float) -> dict | None:
-    m = [p for p in pool if p["chain_id"] == c["chain_id"] and p["step"] == c["step"] and abs(p["t"] - c["t"]) <= tol]
-    return min(m, key=lambda p: abs(p["t"] - c["t"])) if m else None
+def _assign(groups: list[list[dict]], pool: list[dict], used: set[int], tol: float) -> dict[int, int]:
+    """Greedy one-to-one assignment of claim groups to pool claims with the same referent
+    within tol (distance = nearest group member); pool indices in ``used`` are taken."""
+    cand = sorted((min(abs(g["t"] - p["t"]) for g in grp), gi, pi)
+                  for gi, grp in enumerate(groups) for pi, p in enumerate(pool)
+                  if pi not in used and _ref(p) == _ref(grp[0]) and min(abs(g["t"] - p["t"]) for g in grp) <= tol)
+    out: dict[int, int] = {}
+    for _, gi, pi in cand:
+        if gi not in out and pi not in used:
+            out[gi] = pi
+            used.add(pi)
+    return out
 
 
 def _reconcile_sweep(a: dict, b: dict, c: dict | None, tol: float) -> tuple[list[dict] | None, str, str]:
-    """-> (accepted claims or None if unresolved, how, reason)."""
+    """-> (accepted claims or None if unresolved, how, reason). Strictly one-to-one across
+    the three raters: A-B pairs first (same chain, step and revision, within tol); arbiter
+    claims are then reserved for agreed pairs and assigned to at most one dispute each, so
+    each audible claim is accepted at most once. A claim heard by one rater and not by the
+    arbiter is dropped; a claim both raters heard but labelled differently needs the arbiter."""
     arb = c if c is not None and c["review_ok"] else None
     if not (a["review_ok"] and b["review_ok"]):
         if arb is None:
             return None, "", "incomplete review of the recording"
         return [dict(x, _how="arbitration") for x in arb["claims"]], "arbitration", ""
-    pairs, rest = _match(a["claims"], b["claims"], tol)
+    cand = sorted((abs(x["t"] - y["t"]), i, j) for i, x in enumerate(a["claims"]) for j, y in enumerate(b["claims"])
+                  if _ref(x) == _ref(y) and abs(x["t"] - y["t"]) <= tol)
+    ua, ub, pairs = set(), set(), []
+    for _, i, j in cand:
+        if i not in ua and j not in ub:
+            ua.add(i)
+            ub.add(j)
+            pairs.append([a["claims"][i], b["claims"][j]])
+    singles = [[x] for i, x in enumerate(a["claims"]) if i not in ua] + \
+              [[y] for j, y in enumerate(b["claims"]) if j not in ub]
+    agreed = [p for p in pairs if p[0]["label"] == p[1]["label"]]
+    split = [p for p in pairs if p[0]["label"] != p[1]["label"]]
+    if (split or singles) and arb is None:
+        return None, "", "claim label disagreement" if split else "claim heard by one rater only"
     acc = []
-    for x, y in pairs:
-        if x["label"] == y["label"]:
-            t = max(x["t"], y["t"])
-            ev = [e for e in (x.get("t_evidence"), y.get("t_evidence")) if e is not None]
-            z = dict(x, t=t, _how="agreement")
-            if ev:
-                z["t_evidence"] = min(max(ev), t)
-            acc.append(z)
-            continue
-        m = _find(x, arb["claims"], tol) if arb else None
-        if m is None:
-            return None, "", "claim label disagreement"
-        acc.append(dict(m, _how="arbitration"))
-    for x in rest:
-        if arb is None:
-            return None, "", "claim heard by one rater only"
-        m = _find(x, arb["claims"], tol)
-        if m is not None:
-            acc.append(dict(m, _how="arbitration"))  # else: the arbiter heard no claim -> dropped
-    how = "arbitration" if any(z["_how"] == "arbitration" for z in acc) or rest else "agreement"
+    for x, y in agreed:
+        t = max(x["t"], y["t"])
+        ev = [e for e in (x.get("t_evidence"), y.get("t_evidence")) if e is not None]
+        z = dict(x, t=t, _how="agreement")
+        if ev:
+            z["t_evidence"] = min(max(ev), t)
+        acc.append(z)
+    if arb is not None:
+        used: set[int] = set()
+        _assign(agreed, arb["claims"], used, tol)  # the arbiter's marks of agreed claims
+        got = _assign(split + singles, arb["claims"], used, tol)
+        for gi, grp in enumerate(split + singles):
+            if gi in got:
+                acc.append(dict(arb["claims"][got[gi]], _how="arbitration"))
+            elif gi < len(split):
+                return None, "", "arbiter did not rate a claim both raters heard"
+            # else: heard by one rater only and not by the arbiter -> dropped
+    how = "arbitration" if split or singles else "agreement"
     return acc, how, ""
 
 
@@ -856,7 +927,8 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
             who = [a["annotator"], b["annotator"]] + ([c["annotator"]] if how == "arbitration" else [])
             emit(log, {"type": "claim_sweep", "source": "adjudicated", "batch": batch, "item": iid,
                        "n_claims": len(acc), "annotators": who, "reconciliation": how,
-                       "t_review_end": max(a["t_review_end"], b["t_review_end"])})
+                       "t_review_end": max(x["t_review_end"] for x in (a, b) if x["t_review_end"] is not None)
+                       if a["t_review_end"] is not None or b["t_review_end"] is not None else None})
             for x in acc:
                 cl = {"type": "completion_claim", "source": "adjudicated", "chain_id": x["chain_id"], "t": x["t"],
                       "batch": batch, "item": iid}
@@ -884,7 +956,7 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
             continue
         pairs_lab[0].append(a["label"])
         pairs_lab[1].append(b["label"])
-        if a["review_ok"] and b["review_ok"] and _agree(a, b, info["kind"], tol_s):
+        if a["review_ok"] and b["review_ok"] and _agree(a, b, info["kind"], tol_s, step):
             v, how, who = _combine(a, b), "agreement", [a["annotator"], b["annotator"]]
             res["agreed"] += 1
         elif c is not None and c["review_ok"]:
@@ -902,11 +974,11 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
         for x in ("t_first_compliant", "t_evidence"):
             if v.get(x) is not None:
                 ev[x] = v[x]
-        if info["kind"] == "content":
+        if step == 0:  # every chain: the response-onset decision (content: on-topic speech)
             ev["onset_reviewed"] = True
             ev["t_onset"] = v.get("t_onset")
         emit(log, ev)
-        if info["kind"] == "content" and v.get("t_onset") is not None:
+        if step == 0 and v.get("t_onset") is not None:
             emit(log, {"type": "speech_onset", "source": "adjudicated", "on_topic": True, "t": v["t_onset"],
                        "chain_id": info["chain_id"], "batch": batch, "item": iid, "annotators": who})
     if pairs_lab[0]:
