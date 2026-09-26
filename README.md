@@ -15,6 +15,18 @@ scripts/run_live.sh demo
 scripts/run_live.sh full
 ```
 
+The web demo page shows:
+- **Stage:** the persona video (portrait) and its spoken line.
+- **Controls:** text or push-to-talk input, plus one-click example prompts.
+- **Director panel:**
+  - intent chains with their status (in progress, verified, failed, skipped);
+  - a live timeline of every locked 5 s request, judge verdict, forward repair and completion claim;
+  - memory recall and erasure;
+  - metrics (instruction→speech onset, Λ, verified actions, repairs, RTT).
+
+In `demo` mode the video is a placeholder that prints the action and line the director locked, and the
+responder and judge are stand-ins. It shows how the agent works, but it is not a measurement.
+
 Then open `http://127.0.0.1:8200` (from a laptop: `ssh -L 8200:127.0.0.1:8200 <host>`), press **连接**, and type
 or hold **按住说话** to talk. Try "请喝口茶吧", "跟我挥挥手吧", "我妹妹住在杭州", then "请忘掉我妹妹住在哪".
 Ctrl-C stops everything and releases the GPU reservations.

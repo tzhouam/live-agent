@@ -819,7 +819,8 @@ class Orchestrator:
                 raw = raw.replace(x, "[已删除]")
             decision = json.loads(raw)
         self.log.emit(EventType.UTTERANCE_END, now(), uid=utt.uid, decision=decision,
-                      chains={c.chain_id: c.status.value for c in self.director.chains.values()})
+                      chains={c.chain_id: c.status.value for c in self.director.chains.values()},
+                      recalled=list(memories or []))
         return decision
 
     async def _erase(self, term: str) -> bool:
@@ -899,6 +900,20 @@ class Orchestrator:
                           detail=str(getattr(report, "errors", "")), pending_targets=pending)
         self._maybe_finish()
         return complete
+
+    def snapshot(self) -> dict[str, Any]:
+        """Compact live state for the web demo panel (no media, no prompts)."""
+        d = self.director
+        return {
+            "chains": [{"id": c.chain_id, "status": c.status.value, "kind": c.kind.value, "intent": c.final_intent,
+                        "revisions": len(c.revisions), "steps": [x for x in c.steps if x],
+                        "step_index": c.step_index, "requests": list(c.requests[-6:])}
+                       for c in list(d.chains.values())[-12:]],
+            "next_lock": self.next_lock, "plan_version": d.plan_version,
+            "lambda_s": round(self.sched.lambda_estimate(), 2), "listening": d.listening,
+            "awaiting_decision": d.awaiting_decision, "erasure_gate_open": self._ready.is_set(),
+            "queued_segments": len(d.queue), "mode": d.mode.value,
+        }
 
     def open_chains(self) -> list[str]:
         return [c.chain_id for c in self.director.chains.values() if c.status == ChainStatus.OPEN]

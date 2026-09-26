@@ -60,6 +60,28 @@ def to_pcm16(audio: np.ndarray | None, n_samples: int) -> bytes:
     return (np.clip(a, -1, 1) * 32767).astype(np.int16).tobytes()
 
 
+PANEL_EVENTS = {"lock", "verdict", "repair", "completion_claim", "refusal", "capacity_skip", "narration_guard",
+                "playback_stop", "speech_onset", "utterance_end", "audit", "error", "request_done"}
+PANEL_FIELDS = ("action", "transcript", "chain_ids", "chain_id", "step", "retry_of", "corrections", "kind", "label",
+                "confidence", "rationale", "mode", "correction", "queued", "earliest_correctable", "reason", "text",
+                "original", "cleaned", "erasure", "erasure_complete", "pending_targets", "deleted", "dropped",
+                "decision", "chains", "recalled", "issues", "error", "where", "lead_s", "total_s", "onset_source",
+                "audibility", "revision", "speaker", "uid")
+
+
+def panel_event(ev, t0: float) -> dict | None:
+    """Compact, display-only form of a timeline event (the full log stays on disk)."""
+    if ev.type.value not in PANEL_EVENTS:
+        return None
+    if ev.type.value == "error" and ev.data.get("where") in ("event_loop_stack",):
+        return None
+    data = {k: ev.data[k] for k in PANEL_FIELDS if k in ev.data}
+    if isinstance(data.get("rationale"), str):
+        data["rationale"] = data["rationale"][:160]
+    return {"type": "event", "event": ev.type.value, "t": round(ev.t - t0, 2), "request": ev.request_index,
+            "data": data}
+
+
 class WSTransport:
     """Orchestrator transport over one WebSocket connection.
 
@@ -100,6 +122,11 @@ class WSTransport:
                 await self.ws.send_bytes(j)
             if epoch == self._epoch:
                 await self.ws.send_bytes(pcm)
+
+    async def send_json(self, obj: dict) -> None:
+        """Small control/panel messages, sent between (never inside) a chunk's binary frames."""
+        async with self._send_lock:
+            await self.ws.send_text(json.dumps(obj, ensure_ascii=False))
 
     async def stop_playback(self) -> None:
         """Immediate: does not wait for an in-flight chunk send (which aborts at its next frame)."""
@@ -232,9 +259,33 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                 cfg=OrchestratorConfig(session_id=session_id, scope=mode,
                                                        correction_mode=CorrectionMode(args.correction_mode)))
             transport.orchestrator = orch
+            # live panel: timeline events + a 2 Hz state snapshot to the page (display only)
+            panel_q: asyncio.Queue = asyncio.Queue(maxsize=500)
+            t_session = now()
+
+            def on_event(ev) -> None:
+                msg = panel_event(ev, t_session)
+                if msg is not None and not panel_q.full():
+                    panel_q.put_nowait(msg)
+
+            orch.log.listeners.append(on_event)
+
+            async def panel_sender() -> None:
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(panel_q.get(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        msg = {"type": "state", **orch.snapshot()}
+                    await transport.send_json(msg)
+
+            panel_task = asyncio.create_task(panel_sender())
             await orch.start()
             await ws.send_text(json.dumps({"type": "status", "session": session_id, "mode": mode,
-                                           "generator": generator.info.name}))
+                                           "generator": generator.info.name, "director": args.director_mode,
+                                           "judge": "mock" if args.vlm_url == "mock" else ("vlm" if args.vlm_url else "none"),
+                                           "responder": "rules" if args.llm_url == "scripted" else args.llm_model,
+                                           "asr": bool(args.asr_url), "persona": canon.get("display_name", "")},
+                                          ensure_ascii=False))
 
             async def handle_inputs() -> None:
                 """Utterances are processed in order, off the receive loop, so presentation acks
@@ -301,6 +352,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             pass
         finally:
             try:
+                if "panel_task" in locals():
+                    panel_task.cancel()
                 if worker is not None:
                     worker.cancel()
                 if orch is not None:
@@ -318,7 +371,7 @@ def make_generator(args: argparse.Namespace):
     if args.generator == "mock":
         from live_agent.generator.mock import MockGenerator
 
-        return MockGenerator(size=(480, 864))
+        return MockGenerator(size=(864, 480), render_text=True)  # portrait, like TaoMate-H3 480x864
     if args.generator == "taomate_h3":
         from live_agent.generator.taomate_h3 import TaoMateH3Generator
 

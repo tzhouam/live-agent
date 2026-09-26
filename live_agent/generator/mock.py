@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 from collections.abc import AsyncIterator
 
 import numpy as np
@@ -23,8 +24,10 @@ LATER_LAYOUT = (34, 34, 34, 17)
 
 class MockGenerator(Generator):
     def __init__(self, *, teacher_s: float = 1.0, chunk_s: float = 0.6, jitter: float = 0.0,
-                 fps: float = 24.0, size: tuple[int, int] = (48, 86), speed: float = 1.0, seed: int = 0):
+                 fps: float = 24.0, size: tuple[int, int] = (48, 86), speed: float = 1.0, seed: int = 0,
+                 render_text: bool = False):
         self.info = GeneratorInfo(name="mock", fps=fps, width=size[1], height=size[0])
+        self.render_text = render_text  # web demo: draw request / action / line on the placeholder frame
         self.teacher_s = teacher_s
         self.chunk_s = chunk_s
         self.jitter = jitter
@@ -60,8 +63,11 @@ class MockGenerator(Generator):
                 await self._sleep(self.chunk_s * n / 34)
                 if session != self._session:  # reset happened mid-request
                     break
-                shade = (k * 37) % 255
-                video = np.full((1, self.info.height, self.info.width, 3), shade, dtype=np.uint8)
+                if self.render_text:
+                    video = _placeholder_frame(self.info.width, self.info.height, k, ci, prompt)[None]
+                else:
+                    shade = (k * 37) % 255
+                    video = np.full((1, self.info.height, self.info.width, 3), shade, dtype=np.uint8)
                 audio = np.zeros((int(n / self.info.fps * self.info.sample_rate), 2), dtype=np.float32)
                 if "<d>" in prompt and ci == 0:  # a scripted line: audible "speech" from 0.2 s
                     t = np.arange(len(audio)) / self.info.sample_rate
@@ -111,3 +117,93 @@ class MockGenerator(Generator):
     @property
     def next_request_index(self) -> int:
         return self._next
+
+
+_CJK_FONTS = ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+              "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
+_LATIN_FONTS = ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",)
+_font_cache: dict[tuple[str, int], object] = {}
+
+
+def _font(kind: str, size: int):
+    key = (kind, size)
+    if key not in _font_cache:
+        from PIL import ImageFont
+
+        font = None
+        for path in (_CJK_FONTS if kind == "cjk" else _LATIN_FONTS):
+            try:
+                font = ImageFont.truetype(path, size)
+                break
+            except OSError:
+                continue
+        _font_cache[key] = font or ImageFont.load_default()
+    return _font_cache[key]
+
+
+def _runs(text: str):
+    """Split into (is_ascii, run) pieces: no installed font covers both Latin and CJK here."""
+    out: list[tuple[bool, str]] = []
+    for ch in text:
+        a = ord(ch) < 0x2E80  # Latin, punctuation, symbols -> DejaVu; CJK blocks start at U+2E80
+        if out and out[-1][0] == a:
+            out[-1] = (a, out[-1][1] + ch)
+        else:
+            out.append((a, ch))
+    return out
+
+
+def _width(text: str, size: int) -> float:
+    return sum(_font("latin" if a else "cjk", size).getlength(r) for a, r in _runs(text))
+
+
+def _draw(d, x: float, y: float, text: str, size: int, fill) -> None:
+    for a, r in _runs(text):
+        f = _font("latin" if a else "cjk", size)
+        d.text((x, y), r, fill=fill, font=f)
+        x += f.getlength(r)
+
+
+def _wrap(text: str, size: int, max_w: float) -> list[str]:
+    lines, cur = [], ""
+    for word in re.split(r"(\s+)", text):
+        pieces = [word] if all(ord(c) < 0x2E80 for c in word) else list(word)  # CJK wraps per character
+        for piece in pieces:
+            if cur and _width(cur + piece, size) > max_w:
+                lines.append(cur.rstrip())
+                cur = piece.lstrip()
+            else:
+                cur += piece
+    return lines + ([cur] if cur.strip() else [])
+
+
+def _placeholder_frame(w: int, h: int, k: int, ci: int, prompt: str) -> np.ndarray:
+    """A readable stand-in frame for the CPU demo: what the director asked the video model to show."""
+    from PIL import Image, ImageDraw
+
+    from live_agent.prompt.h3_compiler import extract_dialogue
+
+    hue = [(58, 74, 64), (74, 58, 48), (48, 60, 78), (70, 52, 70)][k % 4]
+    img = Image.new("RGB", (w, h), hue)
+    d = ImageDraw.Draw(img)
+    m = re.search(r"(she [^.]*\.)", prompt)
+    action = m.group(1) if m else "(idle)"
+    line = extract_dialogue(prompt) or ""
+    x, y, max_w = 20, 24, w - 40
+    _draw(d, x, y, f"MOCK 生成器 · 请求 #{k} · 块 {ci + 1}/4", 20, (230, 220, 200))
+    y += 44
+    _draw(d, x, y, "动作（导演锁定的提示）:", 18, (200, 190, 170))
+    y += 30
+    for part in _wrap(action, 20, max_w)[:7]:
+        _draw(d, x, y, part, 20, (255, 250, 235))
+        y += 28
+    if line:
+        y += 20
+        _draw(d, x, y, "台词:", 18, (200, 190, 170))
+        y += 30
+        for part in _wrap(line, 28, max_w)[:4]:
+            _draw(d, x, y, part, 28, (255, 225, 160))
+            y += 40
+    for i, part in enumerate(_wrap("CPU 演示：真实模式下由 TaoMate-H3 生成画面与声音", 16, max_w)[:2]):
+        _draw(d, x, h - 56 + 22 * i, part, 16, (170, 160, 140))
+    return np.asarray(img, dtype=np.uint8)

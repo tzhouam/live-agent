@@ -182,6 +182,7 @@ class EventLog:
         self.events: list[TimelineEvent] = []
         self.path = Path(path) if path else None
         self._fh: IO[str] | None = open(path, "a", encoding="utf-8") if path else None
+        self.listeners: list = []  # callables(TimelineEvent), e.g. the web demo's live panel
 
     def redact(self, term: str, replacement: str = "[已删除]") -> int:
         """Erasure: replace ``term`` in every logged string (memory and file). Returns #events touched."""
@@ -213,6 +214,11 @@ class EventLog:
                            request_index=kw.pop("request_index", None),
                            chunk_index=kw.pop("chunk_index", None), data=kw)
         self.events.append(ev)
+        for fn in self.listeners:
+            try:
+                fn(ev)
+            except Exception:  # noqa: BLE001 - a display listener must never break logging
+                pass
         if self._fh:
             d = asdict(ev)
             d["type"] = ev.type.value
