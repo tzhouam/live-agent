@@ -29,6 +29,13 @@ HELPER_LOG=.cache/logs/serve_models.$RUN_ID.out
 reserved_ids() {  # GPU ids that *our* gpu run calls reported reserving (from their own output)
   grep -ho "Reserved [0-9]* GPU(s): \[[0-9 ]*\]" "$@" 2>/dev/null | sed 's/.*\[\(.*\)\]/\1/' | tr ' ' '\n' | grep -E '^[0-9]+$' || true
 }
+still_ours() {  # filter GPU ids to those whose current reservation note starts with "live-agent"
+  local ours
+  ours=$(gpu status --no-schedule 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk -F'│' '
+    NR==1 { for (i=1;i<=NF;i++) { h=$i; gsub(/ /,"",h); if (h=="NOTE") c=i } next }
+    c && $c ~ /^ *live-agent/ { g=$1; gsub(/ /,"",g); print g }')
+  grep -Fxf <(echo "$ours") || true
+}
 cleanup() {
   trap - EXIT INT TERM
   for p in "${pids[@]:-}"; do [ -n "$p" ] && { kill -INT -- "-$p" 2>/dev/null || kill -INT "$p" 2>/dev/null; } || true; done
@@ -37,8 +44,9 @@ cleanup() {
     [ $alive = 0 ] && break; sleep 1
   done
   for p in "${pids[@]:-}"; do [ -n "$p" ] && { kill -9 -- "-$p" 2>/dev/null || kill -9 "$p" 2>/dev/null; } || true; done
-  # canhazgpu can keep a reservation after its supervisor is interrupted: release exactly ours
-  ids=$(reserved_ids "$SERVER_LOG" "$HELPER_LOG" | sort -u | paste -sd, -)
+  # canhazgpu can keep a reservation after its supervisor is interrupted: release exactly ours. A card can be
+  # lost (idle release) and re-reserved by another job of the same user: release only cards still noted live-agent
+  ids=$(reserved_ids "$SERVER_LOG" "$HELPER_LOG" | sort -u | still_ours | paste -sd, -)
   if [ "$mode" != "demo" ] && [ -n "$ids" ] && command -v gpu >/dev/null; then
     gpu release --gpu-ids "$ids" >/dev/null 2>&1 && echo "[run_live] released GPUs $ids"
   fi
