@@ -53,3 +53,23 @@ scripts/server_check.sh                # full-stack scripted session (run under 
 `python3 -m live_agent.eval.runner` (E2 sessions), `python3 -m live_agent.eval.adjudicate` (blinded human labels),
 `python3 -m live_agent.eval.report` (the primary report refuses to run without complete adjudication),
 `scripts/e1_calibrate.py`, `scripts/e1_validate.py` (capability calibration). See `docs/implementation.md`.
+
+## Remote access through Personal-Agent (when local port forwarding is not allowed)
+
+```
+browser --https--> Caddy on Personal-Agent (live-agent.43.155.186.30.nip.io:443)
+        --> token proxy 127.0.0.1:8200 (scripts/bridge_proxy.py, ~/live-agent-bridge/ on Personal-Agent)
+        --> ssh reverse tunnel 127.0.0.1:18200 (scripts/bridge_tunnel.sh, run on the GPU host)
+        --> web demo 127.0.0.1:8200 on the GPU host
+```
+
+Open `https://live-agent.43.155.186.30.nip.io/?token=<token>` once; the token is in `.cache/bridge_token` on the GPU host.
+Requests without the token cookie get 401. HTTPS also enables the microphone button.
+
+Setup and rollback:
+- **Caddy:** one `live-agent.43.155.186.30.nip.io { reverse_proxy 127.0.0.1:8200 }` block was appended to
+  `/etc/caddy/Caddyfile`, following the existing nip.io pattern.
+  - Backup: `/etc/caddy/Caddyfile.before-live-agent-20260926`.
+  - Roll back: `sudo cp /etc/caddy/Caddyfile.before-live-agent-20260926 /etc/caddy/Caddyfile && sudo systemctl reload caddy`.
+- **Stop the proxy:** `ssh Personal-Agent 'pkill -f "bridge_proxy.py --listen"'`.
+- **Stop the tunnel:** `pkill -f bridge_tunnel.sh` on the GPU host.
