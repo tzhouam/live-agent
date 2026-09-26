@@ -307,6 +307,12 @@ class Director:
         self.held.pop(chain_id, None)
         self.interrupted.pop(chain_id, None)
 
+    def say_verified(self, line: str) -> None:
+        """Queue a line whose claim the controller has verified (e.g. an erasure confirmation)."""
+        for seg in reversed([Segment(chain_id=None, plan_version=self.plan_version, line=x, memory_ids=[])
+                             for x in _split_line(line)]):
+            self.queue.appendleft(seg)
+
     def _enqueue_chat(self, steps: list[dict]) -> None:
         """Chat / explanation lines go first; they do not displace instructions."""
         segs = [Segment(chain_id=None, plan_version=self.plan_version, line=line)

@@ -419,7 +419,10 @@ class Orchestrator:
                 continue
             keep = sorted(i for i in set(idx) if 0 <= i < n)
             shown += len(keep)
-            out.append(replace(ch, video=ch.video[keep] if keep else ch.video[:0]))
+            if len(keep) == n:
+                out.append(ch)  # everything shown: no copy (a copy is ~40 MB per chunk)
+            else:
+                out.append(replace(ch, video=ch.video[keep] if keep else ch.video[:0]))
         return out, shown, total
 
     def _evict(self, k: int) -> None:
@@ -563,10 +566,14 @@ class Orchestrator:
             # (the newer utterance decides). An erasure request is still honoured.
             self.log.emit(EventType.CAPACITY_SKIP, now(), uid=utt.uid, reason="superseded_before_decision")
         else:
+            if term:  # the confirmation is spoken only after the erasure is verified (below)
+                decision = {**decision, "steps": []}
             self.director.apply(utt, decision, memory_ids=memory_ids)
+        self._drain_director_events(now())  # before the erasure, so its redaction covers these events
         if term and self.memory is not None and hasattr(self.memory, "forget"):
-            await self._erase(term)
-        self._drain_director_events(now())
+            complete = await self._erase(term)
+            line = "好的，这件事我已经忘掉了。" if complete else "抱歉，删除还没有完成，我已经通知工作人员处理。"
+            self.director.say_verified(line)  # a verified statement: not subject to the narration guard
         if term:  # the decision itself names erased terms
             raw = json.dumps(decision, ensure_ascii=False)
             for x in sorted(self.director.erased_terms, key=len, reverse=True):
@@ -576,7 +583,7 @@ class Orchestrator:
                       chains={c.chain_id: c.status.value for c in self.director.chains.values()})
         return decision
 
-    async def _erase(self, term: str) -> None:
+    async def _erase(self, term: str) -> bool:
         """Erasure (proposal §12): quiesce locking, memory cascade, purge controller state and
         stored prompts, drop unpresented content, restart the generator from canon. Fails closed:
         an incomplete memory erasure is logged as an ERROR."""
@@ -636,6 +643,7 @@ class Orchestrator:
                           error="erasure incomplete: session paused (fail closed)",
                           detail=str(getattr(report, "errors", "")), pending_targets=pending)
         self._maybe_finish()
+        return complete
 
     def open_chains(self) -> list[str]:
         return [c.chain_id for c in self.director.chains.values() if c.status == ChainStatus.OPEN]

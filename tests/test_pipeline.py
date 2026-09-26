@@ -201,3 +201,21 @@ def test_public_session_persona_lines_carry_complete_lineage(tmp_path):
     asyncio.run(run(orch, client, [(1.0, "大家好")]))
     refused = [e for e in events(orch, EventType.AUDIT) if "persona_line_not_recorded" in e.data.get("issues", [])]
     assert not refused, orch.memory.scope_violations
+
+
+def test_erasure_confirmation_spoken_only_after_verified_erasure(tmp_path):
+    from live_agent.memory_bridge import MemoryBridge
+
+    def resp(messages):
+        if "忘" in messages[-1]["content"]:
+            return json.dumps({"relation": "chat", "kind": "memory", "forget_term": "妹妹",
+                               "steps": [{"intent": "", "line": "好的，关于你妹妹的事我已经忘掉了。"}]})
+        return json.dumps({"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "嗯嗯。"}]})
+
+    orch, client = build(max_requests=8)
+    orch.director.llm = ScriptedLLM(resp)
+    orch.memory = MemoryBridge(str(tmp_path / "m.sqlite"), user_id="u", stream_id="s", session_id="sess", mode="private")
+    asyncio.run(run(orch, client, [(1.0, "我妹妹住在杭州"), (6.0, "忘掉我妹妹住哪")]))
+    lines = [e.data.get("transcript", "") for e in events(orch, EventType.LOCK)]
+    assert "好的，这件事我已经忘掉了。" in lines
+    assert not any("妹妹" in x for x in lines)
