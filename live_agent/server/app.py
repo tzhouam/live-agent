@@ -91,16 +91,38 @@ class WSTransport:
     offset = t_server - (t_client_send + rtt/2)). Until a mapping exists, arrival time is used
     (and the event says so)."""
 
-    def __init__(self, ws: WebSocket):
+    def __init__(self, ws: WebSocket, record_path: Path | None = None):
         self.ws = ws
         self.orchestrator: Orchestrator | None = None
+        # trace recording: exactly the chunks the client reports as played (chunk_end acks), in order
+        self.record_path = record_path
+        self.recorder = None
+        self._part = 1
+        self._sent: dict[tuple[int, int], Chunk] = {}
+        if record_path is not None:
+            self._new_recorder()
         self._send_lock = asyncio.Lock()
         self._starts: dict[tuple[int, int], float] = {}
         self._epoch = 0  # incremented on stop; stale sends are skipped
         self.clock_offset_s: float | None = None
         self.clock_rtt_s: float | None = None
 
+    def _new_recorder(self) -> None:
+        from live_agent.sim import Recorder
+
+        path = self.record_path if self._part == 1 else self.record_path.with_name(
+            f"{self.record_path.stem}-part{self._part}{self.record_path.suffix}")
+        self.recorder = Recorder(path)
+
+    def restart_recording(self) -> None:
+        """After an erasure deleted the recording, continue in a new part file."""
+        if self.record_path is not None:
+            self._part += 1
+            self._new_recorder()
+
     async def send_chunk(self, chunk: Chunk, script: BlockScript) -> None:
+        if self.recorder is not None:
+            self._sent[(chunk.request_index, chunk.chunk_index)] = chunk
         epoch = self._epoch
         frames = chunk.video if chunk.video is not None else np.zeros((chunk.n_frames, 8, 8, 3), np.uint8)
         # Encode off the event loop.
@@ -131,6 +153,7 @@ class WSTransport:
     async def stop_playback(self) -> None:
         """Immediate: does not wait for an in-flight chunk send (which aborts at its next frame)."""
         self._epoch += 1
+        self._sent.clear()  # interrupted chunks were never (fully) shown: not recorded
         await self.ws.send_text(json.dumps({"type": "stop"}))
 
     def in_flight(self):
@@ -157,6 +180,9 @@ class WSTransport:
         if msg["type"] == "chunk_start":
             self._starts[key] = t
         elif msg["type"] == "chunk_end" and self.orchestrator is not None:
+            ch = self._sent.pop(key, None)
+            if ch is not None and self.recorder is not None:
+                self.recorder.write(ch)  # background-thread encoding
             painted = msg.get("painted")
             t_paint = (self._to_server({"tp": msg["tp_last_paint"]}) if msg.get("tp_last_paint") is not None
                        and self.clock_offset_s is not None else None)
@@ -194,6 +220,44 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         if app.state.shared_gen is not None:
             await app.state.shared_gen.close()
 
+    import re as _re
+
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    trace_name = _re.compile(r"^sess-[A-Za-z0-9_-]+(\.generated(-part\d+)?)?\.(jsonl|mp4)$")
+
+    @app.get("/traces")
+    async def traces() -> HTMLResponse:
+        """Recorded sessions: event trace (JSONL) and the presented audio/video (MP4)."""
+        d = Path(args.log_dir)
+        rows = []
+        for f in sorted(d.glob("sess-*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True)[:200]:
+            vids = sorted(d.glob(f"{f.stem}*.mp4"))  # presented (+ parts) and generated (+ parts)
+            when = __import__("time").strftime("%m-%d %H:%M:%S", __import__("time").localtime(f.stat().st_mtime))
+            def label(v):
+                rest = v.name[len(f.stem):-4].lstrip(".-")
+                return ("generated" + rest[len("generated"):]) if rest.startswith("generated") else ("presented" + (" " + rest if rest else ""))
+            links = " · ".join(f'<a href="/traces/file/{v.name}">{label(v)}</a>' for v in vids) \
+                or "<span style='color:#888'>no video</span>"
+            rows.append(f"<tr><td>{when}</td><td>{f.stem}</td><td><a href='/traces/file/{f.name}'>trace.jsonl</a> "
+                        f"({f.stat().st_size // 1024} KB)</td><td>{links}</td></tr>")
+        html = ("<!doctype html><meta charset='utf-8'><title>Live Agent traces</title>"
+                "<style>body{font:14px system-ui;margin:24px}td,th{padding:4px 10px;border-bottom:1px solid #ddd}</style>"
+                "<h2>Recorded sessions</h2><p><a href='/'>← demo</a></p><table><tr><th>last update</th><th>session</th>"
+                "<th>event trace</th><th>video (presented = what the viewer saw; generated = everything produced)</th></tr>" + "".join(rows) + "</table>")
+        return HTMLResponse(html)
+
+    @app.get("/traces/file/{name}")
+    async def trace_file(name: str):
+        if not trace_name.match(name):
+            raise HTTPException(404)
+        f = Path(args.log_dir) / name
+        if not f.is_file():
+            raise HTTPException(404)
+        return FileResponse(f, media_type="video/mp4" if name.endswith(".mp4") else "application/x-ndjson",
+                            filename=name)
+
     @app.get("/")
     async def index() -> HTMLResponse:
         return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
@@ -204,7 +268,10 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         hello = json.loads(await ws.receive_text())
         mode = "public" if hello.get("mode") == "public" else "private"
         session_id = new_id("sess")
-        transport = WSTransport(ws)
+        record_path = Path(args.log_dir) / f"{session_id}.mp4" if args.record else None
+        if record_path is not None:
+            record_path.parent.mkdir(parents=True, exist_ok=True)
+        transport = WSTransport(ws, record_path)
         shared = app.state.shared_gen is not None
         if shared:
             if app.state.session_lock.locked():
@@ -261,6 +328,17 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                 cfg=OrchestratorConfig(session_id=session_id, scope=mode,
                                                        correction_mode=CorrectionMode(args.correction_mode)))
             transport.orchestrator = orch
+            if args.record:  # everything the generator produced, incl. chunks dropped by barge-ins
+                from live_agent.sim import Recorder
+
+                parts = iter(range(1, 10**6))
+
+                def gen_rec():
+                    n = next(parts)
+                    return Recorder(Path(args.log_dir) / (f"{session_id}.generated.mp4" if n == 1
+                                                          else f"{session_id}.generated-part{n}.mp4"))
+
+                orch.gen_recorder, orch.gen_recorder_factory = gen_rec(), gen_rec
             # live panel: timeline events + a 2 Hz state snapshot to the page (display only)
             panel_q: asyncio.Queue = asyncio.Queue(maxsize=500)
             t_session = now()
@@ -360,6 +438,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                     worker.cancel()
                 if orch is not None:
                     await orch.stop()
+                if transport.recorder is not None:
+                    await asyncio.to_thread(transport.recorder.close)  # mux video + audio
             except Exception:  # noqa: BLE001
                 log.exception("session cleanup failed")
             finally:
@@ -404,6 +484,7 @@ def main() -> None:
     p.add_argument("--asr-model", default="qwen3-asr")
     p.add_argument("--memory-db", default=".cache/memory.sqlite")
     p.add_argument("--log-dir", default=".cache/sessions")
+    p.add_argument("--record", action="store_true", help="record each session's presented audio/video to <log-dir>/<session>.mp4")
     p.add_argument("--director-mode", default="closed_loop", choices=["closed_loop", "open_loop"])
     p.add_argument("--correction-mode", default="gradient", choices=["gradient", "repeat", "none"])
     p.add_argument("--lambda-prior", type=float, default=3.0)

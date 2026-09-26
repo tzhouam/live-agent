@@ -142,6 +142,9 @@ class Orchestrator:
         self.dropped: set[int] = set()  # requests discarded by a barge-in / erasure (never fully shown)
         self.error: BaseException | None = None
         self.last_presented_end: float | None = None
+        # optional recording of *everything generated* (incl. chunks later dropped by a barge-in)
+        self.gen_recorder = None
+        self.gen_recorder_factory = None  # () -> new recorder (next part after an erasure)
         self._decisions = 0  # completed responder decisions
         self._input_epoch = 0  # bumped by every barge-in; decisions from older epochs are discarded
         self.painted: dict[tuple[int, int], list[int] | None] = {}  # client-reported painted frame indices
@@ -279,6 +282,8 @@ class Orchestrator:
         except asyncio.CancelledError as e:
             cancelled = cancelled or e
         self.log.emit(EventType.OBSERVATION_END, self.last_presented_end or now())
+        if self.gen_recorder is not None:
+            await asyncio.to_thread(self.gen_recorder.close)
         close = asyncio.ensure_future(self.gen.close())
         while not close.done():  # finish worker shutdown even if this call is cancelled meanwhile
             try:
@@ -433,6 +438,8 @@ class Orchestrator:
     async def _chunk_loop(self) -> None:
         async for ch in self.gen.chunks():
             self.chunks[ch.request_index].append(ch)
+            if self.gen_recorder is not None:
+                self.gen_recorder.write(ch)  # background-thread encoding
             self.log.emit(EventType.CHUNK_READY, ch.t_ready, request_index=ch.request_index,
                           chunk_index=ch.chunk_index, n_frames=ch.n_frames)
             if ch.chunk_index == self.n_chunks - 1:
@@ -878,12 +885,23 @@ class Orchestrator:
             except Exception as e:  # noqa: BLE001
                 acknowledge("generator_state", False, f"reset failed: {e}")
             recorder = getattr(self.transport, "recorder", None)
-            if recorder is None:
+            if recorder is None and self.gen_recorder is not None:
+                ok = await asyncio.to_thread(self.gen_recorder.discard)
+                self.gen_recorder = self.gen_recorder_factory() if (ok and self.gen_recorder_factory) else None
+                acknowledge("recordings", ok, "generated-stream recording deleted" if ok else "recording files remain")
+            elif recorder is None:
                 acknowledge("recordings", True, "event log redacted; no media recording")
             else:  # presented audio/video cannot be redacted: delete the recording, stop recording
                 ok = await asyncio.to_thread(recorder.discard)
+                restart = getattr(self.transport, "restart_recording", None)
+                if ok and restart is not None:
+                    restart()  # later (post-erasure) content is recorded in a new part file
+                if self.gen_recorder is not None:  # the generated-stream recording holds it too
+                    ok = await asyncio.to_thread(self.gen_recorder.discard) and ok
+                    self.gen_recorder = self.gen_recorder_factory() if self.gen_recorder_factory else None
                 acknowledge("recordings", ok, f"recording {getattr(recorder, 'path', '')} deleted; "
-                            "session no longer recorded" if ok else "recording files remain")
+                            + ("continuing in a new part" if restart else "session no longer recorded")
+                            if ok else "recording files remain")
         finally:
             complete = report is not None and getattr(report, "complete", True)
             if complete:
