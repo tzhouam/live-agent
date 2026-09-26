@@ -549,3 +549,16 @@ Model gpt-6-sol, verified.
 Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit (full suite green).
 - **Honesty correction:** the "2.2 s / 3.6 s on-topic speech onset" in `docs/implementation.md` is re-labelled as an audio-energy onset proxy (a diagnostic), because energy onset is not verified speech.
 - **Review status after 11 rounds:** every blocking finding raised so far has been fixed. Each round still produces a few new major findings, increasingly about edge cases (race windows, crash recovery, provenance corner cases). The reviewer has not yet returned "ready".
+
+### taomate_port1: vLLM-Omni port of TaoMate-H3 (USP4 realtime)
+
+Model gpt-6-sol, verified (`docs/reviews/taomate_port1_meta.txt`: rollout models = gpt-6-sol x5). Inlined: the port's `vllm_omni/diffusion/models/taomate_h3/*` (worktree `/data/zhoutaichang/worldmodel/vllm-omni-taomate` @ 1bdfee369) and the reference `external/TaoMate-H3` streaming/teacher/LoRA files. Review: `docs/reviews/taomate_port1_review.md`.
+- 6 major, 4 minor findings. Disposition:
+  - (1) teacher text refinement: **not a defect** -- the vLLM-Omni DiT re-runs `condition_proj` + token refiner inside every forward (`minimax_h3_transformer.py` `_embed`), with the LoRA disabled for teacher forwards.
+  - (2) chunk metadata `session_id` used the request id: **fixed** (now the bound AR session id).
+  - (3) commit rollback coverage: **accepted as documented behaviour** -- the AR runner releases the whole session on any failure (`_bound_ar_session`), so no phase is retried against a half-advanced cache; the per-layer replacement during commit is the release's memory-peak design.
+  - (4) held five-frame tail on client disconnect: **accepted** -- an aborted session has no consumer; finite frame budgets flush it.
+  - (5) audio VAE equivalence: **verified by code** -- `MiniMaxH3AudioVAE.decode_latent` denormalizes with the same mean/std and calls the bundled `decode`, permuting `[2, 1, S]` to `[1, 2, S]`; tail padding is an intentional difference (release raises).
+  - (6)(7)(8) parity checks: geometry and sigma ladders are exact against the clone (script, 2026-09-27); LoRA docstring corrected; the Euler update is the same float32 math in a fused op order.
+  - (9) request-mode `forward` needs the AR binding: **docstring narrowed** (it is the runner's warmup path, not an offline path).
+  - (10) real-time margin: **measured** 4.1 s per 4.958 s request (eager) with per-stage timing now logged (`taomate_h3_log_timings`); rank-0-only output conversion and teacher placement remain open optimizations.

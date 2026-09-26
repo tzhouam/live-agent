@@ -1,0 +1,14 @@
+tag: taomate_port1
+date_utc: 2026-09-26T21:52:34Z
+repo_head: d4f6a30292436fbac6266dbe138f9379c741df75
+repo_dirty_files: 8
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.156.0
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/taomate_port1_review.md - < docs/reviews/taomate_port1_prompt.md
+exit_code: 0
+thread_id: 01a0dfb0-73eb-7bf2-9819-7e45e1e05c54
+rollout: /home/zhoutaichang/.codex/sessions/2026/09/27/rollout-2026-09-27T05-47-58-01a0dfb0-73eb-7bf2-9819-7e45e1e05c54.jsonl
+rollout_models:       5 "model":"gpt-6-sol" 
+inlined_files: /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/attention.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/kv_cache.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/packed.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/geometry.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/schedule.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/lora.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/audio_teacher.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/stream_decode.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/pipeline.py external/TaoMate-H3/src/taomate_h3/streaming/attention_hook.py external/TaoMate-H3/src/taomate_h3/streaming/cache.py external/TaoMate-H3/src/taomate_h3/streaming/runtime.py external/TaoMate-H3/src/taomate_h3/streaming/geometry.py external/TaoMate-H3/src/taomate_h3/model/denoise.py external/TaoMate-H3/src/taomate_h3/teacher.py external/TaoMate-H3/src/taomate_h3/inference/lora_checkpoint.py external/TaoMate-H3/src/taomate_h3/model/packed_sequence.py live_agent/generator/taomate_worker/stream_decode.py
+prompt_sha256: 42e503df8130a23482a22d15c614b9a1a9e7478888ef1029c7c83e6ebbd35a40
