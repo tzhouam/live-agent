@@ -201,6 +201,12 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        if args.record:  # recordings left unfinished by a killed session
+            from live_agent.sim import salvage_recordings
+
+            fixed = await asyncio.to_thread(salvage_recordings, args.log_dir)
+            if fixed:
+                log.info("finalised %d interrupted recording(s): %s", len(fixed), ", ".join(fixed))
         from live_agent.llm import OpenAICompatLLM
 
         if args.llm_url != "scripted":
