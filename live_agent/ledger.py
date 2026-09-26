@@ -27,6 +27,9 @@ class PropState:
     carrier: str | None = None  # "S1" when held
 
 
+BRIDGE_MAX_CHARS = 200  # = the prompt compiler's correction limit (h3_compiler._clean max_len)
+
+
 @dataclass
 class RequestState:
     request_index: int
@@ -154,7 +157,13 @@ class StateLedger:
             parts.append("S1 stops what she was doing mid-way ("
                          + "; ".join(r.action or "speaking" for r in cut) + ") and does not finish it")
         parts.append("S1 calmly returns to her previous posture and looks into the lens")
-        return ". ".join(parts)
+        note = ". ".join(parts)
+        if len(note) > BRIDGE_MAX_CHARS:
+            # the compiler rejects corrections longer than 200 characters: keep the full list out
+            # of the prompt (it stays in the ledger/log) and say only what must not continue
+            note = ("S1 does not continue or refer to the interrupted action or line; "
+                    "S1 calmly returns to her previous posture and looks into the lens")
+        return note
 
     @staticmethod
     def drift_correction(attribute: str, correct: str, wrong: str | None = None) -> str:

@@ -27,7 +27,7 @@ import numpy as np
 
 from live_agent.director.director import CHARS_PER_REQUEST, Director, DirectorMode
 from live_agent.generator.base import Generator
-from live_agent.prompt.h3_compiler import compile_prompt
+from live_agent.prompt.h3_compiler import PromptError, compile_prompt
 from live_agent.qc.judge import ForwardCorrector
 from live_agent.timeline import EventLog, LockScheduler
 from live_agent.types import (BlockScript, ChainStatus, Chunk, EventType, Utterance, Verdict,
@@ -319,7 +319,14 @@ class Orchestrator:
             self._locking = k  # from popping the segment until the lock is recorded
             script = self.director.next_script(k)
             self._audit(script)
-            prompt = compile_prompt(script, first_request=(k == 0))
+            try:
+                prompt = compile_prompt(script, first_request=(k == 0))
+            except PromptError as e:
+                # a bad correction/line must not end the session: drop the optional parts, log it
+                self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["prompt_rejected"],
+                              detail=str(e))
+                script.corrections, script.transcript = [], ""
+                prompt = compile_prompt(script, first_request=(k == 0))
             self.scripts[k], self.prompts[k] = script, prompt
             t = now()
             await self.gen.submit(k, prompt)
@@ -382,6 +389,10 @@ class Orchestrator:
             if term and any(term in c for c in script.corrections):
                 script.corrections = [c for c in script.corrections if term not in c]
                 issues.append("blocklisted_correction")
+        too_long = [c for c in script.corrections if len(c) > 200]  # compiler limit per correction
+        if too_long:
+            script.corrections = [c for c in script.corrections if len(c) <= 200]
+            issues.append("correction_too_long")
         if len(script.transcript) > 2 * CHARS_PER_REQUEST:
             script.transcript = script.transcript[: 2 * CHARS_PER_REQUEST]
             issues.append("too_long")

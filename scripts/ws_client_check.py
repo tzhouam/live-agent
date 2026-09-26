@@ -65,6 +65,9 @@ async def main(args) -> None:
                     msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
                 except asyncio.TimeoutError:
                     continue
+                except websockets.exceptions.ConnectionClosed as e:
+                    summary["closed_by_server"] = f"{e.rcvd.code if e.rcvd else '?'} {e.rcvd.reason if e.rcvd else ''}"
+                    break
                 if isinstance(msg, bytes):
                     if pending is None:
                         continue
@@ -75,6 +78,8 @@ async def main(args) -> None:
                     continue
                 m = json.loads(msg)
                 summary["messages"][m["type"]] = summary["messages"].get(m["type"], 0) + 1
+                if m["type"] == "error":
+                    summary["server_error"] = m.get("error")
                 if m["type"] == "chunk":
                     pending = {**m, "got": 0}
                 elif m["type"] == "stop":

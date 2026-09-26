@@ -374,3 +374,18 @@ def test_open_loop_cut_request_resumes_its_own_phrase_and_line():
     d.next_script(1)  # chat reply
     again = d.next_script(2)
     assert again.action == "she waves" and again.transcript == "你好"
+
+
+def test_bridge_note_fits_the_compiler_limit():
+    from live_agent.prompt.h3_compiler import compile_prompt
+    from live_agent.types import BlockScript
+
+    d = make(TEA)
+    for k in range(3):  # several long unseen requests (the GPU re-check produced 314 characters)
+        d.ledger.record_request(k, "she lifts the teacup with both hands, takes one small sip, and sets it back down",
+                                "好，我喝口茶，这茶是今年的新茶，味道很清香。")
+        d.ledger.mark_generated_not_presented(k)
+    note = d.ledger.bridging_note()
+    assert len(note) <= 200
+    compile_prompt(BlockScript(request_index=5, plan_version=1, canon=d.ledger.canon, action="", transcript="",
+                               corrections=[note]))  # must not raise
