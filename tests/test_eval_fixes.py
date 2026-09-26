@@ -1554,3 +1554,25 @@ def test_interrupted_replace_is_detected_and_recoverable(tmp_path, monkeypatch, 
     merge(batch, [(_labels(tmp_path, "c", lab2), "R1"), (_labels(tmp_path, "d", lab2), "R2")], replace=True)  # recovery
     assert commit_problems(logs) == []
     assert all(score_session(load_session(p)).chains[0].outcome == Outcome.NEVER for p in logs)
+
+
+# --------------------------------------------------------------------------- round 11 (impl2l)
+
+
+def test_refusals_bind_to_the_final_revision():
+    def run(**refusal):
+        L = Log()
+        L.new(0.0)
+        L.ev(type="refusal", chain_id="c1", **refusal)
+        L.revise(5.0)
+        L.verdict(8.0, revision=1)
+        return L.one()
+    assert run(t=6.0, revision=0).outcome == Outcome.SUCCESS  # refused the superseded intent
+    assert run(t=6.0, revision=1).outcome == Outcome.REFUSED
+    c = run(t=6.0)  # no revision on a revised chain: which intent was refused is unknown
+    assert c.outcome == Outcome.UNADJUDICATED and "without `revision`" in c.missing
+    assert run(t=6.0).outcome != Outcome.REFUSED
+    L = Log()
+    L.new(0.0)
+    L.ev(type="refusal", chain_id="c1", t=1.0)  # never revised: accepted by time
+    assert L.one().outcome == Outcome.REFUSED

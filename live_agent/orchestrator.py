@@ -148,6 +148,7 @@ class Orchestrator:
         self._locking: int | None = None
         self._qc_epoch = 0  # bumped by erasure: pending QC results are discarded
         self._onset_uncertain: set[int] = set()
+        self._barge_t = 0.0
 
     @property
     def n_chunks(self) -> int:
@@ -186,8 +187,8 @@ class Orchestrator:
             for c in list(self.director.chains.values()):
                 if c.status != ChainStatus.OPEN or c.kind not in (TaskKind.ACTION, TaskKind.MULTISTEP):
                     continue
-                if self.director.awaiting_decision:
-                    continue  # a barge-in decision may revise this chain; it decides first
+                if self.director.awaiting_decision and t - self._barge_t < 10.0 * self.sched.cfg.time_scale:
+                    continue  # a barge-in decision may revise this chain; it decides first (bounded wait)
                 base = self.director.step_base_t.get(c.chain_id, c.clock_origin)
                 if t > base + 15.0 * self.sched.cfg.time_scale:  # action step D [proposed target, §7]
                     self.director.expire(c.chain_id, len(c.revisions))
@@ -377,6 +378,10 @@ class Orchestrator:
                 script.chain_ids = []
                 issues.append("blocklisted")
                 break
+        for term in self.cfg.blocklist:  # corrections are prompt text too
+            if term and any(term in c for c in script.corrections):
+                script.corrections = [c for c in script.corrections if term not in c]
+                issues.append("blocklisted_correction")
         if len(script.transcript) > 2 * CHARS_PER_REQUEST:
             script.transcript = script.transcript[: 2 * CHARS_PER_REQUEST]
             issues.append("too_long")
@@ -715,6 +720,7 @@ class Orchestrator:
         can be locked in between; decisions still in flight become stale (input epoch)."""
         t = now() if t is None else t
         self._input_epoch += 1
+        self._barge_t = now()
         self._barge_gate.clear()
         try:
             self.director.on_barge_in()

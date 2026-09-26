@@ -43,7 +43,7 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
 | `rating` | `annotator`, `chain_id`, `label` | `role` (`primary`/`arbiter`), `kind` (`claim_sweep` for a swept claim), `step`, `revision`, `claim_t`, the same time fields as a verdict, `onset_none`, `review_ok`, `t_review_needed`, `batch`, `item` | adjudication tool (one annotator's independent label; kept for agreement statistics, **never scored**) |
 | `completion_claim` | `chain_id` (null: no corresponding request), `t` | `source` (`system` (default) / `adjudicated`), `referent` (`none`), `step`, `claim_id`, `request`, `text`, `batch`, `item` | orchestrator (`system`, diagnostic) / audio claim sweep (`adjudicated`, primary) |
 | `claim_sweep` | `source` (`adjudicated`) | `n_claims`, `annotators`, `reconciliation`, `t_review_end`, `batch`, `item` | adjudication tool: the session's recording was swept for audible completion claims (required per session in primary scoring) |
-| `refusal` | `chain_id`, `t` | `kind` (`refused` (default) / `degraded`), `reason` | compiler / safety filter |
+| `refusal` | `chain_id`, `t` | `kind` (`refused` (default) / `degraded`), `reason`, `revision` (of the refused intent) | compiler / safety filter |
 | `capacity_skip` | `chain_id`, `t` | `revision`, `reason` | admission control |
 | `speech_onset` | `t`, `on_topic` (`true`/`false`/`null`) | `source` (`script` (default) / `adjudicated` / `human`), `chain_id` (**required for the onset to count toward a chain**), `request` | runner (`script`) / adjudication tool (`adjudicated`) |
 | `visual_ack` | `t`, `uid` (the utterance acknowledged) | `kind` (`reaction_clip`/`freeze`) | client |
@@ -239,7 +239,9 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   Capacity-skipped chains are included.
 * **Precedence:** withdrawn → capacity-skipped (fail; the skip's `revision` must equal
   the final revision, or without `revision` it must be at or after the final origin) →
-  refused/degraded (fail, at or after the final origin) → adjudication completeness →
+  refused/degraded (fail; the refusal's `revision` must equal the final revision. Without
+  `revision` it counts only on a never-revised chain, at or after its origin; on a revised
+  chain an unbound refusal makes the chain `unadjudicated`, a primary gap) → adjudication completeness →
   deadline rules → observation check.
 * **Adjudication completeness (primary):** an attempted chain needs an adjudicated verdict
   bound to its final intent. **Every** effective chain also needs a response-onset decision,

@@ -151,8 +151,12 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
         elif ev.type == EventType.REFUSAL:
             gt = gt_of(d.get("chain_id", ""), d.get("revision"))
             if gt:
-                out.append({"type": "refusal", "chain_id": gt, "t": ts(ev.t),
-                            "kind": "degraded" if d.get("degraded") else "refused", "reason": d.get("reason", "")})
+                rf = {"type": "refusal", "chain_id": gt, "t": ts(ev.t),
+                      "kind": "degraded" if d.get("degraded") else "refused", "reason": d.get("reason", "")}
+                rev = gt_revision(d.get("chain_id", ""), d.get("revision"))
+                if rev is not None:
+                    rf["revision"] = rev  # bound to the served revision
+                out.append(rf)
         elif ev.type == EventType.CAPACITY_SKIP:
             gt = gt_of(d.get("chain_id", ""), d.get("revision")) if d.get("chain_id") else uid_to_chain.get(d.get("uid", ""))
             if gt:
@@ -197,11 +201,14 @@ async def run_task(task: Task, condition: str, seed: int, *, factory, speed: flo
     user_events: list[dict] = []
 
     async def send(text: str, meta: dict) -> dict:
+        # one endpoint, captured before any orchestration await, is used for both the system's
+        # utterance and the ground-truth log (the scoring origin must not drift with system work)
         t_start = now()
+        t_end = t_start
         if meta.get("barge_in"):
             await orch.on_speech_start(t_start)
-        await orch.on_user_utterance(Utterance(meta["uid"], "user", text, now()))
-        return {"t_start": t_start, "t_end": now()}
+        await orch.on_user_utterance(Utterance(meta["uid"], "user", text, t_end))
+        return {"t_start": t_start, "t_end": t_end}
 
     user = SimulatedUser(task, send, clock=now, sleep=lambda dt: asyncio.sleep(dt / speed),
                          session_id=f"{condition}-{task.task_id}-s{seed}", on_event=user_events.append)

@@ -913,11 +913,30 @@ class MemoryStore:
         session_id: str = "",
         scope: str | None = None,
     ) -> Record:
-        """Agent inference -> ``candidate_belief`` (pending; never a user fact until confirmed)."""
+        """Agent inference -> ``candidate_belief`` (pending; never a user fact until confirmed).
+
+        Requires source lineage (``derived_from``: the records the inference was drawn from).
+        The scope is derived from the sources, the most restrictive wins (the user's private
+        scope > a public stream); canon-only sources give the user's private scope. An
+        explicit ``scope`` may only narrow it (a public inference from a private source is a
+        :class:`ScopeViolationError`)."""
+        parents = [self._require(pid) for pid in dict.fromkeys(derived_from)]
+        if not parents:
+            raise ValueError("agent inferences require derived_from (source lineage)")
+        scopes = frozenset().union(*(p.source_scopes for p in parents))
+        privs = sorted(x for x in scopes if is_private(x))
+        pubs = sorted(x for x in scopes if x.startswith("public:"))
+        if len(privs) > 1:
+            raise ScopeViolationError(f"inference would mix private scopes {privs}")
+        derived = privs[0] if privs else (pubs[0] if pubs else private_scope(user_id))
+        if scope is None or scope == derived:
+            scope = derived
+        elif not (is_private(scope) and not is_private(derived)):
+            raise ScopeViolationError(f"inference scope {scope!r} is wider than its sources ({derived!r})")
         prov = Provenance(speaker="agent", session_id=session_id, timestamp=self.clock(), user_id=user_id)
         return self.add_record(
-            Kind.CANDIDATE_BELIEF, scope or private_scope(user_id), text, ClaimType.AGENT_INFERENCE, prov,
-            derived_from=derived_from, subject=self._abs_subject(subject, user_id) if subject else None,
+            Kind.CANDIDATE_BELIEF, scope, text, ClaimType.AGENT_INFERENCE, prov,
+            derived_from=[p.id for p in parents], subject=self._abs_subject(subject, user_id) if subject else None,
             predicate=predicate, value=value, confidence=confidence, status=Status.PENDING,
         )
 
@@ -1186,22 +1205,63 @@ class MemoryStore:
         return self._require(rec.id)
 
     @_atomic
-    def correct(self, record_id: str, new_value: str, *, text: str | None = None,
-                source_id: str = "", session_id: str = "") -> Record:
-        """Bi-temporal correction: old value gets ``valid_to`` (kept for audit), new value is
-        inserted, and every artifact reachable through ``derived_from`` is marked stale."""
+    def correct(self, record_id: str, new_value: str, *, confirmation_id: str, text: str | None = None,
+                session_id: str = "") -> Record:
+        """Bi-temporal correction of a **user assertion**, authorised by the owner's own turn.
+
+        ``confirmation_id`` is the episode of the user's correcting turn: spoken by the
+        fact's owner (speaker "user"), later than the fact, not negated, and one clause of
+        it must state subject + predicate + ``new_value`` (see :meth:`_confirmation_binds`).
+        Only current ``own_assertion`` user facts are eligible: a viewer claim never becomes
+        a user assertion here, and system observations use :meth:`correct_observation`.
+        The old value gets ``valid_to`` (kept for audit), the new fact derives from the
+        correcting turn, and every artifact derived from the old one is marked stale; all
+        in one transaction."""
         old = self._require(record_id)
         if old.kind != Kind.USER_FACT or old.status not in (Status.ACTIVE, Status.PENDING):
             raise ValueError("only current user facts can be corrected")
+        if old.claim_type != ClaimType.OWN_ASSERTION or old.provenance.speaker != "user":
+            raise ValueError(f"only user assertions can be corrected by the user (got {old.claim_type.value}); "
+                             "system observations: correct_observation()")
+        owner = old.provenance.user_id
+        conf = self._require(confirmation_id)
+        if conf.kind != Kind.EPISODE or conf.provenance.speaker != "user" or conf.provenance.user_id != owner:
+            raise ValueError("a correction must be authorised by an episode spoken by the fact's owner")
+        if conf.created_at < old.created_at or conf.id in old.derived_from:
+            raise ValueError("the correcting turn must be a later turn than the fact")
+        if _NEGATION.search(conf.text) or not any(
+                _norm(new_value) in _norm(c) and _clause_states(c, old.subject, old.predicate)
+                for c in _clauses(conf.text)):
+            raise ValueError("the correcting turn does not state subject + predicate + the new value")
         self._supersede([old])
-        prov = Provenance(source_id=source_id, speaker="user", session_id=session_id or old.provenance.session_id,
-                          timestamp=self.clock(), user_id=old.provenance.user_id)
-        new = self.add_record(
-            Kind.USER_FACT, old.scope, text or f"{old.subject} {old.predicate} {new_value}",
-            ClaimType.OWN_ASSERTION, prov, subject=old.subject, predicate=old.predicate, value=new_value,
-            meta={"supersedes": [old.id]},
+        prov = Provenance(source_id=conf.provenance.source_id, speaker="user",
+                          session_id=session_id or conf.provenance.session_id, timestamp=self.clock(), user_id=owner)
+        return self.add_record(
+            Kind.USER_FACT, old.scope, text or conf.text, ClaimType.OWN_ASSERTION, prov, derived_from=[conf.id],
+            subject=old.subject, predicate=old.predicate, value=new_value,
+            meta={"supersedes": [old.id], "corrected_by": conf.id},
         )
-        return new
+
+    @_atomic
+    def correct_observation(self, record_id: str, new_value: str, *, source_id: str, text: str | None = None,
+                            session_id: str = "", confidence: float = 0.9) -> Record:
+        """Typed correction path for **system observations** (sensor / platform metadata):
+        the replacement is again a ``system_observation`` (speaker "system", ``source_id`` =
+        the new observation), never a user assertion. Same bi-temporal / stale semantics."""
+        old = self._require(record_id)
+        if (old.kind != Kind.USER_FACT or old.claim_type != ClaimType.SYSTEM_OBSERVATION
+                or old.status not in (Status.ACTIVE, Status.PENDING)):
+            raise ValueError("correct_observation only corrects current system observations")
+        if not source_id:
+            raise ValueError("a corrected observation needs the new observation's source_id")
+        self._supersede([old])
+        prov = Provenance(source_id=source_id, speaker="system", session_id=session_id or old.provenance.session_id,
+                          timestamp=self.clock(), user_id=old.provenance.user_id)
+        return self.add_record(
+            Kind.USER_FACT, old.scope, text or f"{old.subject} {old.predicate} {new_value}",
+            ClaimType.SYSTEM_OBSERVATION, prov, subject=old.subject, predicate=old.predicate, value=new_value,
+            confidence=confidence, meta={"supersedes": [old.id]},
+        )
 
     def _supersede(self, records: Sequence[Record]) -> list[Record]:
         now = self.clock()
@@ -1481,6 +1541,8 @@ class MemoryStore:
         regenerate: bool | Summarizer = True,
         require: Iterable[str] = (),
         resume: str | None = None,
+        terms: Iterable[str] | None = None,
+        purge_sessions: bool = False,
     ) -> ErasureReport:
         """Physically erase a fact (by record id / Record) or everything matching a query term.
 
@@ -1491,6 +1553,11 @@ class MemoryStore:
         term it erased, while nothing matches it any more) resumes that receipt automatically. The erased terms / texts needed by retries are kept in
         this process's memory only; if they are gone (restart), the resumed report has
         ``content_lost=True`` and purge targets must purge the listed sessions wholesale.
+        If ``memory_db`` is still pending then, ID-only verification cannot prove that no
+        unlinked term-bearing record survived, so ``memory_db`` stays pending until the
+        erasure query is re-supplied (``resume=..., terms=[...]``: the terms are re-selected,
+        deleted and verified) or ``purge_sessions=True`` erases every record of this user in
+        the receipt's sessions (verified per session).
         See :meth:`pending_erasures`.
 
         Cascade: matched records -> source episodes (id link) -> every erasable record
@@ -1510,7 +1577,7 @@ class MemoryStore:
         hook_names = self._purge_hook_names()
         resume = resume or self._receipt_for_target(target, user_id)
         if resume:
-            return self._run_purge_hooks(self._resume_report(resume, user_id), hook_names)
+            return self._run_purge_hooks(self._resume_report(resume, user_id, terms, purge_sessions), hook_names)
         report = self._forget_db(target, user_id, reason, regenerate=regenerate,
                                  require=self._required_names(hook_names, require))
         return self._run_purge_hooks(report, hook_names)
@@ -1590,6 +1657,40 @@ class MemoryStore:
             self._delete_rows(ids, self.clock(), report.reason)
         return ids
 
+    def _session_records_sql(self) -> str:
+        return (f"SELECT r.id FROM records r WHERE r.session_id = ? AND r.immutable = 0 AND r.kind != 'summary'"
+                f" AND {self._user_records_sql()}")
+
+    def _purge_sessions(self, report: ErasureReport) -> list[str]:
+        """Exhaustive fallback when the erasure query is lost: erase every record of this
+        user in the receipt's sessions (and their descendants), in one transaction with
+        the updated receipt. Summaries are rebuilt afterwards from what remains (nothing)."""
+        priv = private_scope(report.user_id)
+        found: set[str] = set()
+        for sess in sorted(report.sessions):
+            found |= set(self._ids(self._session_records_sql(), [sess, report.user_id, priv]))
+        doomed = [r for r in self._load(sorted(self._descendants(found))) if not r.immutable]
+        if not doomed:
+            return []
+        ids = [r.id for r in doomed]
+        report.deleted_ids += ids
+        for r in doomed:
+            report.kinds[r.kind.value] = report.kinds.get(r.kind.value, 0) + 1
+        report.erased_texts = sorted(set(report.erased_texts) | {
+            x for r in doomed for x in (r.text, r.value or "") if len(x.strip()) >= 2})
+        with self.db:
+            self._write_receipt(report, commit=False)
+            self._delete_rows(ids, self.clock(), report.reason)
+        return ids
+
+    def _session_residue(self, report: ErasureReport) -> list[str]:
+        """Content-aware per-session check: any record of this user left in the sessions."""
+        priv = private_scope(report.user_id)
+        out = []
+        for sess in sorted(report.sessions):
+            out += [f"session:{sess}:{i}" for i in self._ids(self._session_records_sql(), [sess, report.user_id, priv])]
+        return out
+
     def _regenerate_summaries(self, sessions: Iterable[str], summ: Summarizer | None = None) -> list[str]:
         """Rebuild the summary of each session that has none active (after an erasure)."""
         out = []
@@ -1655,20 +1756,25 @@ class MemoryStore:
             done.append(r["id"])
         return done
 
-    def _resume_report(self, receipt_id: str, user_id: str | None) -> ErasureReport:
+    def _resume_report(self, receipt_id: str, user_id: str | None, terms: Iterable[str] | None = None,
+                       purge_sessions: bool = False) -> ErasureReport:
         """``user_id=None`` only for internal recovery (no ownership check, user unknown)."""
         row = self.db.execute("SELECT * FROM erasure_receipts WHERE id = ?", [receipt_id]).fetchone()
         if row is None:
             raise KeyError(f"no pending erasure receipt {receipt_id!r}")
         if user_id is not None and row["user_hash"] != _user_hash(user_id):
             raise PermissionError("erasure receipt does not belong to this user")
+        if purge_sessions and not user_id:
+            raise ValueError("purge_sessions needs the owning user_id")
         with _RECEIPT_LOCK:
             content = _RECEIPT_CONTENT.get((self._content_key, receipt_id))
         acks = json.loads(row["acks"])
+        supplied = {t.strip() for t in (terms or ()) if t and t.strip()}
         report = ErasureReport(
             user_id=user_id or "", reason=row["reason"], t=row["t"], deleted_ids=json.loads(row["deleted_ids"]),
             kinds=json.loads(row["kinds"]), sessions=set(json.loads(row["sessions"])),
-            terms=set(content["terms"]) if content else set(), required_targets=json.loads(row["required"]),
+            terms=(set(content["terms"]) if content else set()) | supplied,
+            required_targets=json.loads(row["required"]),
             acks={k: PurgeAck(bool(v), "from receipt") for k, v in acks.items()},
             erased_texts=list(content["erased_texts"]) if content else [],
             query_vecs=content["query_vecs"] if content else None,
@@ -1676,13 +1782,24 @@ class MemoryStore:
         if MEMORY_DB_TARGET in report.pending_targets:
             # an interrupted / unverified erasure: select residue again, then finish the DB side
             # (summaries, physical purge, verification)
+            session_left: list[str] = []
             self._reselect_residue(report)
+            if purge_sessions:
+                self._purge_sessions(report)
+                session_left = self._session_residue(report)
             if report.kinds.get(Kind.SUMMARY.value):
                 report.regenerated += self._regenerate_summaries(report.sessions)
             physical = self._physical_purge()
             report.verification = self.verify_erasure(report, raw_file=True)
-            ok = report.verification.ok and not physical
-            report.acknowledge(MEMORY_DB_TARGET, ok, "re-verified" if ok else f"residue: {report.verification.hits[:10]}")
+            query_known = bool(content) or bool(supplied) or purge_sessions
+            ok = report.verification.ok and not physical and not session_left and query_known
+            if not query_known:
+                detail = ("content lost (restart): ID-only verification cannot prove erasure; resume with "
+                          "terms=[...] or purge_sessions=True")
+            else:
+                detail = "re-verified" if ok else (
+                    f"residue: {(report.verification.hits + session_left)[:10]}; physical purge: {physical or 'ok'}")
+            report.acknowledge(MEMORY_DB_TARGET, ok, detail)
         return report
 
     @property
@@ -1702,6 +1819,8 @@ class MemoryStore:
         regenerate: bool | Summarizer = True,
         require: Iterable[str] = (),
         resume: str | None = None,
+        terms: Iterable[str] | None = None,
+        purge_sessions: bool = False,
     ) -> ErasureReport:
         """:meth:`forget` without blocking the event loop (VACUUM / checkpoint can be slow).
 
@@ -1720,7 +1839,8 @@ class MemoryStore:
             required = self._required_names(hook_names, require)
             resume = resume or self._receipt_for_target(target, user_id)
             if resume:  # retry of external purges; DB work only if memory_db is still pending
-                return self._run_purge_hooks(self._resume_report(resume, user_id), hook_names)
+                return self._run_purge_hooks(self._resume_report(resume, user_id, terms, purge_sessions),
+                                             hook_names)
             if self.path == ":memory:":
                 report = self._forget_db(target, user_id, reason, regenerate=regenerate, require=required)
             else:

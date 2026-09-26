@@ -114,6 +114,7 @@ function schedule(c) {
 
 function stopAll() {
   epoch += 1; pending = null; decoding = [];
+  $("caption").textContent = "";  // the scripted caption must not outlive a barge-in or erasure
   for (const q of queue) { try { q.src.stop(); } catch (e) {} }
   queue = []; playhead = audioCtx ? audioCtx.currentTime : 0;
 }

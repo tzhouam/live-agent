@@ -133,12 +133,26 @@ class ForwardCorrector:
                     [{"role": "user", "content": CORRECTION_PROMPT.format(action=action_phrase, qa=qa)}],
                     max_tokens=96, temperature=0.2, json_mode=True))
                 text = str(d.get("correction", "")).strip()
-                if text:
+                if text and _valid_correction(text, action_phrase):
                     return text
             except Exception:
                 pass
         # Template fallback: emphasise visibility and timing.
         return f"This time S1 clearly and visibly does it: {action_phrase}, facing the lens, within the first two seconds"
+
+
+# A correction may only restate the permitted action more visibly. It must not touch the
+# immutable canon (appearance, wardrobe, scene, camera, light) or introduce a new action.
+_CANON_WORDS = re.compile(r"\b(hair|hairstyle|face|skin|eyes|dress|robe colou?r|hanfu|outfit|clothes|wardrobe|background|"
+                          r"room|scene|window view|camera|lens angle|zoom|lighting|light|shot)\b", re.I)
+
+
+def _valid_correction(text: str, action_phrase: str) -> bool:
+    if len(text) > 240 or _CANON_WORDS.search(text):
+        return False
+    # it must share content words with the permitted action (no substitute action)
+    words = {w for w in re.findall(r"[a-z]{4,}", action_phrase.lower())}
+    return not words or bool(words & set(re.findall(r"[a-z]{4,}", text.lower())))
 
 
 class MockJudge:

@@ -106,8 +106,9 @@ python3 -m pytest
 - **Server path with TaoMate-H3 (measured locally, 2026-09-26; `scripts/server_check.sh`):** FastAPI/WebSocket server,
   generator started once, and a headless client (`scripts/ws_client_check.py`) that plays chunks, acks with a
   mapped client clock and types two instructions with barge-in. 60 s session, loopback network:
-  - Instruction → on-topic speech onset: **2.2 s and 3.6 s**, measured as the audio-energy onset of the presented
-    request. Before two fixes it was 10.8 s and 9.3 s:
+  - Instruction → first audio-energy onset of the presented reply request: **2.2 s and 3.6 s**. This is a
+    diagnostic proxy, not a verified on-topic speech onset (a teacup clink also crosses the threshold). On-topic
+    onset is established only by adjudication. Before two fixes it was 10.8 s and 9.3 s:
     - after a barge-in, the timeline restarts, so the next request locks immediately instead of waiting for the
       dropped requests' slots;
     - the restart request waits up to 1.5 s for the in-flight responder decision instead of spending 5 s on a
@@ -206,6 +207,9 @@ python3 -m pytest
   D. RQ2 (repair arm comparison) can still be measured on the repair targets, but H1a gains from repair should
   not be expected unless the first-attempt check can finish earlier (per-chunk QC, shorter requests) or D is
   re-registered for repairs. This is a proposal-level issue to decide before E2, not a code defect.
+
+- **Captions:** the browser shows the *scripted* line as a caption. It is cleared on barge-in or erasure, but it
+  is not validated against the generated speech (an unverified output channel, excluded from the QC evidence).
 
 ## Not yet verified
 

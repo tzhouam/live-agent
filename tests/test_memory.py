@@ -250,11 +250,11 @@ def test_viewer_poisoning_never_overrides_user_fact(mem):
 
 
 def test_conflict_priority_order(mem, clock):
-    say(mem, "I live in Paris").facts
+    src = say(mem, "I live in Paris").episode
     clock.tick()
     mem.record_observation("GPS says Berlin", user_id=U, subject="user", predicate="lives_in", value="Berlin")
     clock.tick()
-    b = mem.record_inference("maybe Rome", user_id=U, derived_from=[], subject="user", predicate="lives_in", value="Rome")
+    b = mem.record_inference("maybe Rome", user_id=U, derived_from=[src.id], subject="user", predicate="lives_in", value="Rome")
     assert mem.resolve(U, "user", "lives_in").value == "Paris"
     # without a user assertion, system observation beats agent inference and viewer claims
     mem2 = MemoryStore(clock=clock)
@@ -404,7 +404,8 @@ def test_correction_bitemporal_and_invalidates_derivatives(mem, clock):
 
 def test_explicit_correct_api(mem):
     (old,) = say(mem, "I work at Acme").facts
-    new = mem.correct(old.id, "Globex")
+    turn = say(mem, "Actually my job is at Globex").episode
+    new = mem.correct(old.id, "Globex", confirmation_id=turn.id)
     assert mem.get(old.id).status == Status.SUPERSEDED
     assert mem.resolve(U, "user", "works_at").record.id == new.id
 

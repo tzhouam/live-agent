@@ -539,3 +539,13 @@ Both verdicts: **not ready**. Fixed in the next commit (full suite green in 3 co
   - erasure selects every residue field, and resume re-selects.
 - **Accepted as a documented limit:** swapped equal-length chunks in a recording are undetectable, because frame hashes do not survive lossy encoding.
 - **Consequence surfaced by the deadline sweeper:** forward repair of an action rarely fits D = 15 s with 5 s requests. This is recorded in `docs/implementation.md` as a proposal-level decision.
+
+### impl1l + impl2l: round 11
+
+Model gpt-6-sol, verified.
+- **impl1l:** 1 PARTIAL, 2 OPEN, plus 3 new major findings.
+- **impl2l:** 8 RESOLVED, 1 PARTIAL, plus 5 new major findings.
+
+Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit (full suite green).
+- **Honesty correction:** the "2.2 s / 3.6 s on-topic speech onset" in `docs/implementation.md` is re-labelled as an audio-energy onset proxy (a diagnostic), because energy onset is not verified speech.
+- **Review status after 11 rounds:** every blocking finding raised so far has been fixed. Each round still produces a few new major findings, increasingly about edge cases (race windows, crash recovery, provenance corner cases). The reviewer has not yet returned "ready".

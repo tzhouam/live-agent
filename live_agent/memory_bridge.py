@@ -280,12 +280,19 @@ class MemoryBridge:
         """This user's unfinished erasures (see ``MemoryStore.pending_erasures``)."""
         return self.store.pending_erasures(self.user_id)
 
-    def resume_erasure(self, receipt_id: str) -> ErasureReport:
-        """Retry the pending purge targets of an unfinished erasure (no new deletion)."""
-        return self.store.forget(receipt_id, self.user_id, resume=receipt_id)
+    def resume_erasure(self, receipt_id: str, *, terms: Iterable[str] | None = None,
+                       purge_sessions: bool = False) -> ErasureReport:
+        """Retry the pending targets of an unfinished erasure. After a restart the erasure
+        query is lost: pass ``terms`` (re-supplied query) or ``purge_sessions=True``
+        (erase everything of this user in the receipt's sessions), otherwise ``memory_db``
+        stays pending (see ``MemoryStore.forget``)."""
+        return self.store.forget(receipt_id, self.user_id, resume=receipt_id, terms=terms,
+                                 purge_sessions=purge_sessions)
 
-    async def resume_erasure_async(self, receipt_id: str) -> ErasureReport:
-        return await self.store.forget_async(receipt_id, self.user_id, resume=receipt_id)
+    async def resume_erasure_async(self, receipt_id: str, *, terms: Iterable[str] | None = None,
+                                   purge_sessions: bool = False) -> ErasureReport:
+        return await self.store.forget_async(receipt_id, self.user_id, resume=receipt_id, terms=terms,
+                                             purge_sessions=purge_sessions)
 
     @staticmethod
     def acknowledge_erasure(report: ErasureReport, target: str, ok: bool = True, detail: str = "") -> bool:

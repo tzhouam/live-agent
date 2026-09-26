@@ -730,7 +730,12 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
             e for e in ev.get("capacity_skip", [])
             if (int(e["revision"]) == n_rev if e.get("revision") is not None else e["t"] >= o)
         ]
-        refusals = [e for e in ev.get("refusal", []) if e["t"] >= o]
+        # refusals bind to the final revision like skips. Without `revision`: accepted by time
+        # only on a never-revised chain; on a revised chain it is unbound (a primary gap).
+        refusals = [e for e in ev.get("refusal", [])
+                    if (int(e["revision"]) == n_rev if e.get("revision") is not None
+                        else (n_rev == 0 or cfg.diagnostic) and e["t"] >= o)]
+        unbound_refusals = [e for e in ev.get("refusal", []) if e.get("revision") is None and n_rev > 0]
 
         info: dict[str, Any] = {}
         missing = ""
@@ -742,6 +747,10 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
         elif refusals:
             kinds = {e.get("kind", "refused") for e in refusals}
             outcome = Outcome.REFUSED if "refused" in kinds else Outcome.DEGRADED
+        elif unbound_refusals and not cfg.diagnostic:
+            outcome = Outcome.UNADJUDICATED
+            missing = (f"{len(unbound_refusals)} refusal(s) without `revision` on a revised chain: "
+                       "cannot tell which intent was refused")
         else:
             gap = "" if cfg.diagnostic else _adjudication_gap(ch, vs, adj_onsets)
             if gap:

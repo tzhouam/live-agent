@@ -436,7 +436,8 @@ class Director:
             chain.status = ChainStatus.COMPLIED
             released += held.pop(len(chain.steps) - 1, []) if held else []
             self.held.pop(chain_id, None)
-            if self.closed and chain_id not in self._suppress_remarks:
+            if self.closed and chain_id not in self._suppress_remarks and self.latest_chain == chain_id:
+                # (a verdict arriving after a newer instruction does not speak an old "好了。")
                 # Narration policy: completion is voiced only after verification (after the
                 # chain's remaining spoken content, if any).
                 released.append(Segment(chain_id=chain_id, plan_version=self.plan_version,
@@ -486,8 +487,10 @@ class Director:
         if chain is None or chain.status != ChainStatus.OPEN or not self._matches(chain, revision, step):
             return False
         if self.latest_chain != chain_id:
-            chain.status = ChainStatus.CAPACITY_SKIPPED
-            self.events.capacity_skips.append((chain_id, len(chain.revisions)))
+            # executed (presented) and failed its check, and a newer instruction exists: the step
+            # failed; this is not a capacity skip (that is for never-executed instructions)
+            chain.status = ChainStatus.FAILED
+            self._drop_chain_segments(chain_id)
             return False
         self.queue.appendleft(Segment(chain_id=chain_id, plan_version=self.plan_version, intent=intent,
                                       line=line, correction=correction, retry_of=failed_request, step=step,
@@ -503,6 +506,10 @@ class Director:
         self.queue = deque(s for s in self.queue if term not in s.line and term not in s.action_text)
         for sq in self.queue:
             sq.correction = sq.correction.replace(term, "[已删除]")
+        self.deferred = [x for x in self.deferred if term not in x.line and term not in x.action_text]
+        for cid, seg in list(self.interrupted.items()):
+            if term in seg.line or term in seg.action_text or term in seg.correction:
+                del self.interrupted[cid]
         n += before - len(self.queue)
         for cid, steps in list(self.held.items()):
             for i, segs in list(steps.items()):

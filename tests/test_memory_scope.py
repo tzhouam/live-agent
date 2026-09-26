@@ -350,7 +350,8 @@ def test_confirmation_must_bind_to_the_proposition(mem):
 
 
 def test_confirmation_answer_must_follow_the_question_directly(mem):
-    b = mem.record_inference("user speaks French", user_id=U, derived_from=[], subject="user",
+    src = mem.ingest_user_utterance(utt("我在法国待过", session="c"), user_id=U).episode
+    b = mem.record_inference("user speaks French", user_id=U, derived_from=[src.id], subject="user",
                              predicate="speaks", value="French", session_id="c")
     q = mem.record_generated_event("你会说法语吗？", "c", private_scope(U), derived_from=[b.id], lineage="complete")
     mem.ingest_user_utterance(utt("我喜欢猫", session="c"), user_id=U)
@@ -410,13 +411,14 @@ def test_correction_is_atomic(mem, monkeypatch):
                                      lineage="complete")
     fired = []
     mem.stale_hooks.append(fired.append)
+    turn = mem.ingest_user_utterance(utt("Actually my job is at Globex"), user_id=U).episode
 
     def boom(texts):
         raise RuntimeError("embedder down")
 
     monkeypatch.setattr(mem.embedder, "embed", boom)
     with pytest.raises(RuntimeError):
-        mem.correct(old.id, "Globex")
+        mem.correct(old.id, "Globex", confirmation_id=turn.id)
     with pytest.raises(RuntimeError):
         mem.ingest_user_utterance(utt("不对，我在Globex工作"), user_id=U)
     monkeypatch.undo()
@@ -424,7 +426,7 @@ def test_correction_is_atomic(mem, monkeypatch):
     assert mem.get(old.id).status == Status.ACTIVE and mem.get(old.id).valid_to is None
     assert mem.get(gen.id).status == Status.ACTIVE and fired == []
     assert mem.resolve(U, "user", "works_at").value == "Acme"
-    new = mem.correct(old.id, "Globex")
+    new = mem.correct(old.id, "Globex", confirmation_id=turn.id)
     assert mem.get(old.id).status == Status.SUPERSEDED and mem.get(gen.id).status == Status.STALE
     assert mem.resolve(U, "user", "works_at").record.id == new.id
     assert len(fired) == 1 and fired[0][0].id == gen.id  # hooks run once, after the commit
@@ -504,7 +506,7 @@ def test_value_mention_alone_does_not_confirm(mem):
     ok = mem.ingest_user_utterance(utt("对，我妹妹确实住北京"), user_id=U).episode
     assert mem.confirm(e.id, ok.id).status == Status.ACTIVE
     # English: subject + predicate + value
-    b = mem.record_inference("sister works at Acme", user_id=U, derived_from=[], subject="user/sister",
+    b = mem.record_inference("sister works at Acme", user_id=U, derived_from=[ok.id], subject="user/sister",
                              predicate="works_at", value="Acme")
     for text in ("Acme is great", "I work at Acme"):
         with pytest.raises(ValueError):
@@ -822,7 +824,10 @@ def test_crash_after_delete_leaves_recoverable_receipt(tmp_path, monkeypatch, cr
     assert p["sessions"] == ["s5"] and "memory_db" in p["pending"] and p["content_lost"]
     assert mem2.recover_interrupted() == [p["receipt_id"]]
     (p2,) = mem2.pending_erasures(U)
-    assert p2["pending"] == ["recordings"]  # DB side finished; the external target still pending
+    # content lost: ID-only verification cannot ack memory_db until the query is re-supplied
+    assert p2["pending"] == ["memory_db", "recordings"]
+    rep = mem2.forget(p["receipt_id"], U, resume=p["receipt_id"], terms=["巴黎"])
+    assert rep.acks["memory_db"].ok and rep.pending_targets == ["recordings"]
     assert mem2._ids("SELECT id FROM records WHERE kind = 'summary' AND session_id = 's5' AND status = 'active'")
     for q in tmp_path.iterdir():
         assert "巴黎".encode() not in q.read_bytes(), q
@@ -890,3 +895,102 @@ def test_resume_reselects_new_residue(mem, monkeypatch):
     rep2.acknowledge(SIMILARITY_REVIEW_TARGET, detail="reviewed")  # first pass flagged the fact for review
     assert rep2.complete and mem.pending_erasures(U) == []
     assert mem.verify_erased("Acme", U).ok
+
+
+# ---------------------------------------------------------------- round 11
+
+
+def _restart(path):
+    from live_agent.memory import store as store_mod
+
+    store_mod._RECEIPT_CONTENT.clear()
+    return MemoryStore(path, clock=Clock())
+
+
+def test_restart_resume_needs_the_query_or_a_session_purge(tmp_path, monkeypatch):
+    path = tmp_path / "m.sqlite"
+    mem = MemoryStore(path, clock=Clock())
+    mem.ingest_user_utterance(utt("I work at Acme", session="w1"), user_id=U)
+    hidden = mem.add_ledger("postcard to the acme office", private_scope(U), curated=True, session_id="w1")
+    monkeypatch.setattr(mem, "_content_match", lambda t, u: [])  # the first selection misses everything
+    monkeypatch.setattr(mem, "_similar_records", lambda *a, **k: ([], []))
+    rep = mem.forget("Acme", U)
+    assert not rep.acks["memory_db"].ok and mem.get(hidden.id) is not None
+    rid = rep.receipt_id
+    mem.close()
+    mem2 = _restart(path)
+    # ID-only verification of the deleted ids would pass, but the term-bearing record survives
+    r1 = mem2.forget(rid, U, resume=rid)
+    assert not r1.acks["memory_db"].ok and "terms=" in r1.acks["memory_db"].detail
+    assert mem2.get(hidden.id) is not None and mem2.pending_erasures(U)[0]["pending"] == ["memory_db"]
+    r2 = mem2.forget(rid, U, resume=rid, terms=["Acme"])  # re-supplied query
+    assert hidden.id in r2.deleted_ids and mem2.get(hidden.id) is None
+    assert r2.acks["memory_db"].ok and r2.complete and mem2.pending_erasures(U) == []
+    mem2.close()
+
+
+def test_restart_resume_with_session_purge(tmp_path):
+    path = tmp_path / "n.sqlite"
+    mem = MemoryStore(path, clock=Clock())
+    mem.ingest_user_utterance(utt("I work at Acme", session="w2"), user_id=U)
+    keep = mem.ingest_user_utterance(utt("I like tea", session="other"), user_id=U).episode
+    rep = mem.forget("Acme", U, require=["recordings"])
+    mem.db.execute("UPDATE erasure_receipts SET acks = '{}'")  # memory_db pending as after a crash
+    mem.db.commit()
+    other_sess = mem.ingest_user_utterance(utt("some unrelated note", session="w2"), user_id=U).episode
+    mem.close()
+    mem2 = _restart(path)
+    b = bridge(mem2, mode="private")
+    r = b.resume_erasure(rep.receipt_id, purge_sessions=True)
+    assert r.acks["memory_db"].ok and other_sess.id in r.deleted_ids and mem2.get(keep.id) is not None
+    assert r.pending_targets == ["recordings"]
+    mem2.close()
+
+
+def test_inference_needs_lineage_and_derives_scope(mem):
+    ep = mem.ingest_user_utterance(utt("我住在巴黎"), user_id=U).episode
+    pub = mem.ingest_viewer_chat("主播说过喜欢茶", "v1", S)
+    with pytest.raises(ValueError):
+        mem.record_inference("user likes tea", user_id=U, derived_from=[])
+    with pytest.raises(ScopeViolationError):  # a public inference from a private source
+        mem.record_inference("user speaks French", user_id=U, derived_from=[ep.id], scope=public_scope(S))
+    b = mem.record_inference("user speaks French", user_id=U, derived_from=[ep.id])
+    assert b.scope == private_scope(U)
+    c = mem.record_inference("user likes tea", user_id=U, derived_from=[pub.id])
+    assert c.scope == public_scope(S)
+    d = mem.record_inference("user likes tea", user_id=U, derived_from=[pub.id], scope=private_scope(U))
+    assert d.scope == private_scope(U)  # narrowing is allowed
+
+
+def test_correct_requires_bound_user_turn_and_eligible_fact(mem):
+    (old,) = mem.ingest_user_utterance(utt("I work at Acme"), user_id=U).facts
+    with pytest.raises(TypeError):
+        mem.correct(old.id, "Globex")  # no confirming turn
+    for text in ("Globex is nice", "My sister's job is at Globex", "I don't work at Globex"):
+        turn = mem.ingest_user_utterance(utt(text), user_id=U).episode
+        with pytest.raises(ValueError):
+            mem.correct(old.id, "Globex", confirmation_id=turn.id)
+    other = mem.ingest_user_utterance(utt("Actually my job is at Globex"), user_id=V).episode
+    with pytest.raises(ValueError):
+        mem.correct(old.id, "Globex", confirmation_id=other.id)  # another user's turn
+    turn = mem.ingest_user_utterance(utt("Actually my job is at Globex"), user_id=U).episode
+    new = mem.correct(old.id, "Globex", confirmation_id=turn.id)
+    assert new.provenance.speaker == "user" and new.provenance.source_id == turn.provenance.source_id
+    assert turn.id in new.derived_from and mem.get(old.id).status == Status.SUPERSEDED
+    # a viewer claim never becomes a user assertion through correct()
+    ep = mem.ingest_viewer_chat("alice works at Initech", "v1", S)
+    vc = mem.add_record(Kind.USER_FACT, public_scope(S), "alice works at Initech", ClaimType.VIEWER_CLAIM,
+                        Provenance(speaker="viewer:v1"), derived_from=[ep.id], subject=f"user:{U}",
+                        predicate="works_at", value="Initech")
+    mem.db.commit()
+    t2 = mem.ingest_user_utterance(utt("Actually my job is at Initech"), user_id=U).episode
+    with pytest.raises(ValueError):
+        mem.correct(vc.id, "Initech", confirmation_id=t2.id)
+    # system observations have their own typed path
+    obs = mem.record_observation("GPS: Berlin", user_id=U, subject="user", predicate="lives_in", value="Berlin")
+    with pytest.raises(ValueError):
+        mem.correct(obs.id, "Munich", confirmation_id=t2.id)
+    new_obs = mem.correct_observation(obs.id, "Munich", source_id="gps-2")
+    assert new_obs.claim_type == ClaimType.SYSTEM_OBSERVATION and new_obs.provenance.speaker == "system"
+    with pytest.raises(ValueError):
+        mem.correct_observation(new.id, "X", source_id="s")  # not an observation
