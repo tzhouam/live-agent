@@ -359,7 +359,8 @@ def main() -> None:
     # TaoMate-H3 generator options are parsed by the adapter (see taomate_h3.py).
     args, rest = p.parse_known_args()
     args.extra = rest
-    uvicorn.run(build_app(args), host=args.host, port=args.port, log_level="info")
+    # JPEG/PCM frames do not compress: per-message deflate only burned event-loop time (stall watchdog)
+    uvicorn.run(build_app(args), host=args.host, port=args.port, log_level="info", ws_per_message_deflate=False)
 
 
 if __name__ == "__main__":

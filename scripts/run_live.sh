@@ -19,9 +19,26 @@ mkdir -p .cache/logs .cache/sessions
 extra=()
 [ "$ALLOW_UNCALIBRATED" = "1" ] && extra+=(--dev-allow-uncalibrated)
 pids=()
+set -m  # job control: each background child gets its own process group (cleanup kills whole trees)
+RUN_ID=$(date +%Y%m%dT%H%M%S)-$$  # per-invocation logs: a run never parses (or releases) another run's GPUs
+SERVER_LOG=.cache/logs/run_live_server.$RUN_ID.out
+HELPER_LOG=.cache/logs/serve_models.$RUN_ID.out
+reserved_ids() {  # GPU ids that *our* gpu run calls reported reserving (from their own output)
+  grep -ho "Reserved [0-9]* GPU(s): \[[0-9 ]*\]" "$@" 2>/dev/null | sed 's/.*\[\(.*\)\]/\1/' | tr ' ' '\n' | grep -E '^[0-9]+$' || true
+}
 cleanup() {
-  for p in "${pids[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
-  wait 2>/dev/null || true
+  trap - EXIT INT TERM
+  for p in "${pids[@]:-}"; do [ -n "$p" ] && { kill -INT -- "-$p" 2>/dev/null || kill -INT "$p" 2>/dev/null; } || true; done
+  for _ in $(seq 1 60); do  # give gpu run up to 60 s to stop its command gracefully
+    alive=0; for p in "${pids[@]:-}"; do [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive=1; done
+    [ $alive = 0 ] && break; sleep 1
+  done
+  for p in "${pids[@]:-}"; do [ -n "$p" ] && { kill -9 -- "-$p" 2>/dev/null || kill -9 "$p" 2>/dev/null; } || true; done
+  # canhazgpu can keep a reservation after its supervisor is interrupted: release exactly ours
+  ids=$(reserved_ids "$SERVER_LOG" "$HELPER_LOG" | sort -u | paste -sd, -)
+  if [ "$mode" = "full" ] && [ -n "$ids" ] && command -v gpu >/dev/null; then
+    gpu release --gpu-ids "$ids" >/dev/null 2>&1 && echo "[run_live] released GPUs $ids"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -38,18 +55,25 @@ case "$mode" in
   full)
     command -v gpu >/dev/null || { echo "canhazgpu ('gpu') not found"; exit 1; }
     for p in 8101 8102 8103; do port_free $p || { echo "helper port $p already in use (models running?)"; exit 1; }; done
-    echo "[run_live] full: starting helper models on 1 GPU (log .cache/logs/serve_models.out) ..."
+    echo "[run_live] full: starting helper models on 1 GPU (log $HELPER_LOG) ..."
+    : > "$HELPER_LOG"; : > "$SERVER_LOG"
     gpu run --gpus 1 --timeout "$HOURS" --note "live-agent helper models (run_live.sh)" -- \
-      scripts/serve_models.sh > .cache/logs/serve_models.out 2>&1 &
+      scripts/serve_models.sh > "$HELPER_LOG" 2>&1 &
     pids+=($!)
-    until grep -q ALL_READY .cache/logs/serve_models.out 2>/dev/null; do
-      kill -0 "${pids[0]}" 2>/dev/null || { echo "helper models failed:"; tail -20 .cache/logs/serve_models.out; exit 1; }
+    t0=$SECONDS
+    until grep -q ALL_READY "$HELPER_LOG" 2>/dev/null; do
+      kill -0 "${pids[0]}" 2>/dev/null || { echo "helper models failed:"; tail -20 "$HELPER_LOG"; exit 1; }
+      if grep -q "reservation lost\|releasing GPU reservation" "$HELPER_LOG"; then
+        echo "helper GPU reservation was lost:"; tail -5 "$HELPER_LOG"; exit 1
+      fi
+      [ $((SECONDS - t0)) -gt 1200 ] && { echo "helper models not ready after 20 min:"; tail -20 "$HELPER_LOG"; exit 1; }
       sleep 5
     done
     echo "[run_live] helper models ready; starting TaoMate-H3 server on 6 GPUs (start-up ~2-3 min) ..."
     gpu run --gpus 6 --timeout "$HOURS" --note "live-agent server (run_live.sh)" -- \
       python3 -m live_agent.server.app --generator taomate_h3 --director-mode "$DIRECTOR" \
-        --host "$HOST" --port "$PORT" "${extra[@]}" &
+        --host "$HOST" --port "$PORT" "${extra[@]}" > "$SERVER_LOG" 2>&1 &
+    echo "[run_live] server log: $SERVER_LOG"
     pids+=($!)
     ;;
   *) echo "usage: $0 demo|full"; exit 2 ;;
@@ -61,6 +85,9 @@ for _ in $(seq 1 900); do
     break
   fi
   for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null || { echo "[run_live] a process exited during start-up"; exit 1; }; done
+  if [ "$mode" = "full" ] && grep -q "reservation lost" "$SERVER_LOG" "$HELPER_LOG" 2>/dev/null; then
+    echo "[run_live] a GPU reservation was lost during start-up"; exit 1
+  fi
   sleep 1
 done
 wait -n "${pids[@]}"

@@ -33,6 +33,8 @@ verified. Every number is labelled *measured locally*, *cited*, *estimate* or *t
 
 ## Running
 
+Quick start: `scripts/run_live.sh demo` (CPU only) or `scripts/run_live.sh full` (7 GPUs); see `README.md`.
+
 ```bash
 # helper models (one GPU; always through canhazgpu)
 gpu run --gpus 1 --timeout 6h --note "live-agent helper models" -- scripts/serve_models.sh
@@ -225,8 +227,19 @@ python3 -m pytest
     - The verified confirmation was spoken after the erasure.
     - 51 chunks were presented, with no gaps except around barge-ins.
     - No `/dev/shm` files and no worker processes remained after shutdown.
-  - **Regression to chase:** recurring event-loop stalls of 0.24–0.37 s (five in 80 s). The earlier clean run had
-    none. They are under the watchdog's 0.5 s stack-capture threshold, so the cause is not identified yet.
+  - **Stall regression fixed:** a finer watchdog (0.15 s, all threads) located two event-loop costs, and both moved:
+    - numpy loads of the ~40 MB `/dev/shm` chunk payloads now run on the adapter's reader thread;
+    - WebSocket per-message deflate of JPEG/PCM frames is disabled.
+- **One-command launcher verified (2026-09-26, measured locally).** `scripts/run_live.sh full` started the helper
+  models and TaoMate-H3 via `gpu run` and served the scripted session (tea, wave, a private fact, an erasure):
+  - zero errors and zero event-loop stalls over 0.2 s;
+  - on stop it released exactly its own GPUs (0–6), with no processes or `/dev/shm` files left;
+  - `scripts/run_live.sh demo` runs the whole loop on CPU only.
+  - Launcher bugs found and fixed while testing:
+    - runs shared log names, so one run's cleanup could release another run's GPU; logs are now per invocation,
+      and only `full` mode releases;
+    - there was no readiness timeout; there is now one, with lost-reservation detection;
+    - child processes are now run in separate process groups, so cleanup leaves no orphans.
 - **E1:** a judge-only pilot ran (24 × 5 trials on TaoMate-H3, `docs/e1_pilot.md`). It showed the VLM judge failing
   in both directions, so every capability stays `executed`. Next: two raters label the stratified sample
   (`scripts/e1_validate.py`), then full E1 runs with the validated judge.
