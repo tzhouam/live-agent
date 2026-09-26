@@ -137,6 +137,9 @@ class Director:
         self.awaiting_decision = False
         self.deferred: list[Segment] = []
         self.deferred_verifications: list[tuple] = []
+        self.plan_steps: dict[str, list[list[Segment]]] = {}  # multistep plan (for replay after a repair)
+        self.replay_pending: set[str] = set()  # chains whose later steps were pulled back by a failure
+        self._last_action = ""  # the previous request's (non-filler) action, for smooth follow-through
         self.step_base_t: dict[str, float] = {}  # chain -> time the current step's clock started
         self._suppress_remarks: set[str] = set()
 
@@ -370,14 +373,21 @@ class Director:
         return [x for x in out if x.intent or x.action_text or x.line]
 
     def _enqueue_chain(self, chain: IntentChain, steps: list[dict]) -> None:
+        """All steps are released back to back (fluent on screen: no filler between steps). Each
+        action step is still verified in order; if one fails, later steps are pulled back and
+        replayed after its repair is verified (`queue_retry` / `on_verified`)."""
         per_step = [self._segments_for_step(chain, i, s, len(steps)) for i, s in enumerate(steps)]
         if self.closed and chain.kind == TaskKind.MULTISTEP and len(steps) > 1:
-            first = self._release_upto(chain, -1)
-            self.held[chain.chain_id] = {i: segs for i, segs in enumerate(per_step) if i > first}
-            released = [seg for i in range(first + 1) for seg in per_step[i]]
-        else:
-            released = [seg for segs in per_step for seg in segs]
-        self.queue.extend(released)
+            self.plan_steps[chain.chain_id] = per_step
+        self.queue.extend(seg for segs in per_step for seg in segs)
+
+    def _replay_after(self, chain: IntentChain, step: int) -> list[Segment]:
+        """Fresh copies of the planned segments of every step after ``step`` (replay in order)."""
+        from dataclasses import replace
+
+        plan = self.plan_steps.get(chain.chain_id, [])
+        return [replace(seg, plan_version=self.plan_version, revision=len(chain.revisions), memory_ids=seg.memory_ids)
+                for i in range(step + 1, len(plan)) for seg in plan[i]]
 
     def _release_upto(self, chain: IntentChain, after: int) -> int:
         """Index of the last step released together after step ``after``: all following
@@ -426,30 +436,33 @@ class Director:
         chain.step_index += 1
         if chain.first_compliant_t is None:
             chain.first_compliant_t = t
-        held = self.held.get(chain_id, {})
         released: list[Segment] = []
-        if held and done_step is not None:
-            last = self._release_upto(chain, done_step)
-            for i in range(done_step + 1, last + 1):
-                released += held.pop(i, [])
+        if chain_id in self.replay_pending and done_step is not None:
+            # a failed earlier step pulled the later steps back: replay them now, in order
+            self.replay_pending.discard(chain_id)
+            released += self._replay_after(chain, done_step)
+        remark: Segment | None = None
         if chain.step_index >= len(self._action_steps(chain)):
             chain.status = ChainStatus.COMPLIED
-            released += held.pop(len(chain.steps) - 1, []) if held else []
             self.held.pop(chain_id, None)
+            self.plan_steps.pop(chain_id, None)
             if self.closed and chain_id not in self._suppress_remarks and self.latest_chain == chain_id:
                 # (a verdict arriving after a newer instruction does not speak an old "好了。")
-                # Narration policy: completion is voiced only after verification (after the
-                # chain's remaining spoken content, if any).
-                released.append(Segment(chain_id=chain_id, plan_version=self.plan_version,
-                                        line="好了。", is_completion_remark=True,
-                                        revision=len(chain.revisions), memory_ids=[]))  # template
+                # Narration policy: completion is voiced only after verification, and after the
+                # chain's remaining spoken content, if any.
+                remark = Segment(chain_id=chain_id, plan_version=self.plan_version, line="好了。",
+                                 is_completion_remark=True, revision=len(chain.revisions), memory_ids=[])
         if self.awaiting_decision:
             # a barge-in is waiting for its decision: hold the release (incl. any "好了。") until
             # the decision is applied; if it revises/withdraws this chain the remark is dropped
-            self.deferred.extend(released)
+            self.deferred.extend(released + ([remark] if remark else []))
             return True
         for seg in reversed(released):
             self.queue.appendleft(seg)
+        if remark is not None:
+            # after this chain's still-queued segments (e.g. a trailing explanation step)
+            idx = max((i for i, q in enumerate(self.queue) if q.chain_id == chain_id), default=-1)
+            self.queue.insert(idx + 1, remark)
         return True
 
     def expire(self, chain_id: str, revision: int | None) -> None:
@@ -492,6 +505,11 @@ class Director:
             chain.status = ChainStatus.FAILED
             self._drop_chain_segments(chain_id)
             return False
+        if chain_id in self.plan_steps and step is not None:
+            # later steps must not run before this one is repaired: pull them back, replay them
+            # after the repair is verified (strict order; fluent in the success path)
+            self.queue = deque(q for q in self.queue if not (q.chain_id == chain_id and (q.step or 0) > step))
+            self.replay_pending.add(chain_id)
         self.queue.appendleft(Segment(chain_id=chain_id, plan_version=self.plan_version, intent=intent,
                                       line=line, correction=correction, retry_of=failed_request, step=step,
                                       revision=len(chain.revisions), min_request=min_request))
@@ -540,9 +558,14 @@ class Director:
 
     def next_script(self, request_index: int) -> BlockScript:
         seg = self._pop_segment(request_index)
+        follow_through = ""
         if seg is None:
             intent = self.listen_intent if self.listening else self.idle_intent
             seg = Segment(chain_id=None, plan_version=self.plan_version, intent=intent, line="")
+            if self._last_action and not self.listening:
+                # the previous request carried an action: let it finish naturally instead of cutting
+                # straight to the idle pose (fluency on screen; not a new action)
+                follow_through = self._last_action
         chain = self.chains.get(seg.chain_id or "")
         if chain is not None and chain.status not in (ChainStatus.OPEN, ChainStatus.COMPLIED):
             seg = Segment(chain_id=None, plan_version=self.plan_version, intent=self.idle_intent,
@@ -575,6 +598,10 @@ class Director:
                 self.events.refusals.append((seg.chain_id, res.reason))
                 line = "这个我现在做不到，不过我们可以聊聊别的。"
                 self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
+        if follow_through and action_phrase:
+            action_phrase = (f"she smoothly finishes the previous movement ({follow_through.rstrip('.')}) and puts "
+                             f"everything back in place, then {action_phrase.removeprefix('she ')}")[:290]
+        self._last_action = action_phrase if (seg.intent and seg.chain_id) or seg.action_text else ""
         if line and self.closed:
             checks.append(CheckQuestion(qid=new_id("q"), text="台词是否被完整、准确地说出？", kind="speech"))
         if seg.is_completion_remark and seg.chain_id:

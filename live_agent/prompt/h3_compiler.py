@@ -21,6 +21,11 @@ import re
 from live_agent.types import BlockScript
 
 STYLE = "Live-action portrait livestream"
+# Silent requests (no line): the audio model otherwise invents murmurs and hums (observed on the
+# live stack, 2026-09-27), which also bleed into the next line through the audio carry-over.
+SILENT = "S1 stays completely silent with her lips closed: no speech, no humming, no vocal sounds."
+SILENT_SOUNDSCAPE = ("Quiet study-room ambience with only faint page rustles and soft room tone; "
+                     "no speech, no humming, no vocal sounds.")
 
 # Characters that would break the <d>...</d> dialogue tag or the section headers.
 _FORBIDDEN = re.compile(r"</?d>|integrated_multimodal_description:|overall_soundscape:|non_diegetic_music:", re.I)
@@ -63,7 +68,8 @@ def compile_prompt(script: BlockScript, *, first_request: bool = False) -> str:
     else:
         parts.append(_sentence(f"{same}{subject} stays in the same setting; {scene} remain unchanged"))
     parts.append(_sentence(f"{camera}, all remaining constant"))
-    parts.append(_sentence(voice))
+    if line:
+        parts.append(_sentence(voice))  # describing the voice on a silent request makes H3 vocalise
     for fix in script.corrections:
         parts.append(_sentence(_clean(fix, field="correction", max_len=200)))
 
@@ -72,15 +78,17 @@ def compile_prompt(script: BlockScript, *, first_request: bool = False) -> str:
     elif line:
         parts.append(f"S1 looks into the lens and says once: <d>[{c.language}] {line}</d> Her lips close.")
     elif action:
-        parts.append(_sentence(action) + " She does not speak.")
+        parts.append(_sentence(action) + " " + SILENT)
     else:
-        parts.append("S1 continues quietly with small natural movements and does not speak.")
+        parts.append("S1 continues quietly with small natural movements. " + SILENT)
     parts.append(_sentence(c.negative))
 
     description = " ".join(parts)
     soundscape = _sentence(_clean(script.soundscape, field="soundscape", max_len=200))
     if line:
         soundscape = f"Clear dry {c.speech_language} speech, {soundscape[0].lower()}{soundscape[1:]}"
+    else:  # silent request: say so explicitly, or the audio model fills the gap with vocal sounds
+        soundscape = SILENT_SOUNDSCAPE
     return (
         f"integrated_multimodal_description: {description}\n\n"
         f"overall_soundscape: {soundscape}\n\n"

@@ -41,24 +41,50 @@ MULTI = {"relation": "new", "kind": "multistep", "steps": [
     {"intent": "", "line": "这一页讲的是春天。"}]}
 
 
-def test_multistep_releases_next_step_only_after_verification():
+def test_multistep_runs_back_to_back_and_replays_after_a_failed_step():
     d = make(MULTI)
     say(d, "先喝茶再翻页然后讲讲")
     chain = next(iter(d.chains.values()))
-    s0 = d.next_script(0)
-    assert s0.provenance["step"] == 0 and "teacup" in s0.action
-    idle = d.next_script(1)  # step 1 is held until step 0 is verified
-    assert not idle.chain_ids
-    assert not d.on_verified(chain.chain_id, "turn_page", 0, 1.0, revision=0, step=1)  # wrong step
+    s0, s1, s2 = d.next_script(0), d.next_script(1), d.next_script(2)
+    # fluent: all steps back to back, no filler in between
+    assert [x.provenance["step"] for x in (s0, s1, s2)] == [0, 1, 2] and "teacup" in s0.action
+    # verdicts stay bound to the step order
+    assert not d.on_verified(chain.chain_id, "turn_page", 1, 1.0, revision=0, step=1)
     assert d.on_verified(chain.chain_id, "drink_tea", 0, 1.0, revision=0, step=0)
-    s1 = d.next_script(2)
-    assert s1.provenance["step"] == 1
-    assert d.on_verified(chain.chain_id, "turn_page", 2, 2.0, revision=0, step=1)
-    s2 = d.next_script(3)
-    assert s2.provenance["step"] == 2 and "春天" in s2.transcript  # trailing content released
-    remark = d.next_script(4)
-    assert remark.provenance["completion_remark"] and chain.status == ChainStatus.COMPLIED
+    assert d.on_verified(chain.chain_id, "turn_page", 1, 2.0, revision=0, step=1)
+    assert chain.status == ChainStatus.COMPLIED
+    assert d.next_script(3).provenance["completion_remark"]  # "好了。" only after both are verified
 
+    # failure path: step 0 fails -> the queued later steps are pulled back, step 0 is repaired,
+    # then steps 1..2 are replayed in order
+    d = make(MULTI)
+    say(d, "先喝茶再翻页然后讲讲")
+    chain = next(iter(d.chains.values()))
+    d.next_script(0)  # step 0 locked; steps 1, 2 still queued
+    assert d.queue_retry(chain.chain_id, "drink_tea", correction="clearly", failed_request=0, revision=0, step=0)
+    assert all((q.step or 0) == 0 for q in d.queue if q.chain_id == chain.chain_id)
+    retry = d.next_script(1)
+    assert retry.provenance["retry_of"] == 0 and retry.provenance["step"] == 0
+    assert d.on_verified(chain.chain_id, "drink_tea", 1, 5.0, revision=0, step=0)
+    assert [d.next_script(k).provenance["step"] for k in (2, 3)] == [1, 2]
+
+
+def test_request_after_an_action_finishes_it_smoothly():
+    d = make(TEA)
+    say(d, "喝口茶")
+    tea = d.next_script(0)
+    after = d.next_script(1)  # filler right after an action
+    assert "smoothly finishes the previous movement" in after.action and "teacup" in after.action
+    assert "smoothly" not in d.next_script(2).action  # only once
+
+
+def test_silent_request_prompt_forbids_vocal_sounds():
+    from live_agent.prompt.h3_compiler import compile_prompt
+
+    d = make(TEA)
+    p = compile_prompt(d.next_script(0))  # idle filler, no line
+    assert "no humming" in p and "overall_soundscape: Quiet study-room ambience" in p
+    assert d.ledger.canon.voice not in p  # no voice description on a silent request
 
 def test_stale_verdict_from_superseded_revision_is_ignored():
     rev = {"relation": "revision", "target_chain": None, "kind": "action", "steps": [{"intent": "wave", "line": "好，挥挥手。"}]}
