@@ -359,3 +359,18 @@ def test_queued_input_keeps_its_receipt_epoch():
 
     d = aio.run(main())
     assert not d.chains  # the superseded decision did not change the plan
+
+
+def test_open_loop_cut_request_resumes_its_own_phrase_and_line():
+    chat = {"relation": "chat", "kind": "chat", "steps": [{"action": "", "line": "嗯？"}]}
+    d = make(replies=[{"relation": "new", "kind": "action", "steps": [{"action": "she waves", "line": "你好"}]}, chat],
+             mode=DirectorMode.OPEN_LOOP)
+    say(d, "挥挥手", "u1")
+    s = d.next_script(0)
+    d.on_interrupted([s])
+    chain = next(iter(d.chains.values()))
+    assert 0 not in chain.requests  # the cut request no longer blocks closure
+    say(d, "嗯", "u2", 1.0)
+    d.next_script(1)  # chat reply
+    again = d.next_script(2)
+    assert again.action == "she waves" and again.transcript == "你好"

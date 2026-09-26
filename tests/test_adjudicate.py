@@ -11,10 +11,12 @@ from pathlib import Path
 import pytest
 
 from live_agent.eval.adjudicate import (
+    RecordingMismatchError,
     default_key_path,
     merge,
     prepare,
     presented_segments,
+    recorded_length,
     session_to_video,
     video_to_session,
 )
@@ -55,10 +57,20 @@ def test_adjudication_roundtrip(tmp_path):
     log = asyncio.run(run_task(task, "A2", 0, factory=factory, speed=20.0, out_dir=tmp_path))
     video = log.with_suffix(".mp4")
     assert video.exists()
-    # plant condition-revealing container metadata: delivery must strip it
+    # the recorder writes exactly the presented frames per chunk, so the alignment check passes;
+    # a truncated recording is rejected (labels would map to the wrong session times)
+    short = tmp_path / "short"
+    short.mkdir()
+    short_log = short / log.name
+    short_log.write_bytes(log.read_bytes())
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(video), "-t", "2", "-c", "copy",
+                    str(short_log.with_suffix(".mp4"))], check=True)
+    with pytest.raises(RecordingMismatchError):
+        prepare([short_log], tmp_path / "rejected")
+    # plant condition-revealing container metadata on the (aligned) recording: delivery must strip it
     tagged = tmp_path / "tagged.mp4"
-    subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(video), "-c", "copy", "-metadata",
-                    f"title={log.stem}", str(tagged)], check=True)
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(video), "-c", "copy", "-metadata", f"title={log.stem}",
+                    str(tagged)], check=True)
     assert log.stem.encode() in tagged.read_bytes()
     os.replace(tagged, video)
     before = score_session(load_session(log))

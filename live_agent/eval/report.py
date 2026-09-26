@@ -90,10 +90,14 @@ def _rate_line(name: str, k: int, n: int, clusters: Sequence[str] | None = None,
     return f"| {name} | {k}/{n} | {_f(k / n, True)} | {_ci(*w)} | {boot} |"
 
 
-def _claim_units(chains: Iterable[ChainOutcome]) -> tuple[list[str], list[float]]:
+def _claim_units(chains: Iterable[ChainOutcome], sessions: Iterable[SessionScore] = ()) -> tuple[list[str], list[float]]:
     """One unit per adjudicated claim (1 = false), clustered by task: the bootstrap of
-    the pooled mean is then the task-clustered ratio estimator of FCR."""
+    the pooled mean is then the task-clustered ratio estimator of FCR. Claims with no
+    corresponding request (session level) are false units of their session's task."""
     cl, xs = [], []
+    for s in sessions:
+        cl += [s.task_id] * s.n_orphan_claims
+        xs += [1.0] * s.n_orphan_claims
     for c in chains:
         n = c.n_claims - c.n_claims_unadjudicated
         cl += [c.task_id] * n
@@ -104,7 +108,7 @@ def _claim_units(chains: Iterable[ChainOutcome]) -> tuple[list[str], list[float]
 def condition_section(cond: str, sessions: list[SessionScore], n_boot: int = 4000) -> list[str]:
     chains = [c for s in sessions for c in s.chains]
     eff = [c for c in chains if c.in_primary]
-    sm = summarize(chains)
+    sm = summarize(chains, sum(s.n_orphan_claims for s in sessions))
     cl = [c.task_id for c in eff]
     L = [f"## Condition `{cond}`", ""]
     L.append(
@@ -133,7 +137,7 @@ def condition_section(cond: str, sessions: list[SessionScore], n_boot: int = 400
     L.append(_rate_line("Content onset <= 15 s (reported separately)",
                         sum(bool(c.onset_ok) for c in content), len(content),
                         [c.task_id for c in content], [float(bool(c.onset_ok)) for c in content], n_boot))
-    ccl, cx = _claim_units(chains)
+    ccl, cx = _claim_units(chains, sessions)
     L.append(_rate_line("FCR (false / all audible completion claims, withdrawn chains incl.)",
                         sm["n_false_claims"], sm["n_claims"], ccl, cx, n_boot))
     L.append(_rate_line("Claim coverage (chains with >= 1 claim)",
@@ -167,14 +171,16 @@ def condition_section(cond: str, sessions: list[SessionScore], n_boot: int = 400
 
     # time-to-event
     L += ["", "**Time to event (Kaplan-Meier, right-censored at D)**", "",
-          "| Measure | n | events | deadline success | KM median (s) | RMST to horizon (s) |",
-          "|---|---|---|---|---|---|"]
+          ("| Measure | n | events | deadline success (KM at H) | observed fraction (events / n) "
+           "| censored before H | KM median (s) | RMST to horizon (s) |"),
+          "|---|---|---|---|---|---|---|---|"]
 
     def km_row(name: str, ts: list[float], es: list[bool], H: float) -> None:
         km = stats.kaplan_meier(ts, es)
         med = km.median
-        L.append(f"| {name} | {len(ts)} | {sum(es)} | {_f(sum(es) / len(ts), True)} | "
-                 f"{_f(med) if med is not None else f'> {H:g}'} | {_f(km.rmst(H))} (H={H:g}) |")
+        early = sum(1 for t, e in zip(ts, es, strict=True) if not e and t < H - 1e-9)
+        L.append(f"| {name} | {len(ts)} | {sum(es)} | {_f(1 - km.s_at(H), True)} | {_f(sum(es) / len(ts), True)} | "
+                 f"{early} | {_f(med) if med is not None else f'> {H:g}'} | {_f(km.rmst(H))} (H={H:g}) |")
 
     act = [c for c in eff if c.tvc is not None]
     if act:
@@ -590,7 +596,7 @@ def build_report(
     L += ["| Condition | sessions | effective chains | success | Wilson 95% CI | insufficient observation |",
           "|---|---|---|---|---|---|"]
     for cond, ss in sorted(by_cond.items()):
-        sm = summarize([c for s in ss for c in s.chains])
+        sm = summarize([c for s in ss for c in s.chains], sum(s.n_orphan_claims for s in ss))
         L.append(f"| {cond} | {len(ss)} | {sm['n_effective']} | {_f(sm['success_rate'], True)} | "
                  f"{_ci(*stats.wilson(sm['n_success'], sm['n_effective']))} | "
                  f"{sm['n_insufficient_observation']} |")

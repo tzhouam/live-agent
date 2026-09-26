@@ -71,7 +71,9 @@ class SimClient:
             if self._last_end is not None and t0 - self._last_end > 0.05 / self.speed:
                 self.stalls.append(Stall(self._last_end, t0))
             await asyncio.sleep(ch.duration_s / self.speed)
-            t1 = now()
+            # a simulated client presents exactly the chunk's duration; the measured wall time would
+            # add sleep overshoot (x speed) that no real player has
+            t1 = t0 + ch.duration_s / self.speed
             self._current = None
             self._last_end = t1
             self.presented.append((ch.request_index, ch.chunk_index, t0, t1))
@@ -128,6 +130,10 @@ class Recorder:
         if chunk.video is None:
             return
         v = np.ascontiguousarray(chunk.video, dtype=np.uint8)
+        if chunk.n_frames and len(v) != chunk.n_frames:
+            # the recording must hold exactly the presented duration (adjudication time mapping)
+            idx = np.minimum((np.arange(chunk.n_frames) * len(v)) // chunk.n_frames, len(v) - 1)
+            v = np.ascontiguousarray(v[idx])
         if self._proc is None:
             _, h, w, _ = v.shape
             self._tmp = self.path.with_suffix(".video.mp4")

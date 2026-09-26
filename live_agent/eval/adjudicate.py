@@ -92,6 +92,10 @@ class BlindingError(RuntimeError):
     """The delivered batch would reveal condition or session identity."""
 
 
+class RecordingMismatchError(RuntimeError):
+    """The recording does not match the chunk log (the video/session time map would be wrong)."""
+
+
 class MergeConflictError(RuntimeError):
     """The batch was already finalized with different inputs (use replace=True / --replace)."""
 
@@ -287,8 +291,11 @@ function now(id, step, key){ set(id, step, key, +vid(id).currentTime.toFixed(2))
 function addClaim(id){ const o = obj(id, 0); (o.claims = o.claims || []).push({v_claim: +vid(id).currentTime.toFixed(2),
   ref: null, step: null, label: null}); o.complete = false; done(id, o); }
 function setClaim(id, i, key, val){ const o = obj(id, 0); o.claims[i][key] = val; o.complete = false; done(id, o); }
-function setRef(id, i, val){ const [r, s] = val.split("|"); const o = obj(id, 0);
-  o.claims[i].ref = r || null; o.claims[i].step = s === "" || s == null ? null : +s; o.complete = false; done(id, o); }
+function setRef(id, i, val){ const [r, v, s] = val.split("|"); const o = obj(id, 0);
+  o.claims[i].ref = r || null; o.claims[i].rev = v === "" || v == null ? null : +v;
+  o.claims[i].step = s === "" || s == null ? null : +s;
+  if (r === "none") o.claims[i].label = "not_complied";  // a claim about nothing requested is false
+  o.complete = false; done(id, o); }
 function delClaim(id, i){ const o = obj(id, 0); o.claims.splice(i, 1); o.complete = false; done(id, o); }
 function complete(id){ const o = obj(id, 0); o.claims = o.claims || []; o.complete = true; done(id, o); }
 function list(xs){ return "<ul>" + xs.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>"; }
@@ -342,10 +349,15 @@ function sweepItem(it, m){
   h += `<button onclick="addClaim('${it.id}')">claim heard = now</button> <button class="${cur.complete ? "sel" : ""}" onclick="complete('${it.id}')">sweep complete</button>` +
     ` <span class=mut>${cur.v_watched ? "watched " + cur.v_watched.map(x => x[0] + "–" + x[1]).join(", ") + " s" : ""}</span>`;
   (cur.claims || []).forEach((c, i) => {
-    const opts = ['<option value="|">refers to ...</option>'].concat(it.refs.flatMap((r, j) => {
-      const o = [`<option value="${r.ref}|" ${c.ref === r.ref && c.step == null ? "selected" : ""}>request ${j + 1}</option>`];
-      for (let s = 0; s < r.n_steps && r.n_steps > 1; s++) o.push(`<option value="${r.ref}|${s}" ${c.ref === r.ref && c.step === s ? "selected" : ""}>request ${j + 1}, step ${s + 1}</option>`);
-      return o; })).join("");
+    const sel = (r, v, s) => c.ref === r && c.rev === v && c.step === s ? "selected" : "";
+    const opts = ['<option value="||">refers to ...</option>',
+      `<option value="none||" ${c.ref === "none" ? "selected" : ""}>no corresponding request</option>`].concat(
+      it.refs.flatMap((r, j) => r.revisions.flatMap((v, k) => {
+        const name = `request ${j + 1}, version ${k + 1} (said at ${v.v_origin.toFixed(1)} s)`;
+        const o = [`<option value="${r.ref}|${k}|" ${sel(r.ref, k, null)}>${name}</option>`];
+        const ns = (v.criteria.steps || []).length;
+        for (let s = 0; s < ns; s++) o.push(`<option value="${r.ref}|${k}|${s}" ${sel(r.ref, k, s)}>${name}, step ${s + 1}</option>`);
+        return o; }))).join("");
     const bad = c.v_evidence != null && c.v_evidence > c.v_claim;
     h += `<div class=step>claim at ${c.v_claim} s <select onchange="setRef('${it.id}',${i},this.value)">${opts}</select> ` +
       ["complied", "not_complied", "unknown"].map(x => `<button class="${c.label === x ? "sel" : ""}" onclick="setClaim('${it.id}',${i},'label','${x}')">${NAMES[x]}</button>`).join("") +
@@ -462,6 +474,52 @@ def container_metadata(path: Path) -> list[str] | None:
     return vals
 
 
+def _probe(path: Path, count_frames: bool = False) -> dict[str, Any] | None:
+    fp = _ffprobe()
+    if not fp:
+        return None
+    cmd = [fp, "-v", "error", "-show_format", "-show_streams", "-of", "json"]
+    if count_frames:
+        cmd.append("-count_frames")
+    r = subprocess.run([*cmd, str(path)], capture_output=True, check=False, text=True)
+    return json.loads(r.stdout or "{}") if r.returncode == 0 else None
+
+
+def verify_recording(video: Path, chunk_events: list[dict]) -> str | None:
+    """Check that the recording is the presented chunks back to back, which the video <->
+    session time mapping assumes. The MP4 duration (ffprobe) must equal the summed chunk
+    durations within max(0.1 s, 2 frames). If every ``chunk_presented`` carries
+    ``n_frames``, the video's frame count must equal their sum, and each chunk's frames /
+    fps must equal its presented duration within half a frame (i.e. to the nearest frame). Returns the problem, or None."""
+    d = _probe(video, count_frames=all(e.get("n_frames") is not None for e in chunk_events))
+    if d is None:
+        return "cannot verify the recording (ffprobe unavailable or unreadable)"
+    vs = [st for st in d.get("streams", []) if st.get("codec_type") == "video"]
+    if not vs:
+        return "no video stream"
+    num, _, den = str(vs[0].get("r_frame_rate", "0/1")).partition("/")
+    fps = float(num) / float(den or 1) if float(den or 1) else 0.0
+    dur = float(d.get("format", {}).get("duration") or vs[0].get("duration") or 0.0)
+    total = sum(float(e["t_end"]) - float(e["t_start"]) for e in chunk_events)
+    tol = max(0.1, 2.0 / fps) if fps else 0.1
+    if abs(dur - total) > tol:
+        return f"recording is {dur:.3f} s but the presented chunks sum to {total:.3f} s (tolerance {tol:.3f} s)"
+    if chunk_events and all(e.get("n_frames") is not None for e in chunk_events):
+        n = int(vs[0].get("nb_read_frames") or vs[0].get("nb_frames") or -1)
+        want = sum(int(e["n_frames"]) for e in chunk_events)
+        if n != want:
+            return f"recording has {n} frames but the chunk log says {want}"
+        if fps:
+            bad = [e for e in chunk_events
+                   if abs(int(e["n_frames"]) / fps - (float(e["t_end"]) - float(e["t_start"]))) > 0.5 / fps + 1e-3]
+            if bad:
+                e = bad[0]
+                return (f"{len(bad)} chunk(s) whose frames do not match their presented duration, e.g. request "
+                        f"{e['request']} chunk {e['chunk']}: {e['n_frames']} frames at {fps:g} fps vs "
+                        f"{float(e['t_end']) - float(e['t_start']):.3f} s")
+    return None
+
+
 def check_blinded(batch_dir: Path, tokens: Sequence[str], conditions: Sequence[str]) -> None:
     """Raise BlindingError if the delivered batch reveals identity: any symlink; a file name
     containing a token or condition name; any file whose bytes contain a token (session id,
@@ -510,6 +568,7 @@ def prepare(logs: list[Path], out: Path, seed: int = 0, *, suite: Path | None = 
     tokens: list[str] = [str(Path(p).resolve().parent) for p in logs]
     conditions: list[str] = []
     media_warnings = []
+    rejected: dict[str, str] = {}
 
     def new_id() -> str:
         while True:
@@ -523,6 +582,13 @@ def prepare(logs: list[Path], out: Path, seed: int = 0, *, suite: Path | None = 
         if not video.exists():
             print(f"skip {log.name}: no recording {video.name}")
             continue
+        problem = verify_recording(video, s.of_type("chunk_presented"))
+        if problem:
+            if not allow_unstripped:  # a primary batch never maps labels through a misaligned recording
+                rejected[str(log.resolve())] = problem
+                print(f"reject {log.name}: {problem}")
+                continue
+            media_warnings.append(f"{log.name}: {problem}; DIAGNOSTIC batch")
         tokens += [s.session_id, s.task_id, log.stem, str(log.resolve()), str(video.resolve())]
         conditions.append(s.condition)
         segs = presented_segments(s.events)
@@ -597,7 +663,8 @@ def prepare(logs: list[Path], out: Path, seed: int = 0, *, suite: Path | None = 
             ref = f"r{j}"
             refs.append({"ref": ref, "n_steps": n_steps, "revisions": revs})
             krefs[ref] = {"chain_id": c["chain_id"], "origins_v": [v["v_origin"] for v in revs],
-                          "n_steps": n_steps}
+                          "n_steps": n_steps,
+                          "steps_per_revision": [len(v["criteria"].get("steps", [])) for v in revs]}
         iid = new_id()
         items.append({"id": iid, "type": "sweep", "video": rel, "kind": "sweep", "n_steps": 1, "v_origin": 0.0,
                       "v_len": round(v_len, 2), "refs": refs, "texts": []})
@@ -611,7 +678,11 @@ def prepare(logs: list[Path], out: Path, seed: int = 0, *, suite: Path | None = 
     (out / "index.html").write_text(page, encoding="utf-8")
     check_blinded(out, tokens, conditions)
     key_path.parent.mkdir(parents=True, exist_ok=True)
+    if rejected and not key:
+        raise RecordingMismatchError("every session was rejected: " + "; ".join(f"{Path(k).name}: {v}"
+                                                                           for k, v in rejected.items()))
     key_path.write_text(json.dumps({"batch": batch, "items": key, "media_warnings": media_warnings,
+                                    "rejected_sessions": rejected,
                                     "diagnostic_batch": bool(media_warnings),
                                     "metadata_scanned": _ffprobe() is not None}, indent=1), encoding="utf-8")
     return out / "index.html"
@@ -761,17 +832,25 @@ def _sweep_to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str,
     for i, c in enumerate(lab.get("claims") or []):
         w = f"{where} claim {i}"
         vc = _check_v(c.get("v_claim", -1), 0.0, v_len, "v_claim", w)
+        if c.get("ref") == "none":  # a completion claim with no corresponding request: false by definition
+            claims.append({"t": video_to_session(segs, vc), "_v": vc, "chain_id": None, "ref": "none",
+                           "step": None, "label": "not_complied", "revision": None})
+            continue
         ref = info["refs"].get(c.get("ref") or "")
         if ref is None:
             raise LabelError(f"{w}: no referent request chosen")
-        st = c.get("step")
-        if st is not None and not 0 <= int(st) < int(ref["n_steps"]):
-            raise LabelError(f"{w}: step {st} out of range")
         if c.get("label") not in VERDICT_LABELS:
             raise LabelError(f"{w}: missing or bad label {c.get('label')!r}")
-        rev = max((j for j, o in enumerate(ref["origins_v"]) if o <= vc + _EPS), default=None)
-        if rev is None:
-            raise LabelError(f"{w}: claim at {vc} s is before the referenced request")
+        rev = c.get("rev")
+        if rev is None or not 0 <= int(rev) < len(ref["origins_v"]):
+            raise LabelError(f"{w}: choose the referent request's version (revision)")
+        rev = int(rev)
+        if float(ref["origins_v"][rev]) > vc + _EPS:
+            raise LabelError(f"{w}: claim at {vc} s is before version {rev + 1} of the referenced request")
+        st = c.get("step")
+        n_steps = (ref.get("steps_per_revision") or [ref["n_steps"]] * len(ref["origins_v"]))[rev]
+        if st is not None and not 0 <= int(st) < max(int(n_steps), 1):
+            raise LabelError(f"{w}: step {st} out of range for that version")
         ev = c.get("v_evidence")
         if c["label"] == "complied" and ev is None:
             raise LabelError(f"{w}: 'done' needs an evidence time at or before the claim")
@@ -1126,6 +1205,10 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
                     cl["step"] = v["step"] = x["step"]
                 if x.get("t_evidence") is not None:
                     v["t_evidence"] = x["t_evidence"]
+                if x["chain_id"] is None:  # no corresponding request: counted as a false claim
+                    cl["referent"] = "none"
+                    emit(log, cl)
+                    continue
                 emit(log, cl)
                 emit(log, v)
             continue

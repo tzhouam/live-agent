@@ -20,6 +20,7 @@ from live_agent.eval.adjudicate import (
     BlindingError,
     LabelError,
     MergeConflictError,
+    RecordingMismatchError,
     check_blinded,
     container_metadata,
     covered,
@@ -27,6 +28,7 @@ from live_agent.eval.adjudicate import (
     merge,
     prepare,
     presented_segments,
+    verify_recording,
     video_to_session,
 )
 from live_agent.eval.report import (
@@ -441,10 +443,11 @@ def test_repair_every_failure_point_with_preregistered_handling():
 FFMPEG = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 
 
-def _tiny_mp4(path: Path, **meta: str) -> Path:
-    """A real (tiny) MP4 so that metadata stripping can run; optional container tags."""
+def _tiny_mp4(path: Path, duration: float = 40.0, **meta: str) -> Path:
+    """A real (tiny, 5 fps) MP4 of the given duration, so that metadata stripping and the
+    recording/chunk-log alignment check can run; optional container tags."""
     tags = [x for k, v in meta.items() for x in ("-metadata", f"{k}={v}")]
-    subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.2",
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black:s=16x16:d={duration}:r=5",
                     "-c:v", "mpeg4", *tags, str(path)], check=True)
     return path
 
@@ -472,7 +475,7 @@ def _session_file(tmp_path: Path, name: str, task_id: str, utts: list[tuple], ex
     recs.append({"type": "observation_end", "t": length})
     recs += list(extra)
     p = _write_log(tmp_path / f"{name}.jsonl", recs)
-    _tiny_mp4(p.with_suffix(".mp4"))
+    _tiny_mp4(p.with_suffix(".mp4"), duration=length)
     return p
 
 
@@ -754,11 +757,11 @@ def test_audio_claim_sweep_items_and_merge(tmp_path):
     assert "7.0" not in json.dumps(sw) and "claim" not in json.dumps(sw["refs"])  # logged claims hidden
     ch, sk = items[0]["id"], f"{sw['id']}/0"
     r0, r1 = sw["refs"][0]["ref"], sw["refs"][1]["ref"]
-    claims_a = [{"v_claim": 7.0, "ref": r0, "label": "not_complied"},
-                {"v_claim": 14.0, "ref": r1, "label": "complied", "v_evidence": 12.0}]
-    claims_b = [{"v_claim": 7.4, "ref": r0, "label": "not_complied"},
-                {"v_claim": 14.2, "ref": r1, "label": "complied", "v_evidence": 12.5},
-                {"v_claim": 30.0, "ref": r1, "label": "complied", "v_evidence": 20.0}]  # only B heard this
+    claims_a = [{"v_claim": 7.0, "ref": r0, "rev": 0, "label": "not_complied"},
+                {"v_claim": 14.0, "ref": r1, "rev": 0, "label": "complied", "v_evidence": 12.0}]
+    claims_b = [{"v_claim": 7.4, "ref": r0, "rev": 0, "label": "not_complied"},
+                {"v_claim": 14.2, "ref": r1, "rev": 0, "label": "complied", "v_evidence": 12.5},
+                {"v_claim": 30.0, "ref": r1, "rev": 0, "label": "complied", "v_evidence": 20.0}]  # only B heard this
     chain = {f"{ch}/0": {"v_onset": 11.0, "label": "complied", "v_first": 12.0}}
     a = _labels(tmp_path, "a", {**chain, sk: {"complete": True, "v_watched": [[0.0, 40.0]], "claims": claims_a}})
     b = _labels(tmp_path, "b", {**chain, sk: {"complete": True, "v_watched": [[0.0, 40.0]], "claims": claims_b}})
@@ -782,11 +785,11 @@ def test_sweep_evidence_must_precede_claim_and_review_whole_recording(tmp_path):
     sk, r1 = f"{sw['id']}/0", sw["refs"][1]["ref"]
     ok = _labels(tmp_path, "ok", {sk: SWEEP_NONE})
     for bad in ({"complete": True, "v_watched": [[0.0, 40.0]],
-                 "claims": [{"v_claim": 14.0, "ref": r1, "label": "complied", "v_evidence": 16.0}]},  # after
+                 "claims": [{"v_claim": 14.0, "ref": r1, "rev": 0, "label": "complied", "v_evidence": 16.0}]},  # after
                 {"complete": True, "v_watched": [[0.0, 40.0]],
-                 "claims": [{"v_claim": 14.0, "ref": r1, "label": "complied"}]},  # no evidence
+                 "claims": [{"v_claim": 14.0, "ref": r1, "rev": 0, "label": "complied"}]},  # no evidence
                 {"complete": True, "v_watched": [[0.0, 40.0]],
-                 "claims": [{"v_claim": 8.0, "ref": r1, "label": "not_complied"}]},  # before the request
+                 "claims": [{"v_claim": 8.0, "ref": r1, "rev": 0, "label": "not_complied"}]},  # before the request
                 {"complete": False, "v_watched": [[0.0, 40.0]], "claims": []}):  # not finished
         with pytest.raises(LabelError):
             merge(batch, [(ok, "R1"), (_labels(tmp_path, "bad", {sk: bad}), "R2")])
@@ -922,13 +925,13 @@ def test_sweep_one_to_one_across_three_raters_and_revision(tmp_path):
     ch, sk, r1 = items[0]["id"], f"{sw['id']}/0", sw["refs"][1]["ref"]
     chain = {f"{ch}/0": {"v_onset": 11.0, "label": "complied", "v_first": 12.0}}
     full = [[0.0, 40.0]]
-    a = {"complete": True, "v_watched": full, "claims": [{"v_claim": 14.0, "ref": r1, "label": "complied",
+    a = {"complete": True, "v_watched": full, "claims": [{"v_claim": 14.0, "ref": r1, "rev": 0, "label": "complied",
                                                           "v_evidence": 12.0}]}
-    b = {"complete": True, "v_watched": full, "claims": [{"v_claim": 14.4, "ref": r1, "label": "complied",
+    b = {"complete": True, "v_watched": full, "claims": [{"v_claim": 14.4, "ref": r1, "rev": 0, "label": "complied",
                                                           "v_evidence": 12.0, "step": None},
-                                                         {"v_claim": 15.2, "ref": r1, "label": "complied",
+                                                         {"v_claim": 15.2, "ref": r1, "rev": 0, "label": "complied",
                                                           "v_evidence": 12.0}]}  # a second, nearby mark
-    c = {"complete": True, "v_watched": full, "claims": [{"v_claim": 14.3, "ref": r1, "label": "complied",
+    c = {"complete": True, "v_watched": full, "claims": [{"v_claim": 14.3, "ref": r1, "rev": 0, "label": "complied",
                                                           "v_evidence": 12.0}]}  # one audible claim
     merge(batch, [(_labels(tmp_path, "a", {**chain, sk: a}), "R1"), (_labels(tmp_path, "b", {**chain, sk: b}), "R2")],
           arbiter=(_labels(tmp_path, "c", {sk: c}), "R3"))
@@ -942,10 +945,11 @@ def test_sweep_matching_respects_intent_revision(tmp_path):
     _, batch, items, sw = _one_item(tmp_path, "E2-D01", utts)
     ch, sk, r0 = items[0]["id"], f"{sw['id']}/0", sw["refs"][0]["ref"]
     chain = {f"{ch}/0": {"v_onset": 8.0, "label": "complied", "v_first": 9.0}}
-    mk = lambda t: {"complete": True, "v_watched": [[0.0, 40.0]],
-                    "claims": [{"v_claim": t, "ref": r0, "label": "not_complied"}]}
-    r = merge(batch, [(_labels(tmp_path, "a", {**chain, sk: mk(6.8)}), "R1"),
-                      (_labels(tmp_path, "b", {**chain, sk: mk(7.2)}), "R2")])  # revision 0 vs 1
+    def mk(t, rev):
+        return {"complete": True, "v_watched": [[0.0, 40.0]],
+                "claims": [{"v_claim": t, "ref": r0, "rev": rev, "label": "not_complied"}]}
+    r = merge(batch, [(_labels(tmp_path, "a", {**chain, sk: mk(6.8, 0)}), "R1"),
+                      (_labels(tmp_path, "b", {**chain, sk: mk(7.2, 1)}), "R2")])  # revision 0 vs 1
     assert "one rater only" in r["unresolved"][sk]
 
 
@@ -1374,3 +1378,85 @@ def test_tfmr_censored_at_observation_end_for_skipped_chain():
     assert c2.tfmr == pytest.approx(6.0) and not c2.tfmr_event and c2.tfmr_window_unobserved
     md = build_report([sc], n_boot=50)
     assert "onset window was not fully observed: 1 chain(s)" in md
+
+
+# --------------------------------------------------------------------------- round 9 (impl2j)
+
+
+def test_claim_with_no_corresponding_request_is_false_in_fcr(tmp_path):
+    log, batch, items, sw = _sweep_session(tmp_path)
+    ch, sk = items[0]["id"], f"{sw['id']}/0"
+    chain = {f"{ch}/0": {"v_onset": 11.0, "label": "complied", "v_first": 12.0}}
+    sweep = {"complete": True, "v_watched": [[0.0, 40.0]], "claims": [{"v_claim": 25.0, "ref": "none"}]}
+    merge(batch, [(_labels(tmp_path, "a", {**chain, sk: sweep}), "R1"),
+                  (_labels(tmp_path, "b", {**chain, sk: sweep}), "R2")])
+    s = load_session(log)
+    (cl,) = [e for e in s.of_type("completion_claim") if e.get("source") == "adjudicated"]
+    assert cl["chain_id"] is None and cl["referent"] == "none"
+    sc = score_session(s)
+    assert sc.n_orphan_claims == 1
+    md = build_report([sc], n_boot=50)
+    fcr = next(x for x in md.splitlines() if x.startswith("| FCR"))
+    assert "| 1/1 | 100.0% |" in fcr
+
+
+def test_tfmr_row_reports_km_at_horizon_observed_fraction_and_early_censoring():
+    L = Log()
+    L.new(0.0, chain="c1")
+    L.verdict(3.0, chain="c1")
+    L.onset(2.0, chain="c1")
+    L.new(20.0, chain="c2")
+    L.ev(type="capacity_skip", chain_id="c2", t=21.0)
+    L.verdict(None, chain="c2", label="not_complied", onset_reviewed=True)
+    L.ev(type="chunk_presented", request=0, chunk=0, t_start=0.0, t_end=26.0)
+    L.ev(type="observation_end", t=26.0)
+    md = build_report([L.score()], n_boot=50)
+    row = next(x for x in md.splitlines() if x.startswith("| TFMR"))
+    cells = [c.strip() for c in row.strip("|").split("|")]
+    # n=2, one event at 2 s, one censored early at 6 s: KM(15) = 50%, observed 1/2 = 50%, 1 early
+    assert cells[1:6] == ["2", "1", "50.0%", "50.0%", "1"]
+    assert "deadline success (KM at H)" in md and "censored before H" in md
+
+
+def test_recording_must_match_the_chunk_log(tmp_path):
+    ev = [{"type": "chunk_presented", "request": 0, "chunk": i, "t_start": float(i), "t_end": float(i + 1)}
+          for i in range(10)]
+    ok = _tiny_mp4(tmp_path / "ok.mp4", duration=10.0)
+    assert verify_recording(ok, ev) is None
+    assert "recording is 6.000 s" in verify_recording(_tiny_mp4(tmp_path / "short.mp4", duration=6.0), ev)
+    framed = [dict(e, n_frames=5) for e in ev]  # 5 fps x 1 s
+    assert verify_recording(ok, framed) is None
+    framed[3]["n_frames"] = 4
+    framed[4]["n_frames"] = 6  # same total, but chunk 3 is short and chunk 4 long
+    assert "do not match their presented duration" in verify_recording(ok, framed)
+    framed[4]["n_frames"] = 5
+    assert "frames but the chunk log says" in verify_recording(ok, framed)
+    # prepare rejects the session; with every session rejected, the batch is refused
+    log = _session_file(tmp_path, "s", "E2-A01", [(3.0, "请喝口茶吧。", "new", "c1", {"kind": "action"})])
+    _tiny_mp4(log.with_suffix(".mp4"), duration=20.0)
+    with pytest.raises(RecordingMismatchError):
+        prepare([log], tmp_path / "b")
+
+
+def test_swept_claims_name_the_referent_revision(tmp_path):
+    utts = [(3.0, "跟我挥挥手吧。", "new", "c1", {"kind": "action"}),
+            (15.0, "哦对了，用左手挥。", "revision", "c1", {"kind": "action"})]
+    _, batch, items, sw = _one_item(tmp_path, "E2-D01", utts)
+    ch, sk, r0 = items[0]["id"], f"{sw['id']}/0", sw["refs"][0]["ref"]
+    assert [round(v["v_origin"], 1) for v in sw["refs"][0]["revisions"]] == [3.0, 15.0]
+    chain = {f"{ch}/0": {"v_onset": 16.0, "label": "complied", "v_first": 17.0}}
+    ok = _labels(tmp_path, "ok", {**chain, sk: SWEEP_NONE})
+
+    def bad(claim):
+        return _labels(tmp_path, "bad", {**chain, sk: dict(SWEEP_NONE, claims=[claim])})
+    for claim, msg in (({"v_claim": 20.0, "ref": r0, "label": "not_complied"}, "version"),  # no revision chosen
+                       ({"v_claim": 10.0, "ref": r0, "rev": 1, "label": "not_complied"}, "before version 2"),
+                       ({"v_claim": 20.0, "ref": r0, "rev": 1, "label": "complied", "v_evidence": 12.0},
+                        "must be after the request")):  # evidence before the chosen revision
+        with pytest.raises(LabelError, match=msg):
+            merge(batch, [(ok, "R1"), (bad(claim), "R2")])
+    # a claim about the superseded first version, heard after the revision, is allowed
+    old = {"v_claim": 20.0, "ref": r0, "rev": 0, "label": "complied", "v_evidence": 8.0}
+    lab = {**chain, sk: dict(SWEEP_NONE, claims=[old])}
+    r = merge(batch, [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
+    assert not r["unresolved"]

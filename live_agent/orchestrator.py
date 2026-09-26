@@ -155,6 +155,9 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
+        store = getattr(self.memory, "store", None)
+        if store is not None and hasattr(store, "recover_interrupted"):
+            store.recover_interrupted()  # finish the DB side of any erasure interrupted by a crash
         pending = getattr(self.memory, "pending_erasures", lambda: [])() if self.memory else []
         if pending:
             # An earlier erasure is not complete (e.g. a purge target failed): fail closed — no
@@ -417,8 +420,9 @@ class Orchestrator:
         self.chunk_start[(request_index, chunk_index)] = t_start
         self.chunk_end[(request_index, chunk_index)] = t_end
         self.last_presented_end = max(self.last_presented_end or t_end, t_end)
+        ch = next((c for c in self.chunks.get(request_index, []) if c.chunk_index == chunk_index), None)
         self.log.emit(EventType.CHUNK_PRESENTED, t_start, request_index=request_index,
-                      chunk_index=chunk_index, t_end=t_end)
+                      chunk_index=chunk_index, t_end=t_end, n_frames=ch.n_frames if ch is not None else None)
         self._maybe_onset(request_index, chunk_index, t_start)
         if len(self.presented[request_index]) == self.n_chunks and request_index not in self._checked:
             self._checked.add(request_index)
@@ -583,13 +587,25 @@ class Orchestrator:
             if self.judge is None:
                 break
             v = await self._one_check(q, self.judge.judge(q, chunks, k, t_evidence), k, t_evidence, deadline)
-            if v is None or k in self.dropped or qc_epoch != self._qc_epoch:
-                return  # interrupted, invalidated by an erasure, or past the deadline
+            if k in self.dropped or qc_epoch != self._qc_epoch:
+                return  # interrupted, or invalidated by an erasure
+            if v is None:
+                break  # the deadline passed before this check could run
             action_verdicts.append(v)
             self._log_verdict(script, q, v, t_evidence, deadline)
         if qc_epoch != self._qc_epoch:
             return
-        timely = deadline is None or all(v.t_verdict <= deadline for v in action_verdicts)
+        # timely = every action check ran and returned by the step's deadline (a timeout at the
+        # deadline returns just after it, so it is not timely)
+        timely = deadline is None or (len(action_verdicts) == len(actions)
+                                      and all(v.t_verdict <= deadline for v in action_verdicts))
+        if deadline is not None and actions and not timely:
+            # action QC missed the step's deadline (late, timed out or never ran): the step failed
+            for cid in script.chain_ids:
+                self.director.expire(cid, revision)
+            self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["check_missed_deadline"])
+            self._drain_director_events(now())
+            timely = False
         if action_verdicts and timely:
             intent = script.provenance.get("intent", "")
             for chain_id in script.chain_ids:
@@ -653,13 +669,13 @@ class Orchestrator:
         j_planned = self.sched.earliest_correctable(t_evidence, cost, self.next_lock)
         j = self.next_lock + (1 if self._locking == self.next_lock else 0)
         # REPEAT arm = the original instruction unchanged (same action and line); GRADIENT arm =
-        # same action plus the forward correction, no repeated line. The LOCK of the carrying
+        # the same action and line plus the forward correction (only the correction text differs). The LOCK of the carrying
         # request logs its exact prompt and retry_of.
         queued = self.director.queue_retry(chain_id, intent, correction=sentence,
                                            failed_request=script.request_index,
                                            revision=script.provenance.get("revision"),
                                            step=script.provenance.get("step"), min_request=j,
-                                           line=script.transcript if mode == CorrectionMode.REPEAT else "")
+                                           line=script.transcript)  # both arms keep the line: only the correction differs
         self.log.emit(EventType.REPAIR, now(), request_index=script.request_index,
                       chain_id=chain_id, mode=mode.value, correction=sentence, queued=queued,
                       earliest_correctable=j, earliest_correctable_planned=j_planned,

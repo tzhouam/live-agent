@@ -792,3 +792,52 @@ def test_forget_async_writes_receipt_and_resume_async(tmp_path):
     rep2 = _run(b.resume_erasure_async(rep.receipt_id))
     assert rep2.complete and b.pending_erasures() == []
     mem.close()
+
+
+# ---------------------------------------------------------------- round 9: receipt in the deletion transaction
+
+
+@pytest.mark.parametrize("crash_at", ["_regenerate_summaries", "_physical_purge"])
+def test_crash_after_delete_leaves_recoverable_receipt(tmp_path, monkeypatch, crash_at):
+    from live_agent.memory import store as store_mod
+
+    path = tmp_path / "c.sqlite"
+    mem = MemoryStore(path, clock=Clock(), journal_mode="wal")
+    (f,) = mem.ingest_user_utterance(utt("我妹妹住在巴黎", session="s5"), user_id=U).facts
+    mem.ingest_user_utterance(utt("我喜欢猫", session="s5"), user_id=U)
+    mem.consolidate("s5")
+
+    def crash(*a, **kw):
+        raise KeyboardInterrupt("simulated crash")
+
+    monkeypatch.setattr(mem, crash_at, crash)
+    with pytest.raises(KeyboardInterrupt):
+        mem.forget("巴黎", U, require=["recordings"])
+    mem.db.close()  # the process dies: no further writes on this connection
+    store_mod._RECEIPT_CONTENT.clear()
+
+    mem2 = MemoryStore(path, clock=Clock())
+    assert mem2.get(f.id) is None  # the deletion committed ...
+    (p,) = mem2.pending_erasures(U)  # ... together with its receipt
+    assert p["sessions"] == ["s5"] and "memory_db" in p["pending"] and p["content_lost"]
+    assert mem2.recover_interrupted() == [p["receipt_id"]]
+    (p2,) = mem2.pending_erasures(U)
+    assert p2["pending"] == ["recordings"]  # DB side finished; the external target still pending
+    assert mem2._ids("SELECT id FROM records WHERE kind = 'summary' AND session_id = 's5' AND status = 'active'")
+    for q in tmp_path.iterdir():
+        assert "巴黎".encode() not in q.read_bytes(), q
+    mem2.close()
+
+
+def test_deletion_and_receipt_roll_back_together(tmp_path, monkeypatch):
+    mem = MemoryStore(tmp_path / "t.sqlite", clock=Clock())
+    (f,) = mem.ingest_user_utterance(utt("I work at Acme"), user_id=U).facts
+
+    def boom(ids):
+        raise RuntimeError("crash inside the deletion transaction")
+
+    monkeypatch.setattr(mem, "_scrub_refs", boom)
+    with pytest.raises(RuntimeError):
+        mem.forget(f.id, U)
+    assert mem.get(f.id) is not None and mem.pending_erasures(U) == []  # all or nothing
+    mem.close()

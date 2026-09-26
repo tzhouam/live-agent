@@ -37,11 +37,11 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
 | `utterance` | `uid`, `speaker` (`user`/`persona`/`viewer:<id>`), `text`, `t_start`, `t_end` (VAD endpoint) | `barge_in` (bool) | sim user / ASR |
 | `chain_annotation` | `uid` (of the utterance), `action` (`new`/`revision`/`withdrawal`), `chain_id` | `label` (task-local chain label for cross-condition pairing and for looking up the preregistered criteria, e.g. `c1`), `kind` (`action`/`content`/`multistep`; `correction` is treated as `action`), `intent`, `content_type` (`qa`/`explain`/`sing`), `prereg_duration_s`, `steps` (list or int), `checks`, `rubric` | sim user (script) or annotator |
 | `lock` | `t`, `request` | `chain_ids`, `plan_version` | orchestrator (diagnostic; not needed for scoring) |
-| `chunk_presented` | `request`, `chunk`, `t_start`, `t_end` | `frame_hash` | client presentation ack |
+| `chunk_presented` | `request`, `chunk`, `t_start`, `t_end` | `frame_hash`, `n_frames` (frames of this chunk written to the recording) | client presentation ack |
 | `observation_end` | `t` (last presented media time of the session) | | runner |
 | `verdict` | `source` (`adjudicated`/`human`/`judge`), `label` (`complied`/`not_complied`/`unknown`), and `chain_id` **or** `claim_id` | `revision`, `step` (multistep, 0-based), `request`, `chunk`, `earliest_correctable` (judge `not_complied`: request j), `repair_request` + `revision` (an adjudicated RQ2 repair-target verdict), `t_first_compliant`, `t_evidence`, `t_review_start`, `t_review_end`, `claim_t` (claim-level verdict), `onset_reviewed`, `t_onset`, `annotators`, `reconciliation` (`agreement`/`arbitration`), `batch`, `item`, `criteria_sha256`, `qid` | judge / adjudication tool |
 | `rating` | `annotator`, `chain_id`, `label` | `role` (`primary`/`arbiter`), `kind` (`claim_sweep` for a swept claim), `step`, `revision`, `claim_t`, the same time fields as a verdict, `onset_none`, `review_ok`, `t_review_needed`, `batch`, `item` | adjudication tool (one annotator's independent label; kept for agreement statistics, **never scored**) |
-| `completion_claim` | `chain_id`, `t` | `source` (`system` (default) / `adjudicated`), `step`, `claim_id`, `request`, `text`, `batch`, `item` | orchestrator (`system`, diagnostic) / audio claim sweep (`adjudicated`, primary) |
+| `completion_claim` | `chain_id` (null: no corresponding request), `t` | `source` (`system` (default) / `adjudicated`), `referent` (`none`), `step`, `claim_id`, `request`, `text`, `batch`, `item` | orchestrator (`system`, diagnostic) / audio claim sweep (`adjudicated`, primary) |
 | `claim_sweep` | `source` (`adjudicated`) | `n_claims`, `annotators`, `reconciliation`, `t_review_end`, `batch`, `item` | adjudication tool: the session's recording was swept for audible completion claims (required per session in primary scoring) |
 | `refusal` | `chain_id`, `t` | `kind` (`refused` (default) / `degraded`), `reason` | compiler / safety filter |
 | `capacity_skip` | `chain_id`, `t` | `revision`, `reason` | admission control |
@@ -137,10 +137,24 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   adjudicated `verdict` with `repair_request` = j and `revision`. These verdicts are never
   used as chain compliance.
 * **Claim sweep items**: one per session. The rater watches the **whole** recording
-  without seeing the logged claims, marks every audible completion claim, chooses its
-  referent request (and step), and judges it against the request as it stood at that
-  moment, citing an evidence frame after that request and **at or before** the claim
-  ("done" requires one). The sweep must be marked complete.
+  without seeing the logged claims and marks every audible completion claim. For each
+  claim the rater chooses one of:
+  * its referent request **and version** (any revision already said by the claim time,
+    and the step if any), judged against that version, citing an evidence frame after that
+    version was said and **at or before** the claim ("done" requires one);
+  * **"no corresponding request"**: merged as an adjudicated `completion_claim` with
+    `chain_id: null`, `referent: "none"`, always false.
+
+  The sweep must be marked complete.
+* **Recording alignment**: before delivery, `prepare` checks that the MP4 is the presented
+  chunks back to back:
+  * the ffprobe duration equals the summed chunk durations within max(0.1 s, 2 frames);
+  * if every `chunk_presented` has `n_frames`, the frame count equals their sum and each
+    chunk's frames / fps matches its presented duration to the nearest frame.
+
+  A mismatching session is rejected and listed in the key's `rejected_sessions`. If every
+  session is rejected, `RecordingMismatchError` is raised. A diagnostic
+  (`--allow-unstripped`) batch keeps the session with a warning.
 * **Validation (`merge`)**: labels must lie inside the recording and after the request;
   "done" needs its time; content needs one onset decision and onset ≤ answer end; claim
   evidence must not follow the claim. Any error rejects the whole file (`LabelError`).
@@ -171,7 +185,7 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   sufficient review) breaks the tie. Every accepted item therefore rests on two sufficient
   independent reviews. Sweep
   claims are reconciled **strictly one-to-one across all three raters**. The referent is the
-  chain, step and intent revision in force at the claim. Rater A–B pairs with the same
+  chain, step and the intent revision the rater chose. Rater A–B pairs with the same
   referent within `--tol` are matched first, and agreed pairs are accepted. Arbiter marks
   are then reserved for agreed pairs and assigned to at most one dispute each: a label
   disagreement, or a claim heard by one rater only. Each audible claim is therefore
@@ -238,7 +252,8 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   D this equals the cumulative incidence of success, and refusal, skip, rubric, onset and
   order failures are competing outcomes that stay in the denominator. No all-kind pooled
   curve is reported, because the deadlines differ.
-* **FCR** = false claims / all audible completion claims, **withdrawn chains included**.
+* **FCR** = false claims / all audible completion claims, **withdrawn chains included**, plus
+  swept claims with no corresponding request (session level, always false).
   Primary: the claims are the adjudicated sweep's `completion_claim`s, each settled by its
   claim-level verdict (`unknown` = false); a session without an adjudicated `claim_sweep`,
   or a claim without its verdict, is an adjudication gap. Diagnostic (logged claims): a
@@ -270,6 +285,8 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   listed, and the rows that exclude unobserved targets are shown as labelled missing-data
   sensitivity analyses.
 * **TVC** (action chains): first compliant frame − origin, censored at 15 s.
+  The report's time-to-event rows give three columns: "deadline success" as the KM estimate
+  1 − S(H), the raw observed fraction (events / n), and the count censored before H.
   **TFMR** (every chain kind): first accepted `speech_onset` − origin, censored at 15 s.
   Primary uses the adjudicated meaningful-response onset. If no onset was seen and the
   onset window (origin + 15 s) extends past the observation end, as for a chain skipped

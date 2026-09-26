@@ -113,8 +113,11 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
                         "chain_ids": [g for g in (gt_of(c, d.get("revision")) for c in dchains) if g],
                         "plan_version": d.get("plan_version")})
         elif ev.type == EventType.CHUNK_PRESENTED:
-            out.append({"type": "chunk_presented", "request": k, "chunk": ev.chunk_index,
-                        "t_start": ts(ev.t), "t_end": ts(d["t_end"])})
+            cp = {"type": "chunk_presented", "request": k, "chunk": ev.chunk_index,
+                  "t_start": ts(ev.t), "t_end": ts(d["t_end"])}
+            if d.get("n_frames") is not None:
+                cp["n_frames"] = d["n_frames"]  # frames written to the recording for this chunk
+            out.append(cp)
         elif ev.type == EventType.VERDICT and d.get("kind") == "action":
             for cid in d.get("chain_ids") or []:  # only the chain(s) the judged request served (exact)
                 gt = gt_of(cid, d.get("revision"))

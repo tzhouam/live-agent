@@ -511,3 +511,13 @@ Codex found no issue in the inlined M0 figures or the prompt compiler; it confir
   - Learned ledger entries need lineage.
   - Pending-erasure receipts can be resumed and hold no erased content.
   - A session start with a pending receipt fails closed.
+
+### impl1j + impl2j: round 9
+
+Model gpt-6-sol, verified.
+- **impl1j:** 3 PARTIAL, plus 4 new major findings.
+- **impl2j:** 2 PARTIAL, plus 5 new findings (1 blocking: the erasure receipt was written after the deletion commit).
+
+Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit (all tests pass).
+
+**Bug found while fixing #4:** the mock recording wrote one frame per chunk, and the simulated client stamped chunk ends with the wall clock, which the speed-up amplified. The recorder now writes exactly `n_frames` per chunk, and the sim reports nominal chunk ends. `chunk_presented` carries `n_frames`.

@@ -1537,7 +1537,19 @@ class MemoryStore:
                         return r["id"]
         return None
 
-    def _write_receipt(self, report: ErasureReport) -> None:
+    def _regenerate_summaries(self, sessions: Iterable[str], summ: Summarizer | None = None) -> list[str]:
+        """Rebuild the summary of each session that has none active (after an erasure)."""
+        out = []
+        for s in sorted(sessions):
+            if self._ids("SELECT id FROM records WHERE kind = 'summary' AND session_id = ? AND status = 'active'",
+                         [s]):
+                continue
+            new = self.consolidate(s, summ)
+            if new is not None:
+                out.append(new.id)
+        return out
+
+    def _write_receipt(self, report: ErasureReport, *, commit: bool = True) -> None:
         report.receipt_id = report.receipt_id or new_id("erasure")
         with _RECEIPT_LOCK:
             _RECEIPT_CONTENT[(self._content_key, report.receipt_id)] = {
@@ -1549,7 +1561,8 @@ class MemoryStore:
             (report.receipt_id, _user_hash(report.user_id), report.t, report.reason, json.dumps(report.deleted_ids),
              json.dumps(report.kinds), json.dumps(sorted(report.sessions)), json.dumps(report.required_targets),
              json.dumps({k: a.ok for k, a in report.acks.items()}), int(report.content_lost)))
-        self._commit()
+        if commit:
+            self._commit()
 
     def _save_receipt(self, report: ErasureReport) -> None:
         """Persist ack state (ok flags only; details can name content); drop when complete."""
@@ -1575,17 +1588,32 @@ class MemoryStore:
         for r in pending:
             self._save_receipt(r)
 
-    def _resume_report(self, receipt_id: str, user_id: str) -> ErasureReport:
+    def recover_interrupted(self) -> list[str]:
+        """Finish the DB side of erasures interrupted by a crash (receipt present, ``memory_db``
+        not acked): regenerate summaries, physical purge, verification. Call at start-up
+        before serving sessions; external targets stay pending (see :meth:`pending_erasures`).
+        Returns the receipt ids processed."""
+        done = []
+        for r in self.db.execute("SELECT id, acks FROM erasure_receipts").fetchall():
+            if json.loads(r["acks"]).get(MEMORY_DB_TARGET):
+                continue
+            report = self._resume_report(r["id"], None)
+            self._save_receipt(report)
+            done.append(r["id"])
+        return done
+
+    def _resume_report(self, receipt_id: str, user_id: str | None) -> ErasureReport:
+        """``user_id=None`` only for internal recovery (no ownership check, user unknown)."""
         row = self.db.execute("SELECT * FROM erasure_receipts WHERE id = ?", [receipt_id]).fetchone()
         if row is None:
             raise KeyError(f"no pending erasure receipt {receipt_id!r}")
-        if row["user_hash"] != _user_hash(user_id):
+        if user_id is not None and row["user_hash"] != _user_hash(user_id):
             raise PermissionError("erasure receipt does not belong to this user")
         with _RECEIPT_LOCK:
             content = _RECEIPT_CONTENT.get((self._content_key, receipt_id))
         acks = json.loads(row["acks"])
         report = ErasureReport(
-            user_id=user_id, reason=row["reason"], t=row["t"], deleted_ids=json.loads(row["deleted_ids"]),
+            user_id=user_id or "", reason=row["reason"], t=row["t"], deleted_ids=json.loads(row["deleted_ids"]),
             kinds=json.loads(row["kinds"]), sessions=set(json.loads(row["sessions"])),
             terms=set(content["terms"]) if content else set(), required_targets=json.loads(row["required"]),
             acks={k: PurgeAck(bool(v), "from receipt") for k, v in acks.items()},
@@ -1593,6 +1621,9 @@ class MemoryStore:
             query_vecs=content["query_vecs"] if content else None,
             receipt_id=receipt_id, content_lost=bool(row["content_lost"]) or content is None)
         if MEMORY_DB_TARGET in report.pending_targets:
+            # an interrupted erasure: finish the DB side (summaries, physical purge, verification)
+            if report.kinds.get(Kind.SUMMARY.value):
+                report.regenerated += self._regenerate_summaries(report.sessions)
             physical = self._physical_purge()
             report.verification = self.verify_erasure(report, raw_file=True)
             ok = report.verification.ok and not physical
@@ -1714,7 +1745,17 @@ class MemoryStore:
         # captured before deletion, held in memory only: the raw-file check searches for these bytes
         erased_texts = sorted({x for r in doomed for x in (r.text, r.value or "", r.subject or "")
                                if len(x.strip()) >= 2 and not x.startswith("user:")})
+        required = [MEMORY_DB_TARGET, *dict.fromkeys(list(require))]
+        if review:
+            required.append(SIMILARITY_REVIEW_TARGET)
+        report = ErasureReport(user_id=user_id, reason=reason, t=now, deleted_ids=ids, kinds=dict(kinds),
+                               sessions=sessions, terms=terms, required_targets=required,
+                               swept_ids=sorted(swept), review_ids=review, query_vecs=query_vecs,
+                               erased_texts=erased_texts)
+        # one transaction: deletion + tombstones + ref scrub + the pending-erasure receipt. A crash
+        # after it leaves a receipt (memory_db pending) that resume / pending_erasures() recover.
         with self.db:
+            self._write_receipt(report, commit=False)
             for i in range(0, len(ids), 500):
                 chunk = ids[i:i + 500]
                 q = ",".join("?" * len(chunk))
@@ -1727,20 +1768,9 @@ class MemoryStore:
                 [(hashlib.sha256(i.encode()).hexdigest(), now, reason) for i in ids],
             )
             self._scrub_refs(set(ids))
-        required = [MEMORY_DB_TARGET, *dict.fromkeys(list(require))]
-        if review:
-            required.append(SIMILARITY_REVIEW_TARGET)
-        report = ErasureReport(user_id=user_id, reason=reason, t=now, deleted_ids=ids, kinds=dict(kinds),
-                               sessions=sessions, terms=terms, required_targets=required,
-                               swept_ids=sorted(swept), review_ids=review, query_vecs=query_vecs,
-                               erased_texts=erased_texts)
         if regenerate and kinds.get(Kind.SUMMARY.value):
-            summ = regenerate if not isinstance(regenerate, bool) else None
-            for s in sorted(sessions):
-                new = self.consolidate(s, summ)
-                if new is not None:
-                    report.regenerated.append(new.id)
-        self._write_receipt(report)  # before the purge, so the journals are cleaned after it too
+            report.regenerated += self._regenerate_summaries(
+                sessions, regenerate if not isinstance(regenerate, bool) else None)
         physical = self._physical_purge()
         # raw-file verification is mandatory for a file-backed DB before acking memory_db
         report.verification = self.verify_erasure(report, raw_file=True)

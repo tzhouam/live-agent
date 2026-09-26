@@ -323,14 +323,18 @@ class Director:
                     continue
                 self.interrupted.setdefault(cid, Segment(
                     chain_id=cid, plan_version=self.plan_version, intent=sc.provenance.get("intent") or "",
+                    action_text="" if self.closed else sc.action,  # A1: its own phrase
+                    line="" if self.closed else sc.transcript,
                     step=sc.provenance.get("step"), revision=len(c.revisions)))
+                if sc.request_index in c.requests:  # a cut request no longer counts toward closure
+                    c.requests.remove(sc.request_index)
 
     def _resume_interrupted(self) -> None:
         """No newer instruction displaced them: re-queue the cut step (no correction: it was not
         judged, only not shown)."""
         for cid, seg in list(self.interrupted.items()):
             c = self.chains.get(cid)
-            if c is not None and c.status == ChainStatus.OPEN and seg.intent and \
+            if c is not None and c.status == ChainStatus.OPEN and (seg.intent or seg.action_text or seg.line) and \
                     not any(s.chain_id == cid for s in self.queue):
                 seg.plan_version = self.plan_version
                 self.queue.append(seg)

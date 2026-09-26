@@ -279,6 +279,7 @@ class SessionScore:
     mode: str | None = None  # header mode: only "browser" is the end-to-end E2 path
     script: list[dict[str, Any]] = field(default_factory=list)  # user utterances + annotations (pairing check)
     conflicts: list[str] = field(default_factory=list)  # items adjudicated by more than one batch
+    n_orphan_claims: int = 0  # swept completion claims with no corresponding request (all false)
     rq2_problems: list[str] = field(default_factory=list)  # RQ2 audit (RQ2_CONDITIONS only)
 
 
@@ -691,6 +692,7 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
             by_chain[cid].setdefault(key, []).append(ev)
 
     direct: dict[Any, list[dict[str, Any]]] = {}
+    n_orphan = 0
     for e in session.events:
         t = e["type"]
         if t == "verdict":
@@ -706,7 +708,10 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
             # primary: claims found in the recorded audio by the adjudicated sweep; diagnostic:
             # the orchestrator's logged claims
             if (e.get("source") == "adjudicated") != cfg.diagnostic:
-                put(e["chain_id"], t, e)
+                if e.get("chain_id") is None:
+                    n_orphan += 1  # no corresponding request: a false claim
+                else:
+                    put(e["chain_id"], t, e)
         elif t in ("refusal", "capacity_skip", "repair_assignment") or (
             t == "speech_onset" and e.get("chain_id") is not None
         ):
@@ -849,6 +854,7 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
         rq2_problems=rq2_probs,
         mode=session.meta.get("mode"),
         script=session_script(session),
+        n_orphan_claims=n_orphan,
         conflicts=[] if cfg.diagnostic else batch_conflicts(session),
     )
 
@@ -967,7 +973,7 @@ def _repair_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
             "offsets": sorted(r["offset"] for r in rs if r["offset"] is not None)}
 
 
-def summarize(chains: list[ChainOutcome]) -> dict[str, Any]:
+def summarize(chains: list[ChainOutcome], n_orphan_claims: int = 0) -> dict[str, Any]:
     """Point estimates for one condition (CIs are added in report.py). The primary
     denominator excludes withdrawn, unadjudicated and insufficiently observed chains (the
     last two are counted separately). FCR counts every claim, withdrawn chains included."""
@@ -979,8 +985,10 @@ def summarize(chains: list[ChainOutcome]) -> dict[str, Any]:
     unknown = sum(c.outcome == Outcome.UNKNOWN for c in eff)
     served = [c for c in eff if c.served]
     content = [c for c in eff if c.kind == TaskKind.CONTENT.value]
-    claims = sum(c.n_claims - c.n_claims_unadjudicated for c in chains)
-    false_claims = sum(c.n_false_claims for c in chains)
+    # FCR counts every audible claim: on any chain (withdrawn included) and claims with no
+    # corresponding request (session level, all false)
+    claims = sum(c.n_claims - c.n_claims_unadjudicated for c in chains) + n_orphan_claims
+    false_claims = sum(c.n_false_claims for c in chains) + n_orphan_claims
     reps = [r for c in chains for r in c.repairs]  # every randomised failure point
     return {
         "n_effective": n,
@@ -1002,6 +1010,7 @@ def summarize(chains: list[ChainOutcome]) -> dict[str, Any]:
         "n_claims": claims,
         "n_false_claims": false_claims,
         "n_claims_unadjudicated": sum(c.n_claims_unadjudicated for c in chains),
+        "n_orphan_claims": n_orphan_claims,
         "fcr": _rate(false_claims, claims),
         "claim_coverage": _rate(sum(c.n_claims > 0 for c in eff), n),
         "claim_coverage_of_successes": _rate(

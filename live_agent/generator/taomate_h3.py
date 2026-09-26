@@ -78,6 +78,7 @@ class TaoMateH3Generator(Generator):
         start_timeout: float = 1800.0,
         return_latents: bool = False,
         warmup_prompt: str | None = None,
+        warmup_timeout: float = 300.0,  # measured warm-up 16-31 s (M0) [measured locally]; generous bound
     ) -> None:
         self.info = GeneratorInfo(name="taomate-h3", width=width, height=height,
                                   request_seconds=119 / 24,
@@ -98,6 +99,7 @@ class TaoMateH3Generator(Generator):
         self.start_timeout = start_timeout
         self.return_latents = return_latents
         self.warmup_prompt = warmup_prompt
+        self.warmup_timeout = warmup_timeout
         self.warmup_s: float | None = None
         self.authkey = secrets.token_bytes(16)
         self.address: tuple[str, int] | None = None
@@ -184,7 +186,10 @@ class TaoMateH3Generator(Generator):
                 waiter.cancel()
                 raise WorkerError("TaoMate-H3 workers did not become ready in time")
         if self.warmup_prompt:
-            await self._warmup(self.warmup_prompt)
+            try:  # the first request can stall without a worker disconnect: bound it
+                await asyncio.wait_for(self._warmup(self.warmup_prompt), timeout=self.warmup_timeout)
+            except asyncio.TimeoutError as e:
+                raise WorkerError(f"warm-up request did not finish within {self.warmup_timeout} s") from e
 
     async def _warmup(self, prompt: str) -> None:
         """Run one throw-away request (Triton JIT, CUDA graphs/allocator, VAE fusions), then
