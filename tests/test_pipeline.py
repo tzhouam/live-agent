@@ -238,3 +238,19 @@ def test_abstaining_qc_still_reaches_a_terminal_state_by_the_deadline():
     asyncio.run(run(orch, client, [(1.0, "喝口茶")]))
     chain = next(iter(orch.director.chains.values()))
     assert chain.status == ChainStatus.FAILED  # expired by the step deadline, not left open
+
+
+def test_silent_requests_are_muted_for_the_viewer():
+    orch, client = build(max_requests=6)
+    sent = []
+    orig = client.send_chunk
+
+    async def spy(ch, script):
+        sent.append((bool(script.transcript), float(abs(ch.audio).max()) if ch.audio is not None else 0.0))
+        await orig(ch, script)
+
+    client.send_chunk = spy
+    asyncio.run(run(orch, client, [(2.0, "喝口茶")]))
+    assert any(not has_line for has_line, _ in sent)
+    assert all(peak < 1e-6 for has_line, peak in sent if not has_line)  # silent requests reach the viewer muted
+    assert any(peak > 0 for has_line, peak in sent if has_line)  # lines are untouched

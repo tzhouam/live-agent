@@ -75,6 +75,11 @@ class OrchestratorConfig:
     loop_lag_log_s: float = 0.2  # log event-loop stalls longer than this (diagnostic)
     loop_stack_s: float = 0.15  # the watchdog captures the loop thread's stack after this long
     qc_timeout_s: float = 8.0  # a check that takes longer abstains (verdict unknown) [proposed target]
+    # Presentation policy: a request with no scripted line is silent. H3 still emits soft hums on such
+    # requests ("嗯…" measured on idle audio, 2026-09-27) despite the prompt, so its audio is muted
+    # (short fade) before it reaches the viewer. The raw audio is kept in the generated-stream record.
+    mute_silent_requests: bool = True
+    mute_fade_s: float = 0.03
     blocklist: tuple[str, ...] = ()  # operator term blocklist for the script audit (no moderation model)
     seed: int = 0
 
@@ -457,7 +462,22 @@ class Orchestrator:
                 continue  # generated before a barge-in: never shown
             script = self.scripts.get(ch.request_index)
             if script is not None:
+                if self.cfg.mute_silent_requests and not script.transcript and ch.audio is not None:
+                    ch = self._muted(ch)
+                self._last_sent_silent = not script.transcript
                 await self.transport.send_chunk(ch, script)
+
+    def _muted(self, ch: Chunk) -> Chunk:
+        """Silence a chunk of a no-line request; fade out if the previous chunk was audible."""
+        from dataclasses import replace
+
+        a = np.asarray(ch.audio, dtype=np.float32)
+        out = np.zeros_like(a)
+        if not getattr(self, "_last_sent_silent", True):
+            n = min(len(a), int(self.cfg.mute_fade_s * ch.sample_rate))
+            ramp = np.linspace(1.0, 0.0, n, dtype=np.float32)
+            out[:n] = a[:n] * (ramp[:, None] if a.ndim == 2 else ramp)
+        return replace(ch, audio=out)
 
     # ------------------------------------------------------------------ presentation acks
     def on_presented(self, request_index: int, chunk_index: int, t_start: float, t_end: float,
