@@ -146,6 +146,7 @@ class Orchestrator:
         self.painted: dict[tuple[int, int], list[int] | None] = {}  # client-reported painted frame indices
         self._decisions_at_interrupt = 0
         self._locking: int | None = None
+        self._qc_epoch = 0  # bumped by erasure: pending QC results are discarded
 
     @property
     def n_chunks(self) -> int:
@@ -214,18 +215,31 @@ class Orchestrator:
         t.add_done_callback(done)
 
     async def stop(self, drain_s: float = 30.0) -> None:
+        """Cancellation-safe: tasks are cancelled, the generator closed and the log closed even if
+        this call is cancelled (the cancellation is re-raised afterwards)."""
         self._stop.set()
-        if self._aux:  # let running QC of already-presented requests finish (bounded)
-            await asyncio.wait(list(self._aux), timeout=drain_s)
+        cancelled = None
+        try:
+            if self._aux:  # let running QC of already-presented requests finish (bounded)
+                await asyncio.wait(list(self._aux), timeout=drain_s)
+        except asyncio.CancelledError as e:
+            cancelled = e
         tasks = [*self._tasks, *self._aux]
         for t in tasks:
             t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+        except asyncio.CancelledError as e:
+            cancelled = cancelled or e
         self.log.emit(EventType.OBSERVATION_END, self.last_presented_end or now())
         try:
-            await self.gen.close()
+            await asyncio.shield(self.gen.close())
+        except asyncio.CancelledError as e:
+            cancelled = cancelled or e
         finally:
             self.log.close()
+        if cancelled is not None:
+            raise cancelled
 
     async def wait_done(self) -> None:
         await self._stop.wait()
@@ -409,16 +423,19 @@ class Orchestrator:
             return self.memory.no_recall()
 
     def _chain_deadline(self, script: BlockScript) -> float | None:
-        """Wall-clock deadline of the chain this request serves (action D = 15 s from its origin)."""
+        """Wall-clock deadline of the step this request serves: D (the check's ``deadline_s``,
+        15 s for actions) from the chain origin, or from the previous step's verification."""
         c = self.director.chains.get(script.chain_ids[0]) if script.chain_ids else None
-        return None if c is None else c.clock_origin + 15.0
+        if c is None:
+            return None
+        d = next((q.deadline_s for q in script.checks if q.kind == "action"), 15.0)
+        return self.director.step_base_t.get(c.chain_id, c.clock_origin) + d
 
     def _qc_budget(self, script: BlockScript) -> float:
-        """A check may use at most qc_timeout_s, and no more than what is left of the chain's
-        deadline (min 1 s, so a late check still yields a logged — if untimely — verdict)."""
+        """A check may use at most qc_timeout_s and never runs past the step's deadline."""
         d = self._chain_deadline(script)
         remaining = self.cfg.qc_timeout_s if d is None else d - now()
-        return max(1.0, min(self.cfg.qc_timeout_s, remaining))
+        return min(self.cfg.qc_timeout_s, remaining)
 
     def _evidence_time(self, k: int, t_end: float) -> float:
         """E = presentation time of the last *painted* frame of the request, searched backwards
@@ -459,6 +476,16 @@ class Orchestrator:
         for chain_id, step in self._claims.pop(k, []):
             self.log.emit(EventType.COMPLETION_CLAIM, t, request_index=k, chain_id=chain_id, step=step,
                           text=script.transcript, revision=self._claim_rev.get(k))
+
+    def _audible_before_cut(self, k: int, ci: int, t_start: float) -> None:
+        """A request cut while chunk ``ci`` was playing: speech onset (and a completion claim)
+        that became audible before the cut was heard and is logged, not discarded."""
+        if k in self._onset_done or k not in self.scripts or not self.scripts[k].transcript:
+            return
+        chunk = next((c for c in self.chunks.get(k, []) if c.chunk_index == ci), None)
+        off = audio_onset_s(chunk) if chunk is not None else None
+        if off is not None and t_start + off <= now():
+            self._maybe_onset(k, ci, t_start)
 
     def _maybe_finish(self) -> None:
         m = self.cfg.max_requests
@@ -516,6 +543,15 @@ class Orchestrator:
             return
         action_verdicts: list[Verdict] = []
         revision, step = script.provenance.get("revision"), script.provenance.get("step")
+        qc_epoch = self._qc_epoch
+        if self._qc_budget(script) <= 0 and script.chain_ids:
+            # past the step's deadline: no check, no late control transition (verification,
+            # step release, repair); the step has failed by the preregistered rule
+            for cid in script.chain_ids:
+                self.director.expire(cid, revision)
+            self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["check_after_deadline"])
+            self._drain_director_events(now())
+            return
         for q in script.checks:
             if q.kind == "speech":
                 if self.speech_check is None:
@@ -526,14 +562,16 @@ class Orchestrator:
             else:
                 continue
             budget = self._qc_budget(script)
+            if budget <= 0:
+                break  # the deadline passed during earlier checks of this request
             try:
                 v = await asyncio.wait_for(call, timeout=budget)
             except asyncio.TimeoutError:
                 # a stalled judge/ASR must not hold verification, repair or the session: abstain
                 v = Verdict(q.qid, k, VerdictLabel.UNKNOWN, 0.0, f"timeout after {budget:.2f} s",
                             t_evidence, now())
-            if k in self.dropped:
-                return
+            if k in self.dropped or qc_epoch != self._qc_epoch:
+                return  # interrupted, or invalidated by an erasure (no late writes)
             if q.kind == "action":
                 action_verdicts.append(v)
             self.log.emit(EventType.VERDICT, v.t_verdict, request_index=k, qid=v.qid, kind=q.kind,
@@ -543,6 +581,8 @@ class Orchestrator:
                           after_deadline=self._chain_deadline(script) is not None
                           and v.t_verdict > self._chain_deadline(script))
             self.director.ledger.record_verdict(k, v.qid, v.label.value)
+        if qc_epoch != self._qc_epoch or (self._qc_budget(script) <= 0 and script.chain_ids):
+            return  # erasure happened, or the verdict came after the deadline: no transition
         intent = script.provenance.get("intent", "")
         for chain_id in script.chain_ids:
             if action_verdicts and all(v.label == VerdictLabel.COMPLIED for v in action_verdicts):
@@ -612,13 +652,17 @@ class Orchestrator:
         """Stop playback and discard everything locked but not (fully) presented."""
         cut = []
         self.sched.interrupt(self.next_lock)  # synchronously, before any await
+        in_flight = getattr(self.transport, "in_flight", lambda: None)()  # (k, ci, t_start) playing now
         for k in range(self.next_lock):
             if len(self.presented.get(k, ())) < self.n_chunks and k not in self.dropped:
                 if k in self.scripts:
                     cut.append(self.scripts[k])
+                if in_flight and in_flight[0] == k:
+                    self._audible_before_cut(k, in_flight[1], in_flight[2])
                 self.dropped.add(k)
                 self._claims.pop(k, None)  # a claim that is never heard is not a claim
-                self.director.ledger.mark_generated_not_presented(k, partially_shown=bool(self.presented.get(k)))
+                self.director.ledger.mark_generated_not_presented(
+                    k, partially_shown=bool(self.presented.get(k)) or bool(in_flight and in_flight[0] == k))
         self.director.on_interrupted(cut)
         self._decisions_at_interrupt = self._decisions
         await self.transport.stop_playback()
@@ -689,6 +733,12 @@ class Orchestrator:
         try:
             # Stop what the viewer could still see or hear first, then do the (slow) storage work.
             await self._drop_unpresented()
+            # Pending QC may hold (and later log) the erased content: invalidate and drain it first.
+            self._qc_epoch += 1
+            pending = [t for t in self._aux]
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
             forget_async = getattr(self.memory, "forget_async", None)
             report = await forget_async(term) if forget_async is not None else self.memory.forget(term)
             # Redact every erased value, not only the responder's keyword (e.g. "妹妹" names the fact,

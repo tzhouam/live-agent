@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from live_agent.eval import stats
+from live_agent.eval.adjudicate import final_criteria_sha
 from live_agent.eval.report import build_report
 from live_agent.eval.schema import (
     SchemaError,
@@ -25,7 +26,7 @@ from live_agent.eval.scoring import (
     summarize,
 )
 from live_agent.eval.sim_user import SimulatedUser, VirtualClock
-from live_agent.eval.tasks import load_suite, suite_counts
+from live_agent.eval.tasks import load_suite, suite_counts, task_from_dict
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITE = ROOT / "eval" / "tasks" / "e2_committed.jsonl"
@@ -102,6 +103,18 @@ class Log:
 
     def one(self, chain="c1", cfg=None):
         return next(c for c in self.score(cfg).chains if c.chain_id == chain)
+
+
+def synth_tasks(n):
+    """Registered tasks T0..T{n-1} matching the ``Log`` helper's default script (text "x",
+    one action chain c1)."""
+    return {f"T{t}": task_from_dict({"task_id": f"T{t}", "kind": "action", "category": "single_action", "title": "",
+                                     "utterances": [{"offset_s": 0.0, "text": "x", "annotation": "new", "chain": "c1",
+                                                     "intent": {"kind": "action", "intent": "", "checks": ["x"]}}]})
+            for t in range(n)}
+
+
+SYN_SHA = final_criteria_sha(synth_tasks(1)["T0"], "c1")
 
 
 # --------------------------------------------------------------------------- scoring
@@ -536,13 +549,13 @@ def test_report_end_to_end(tmp_path):
                 L = Log(cond, f"T{task}", seed)
                 L.new(0.0)
                 if rng.random() < p:
-                    L.verdict(float(rng.uniform(3, 14)))
+                    L.verdict(float(rng.uniform(3, 14)), criteria_sha256=SYN_SHA)
                 else:
-                    L.verdict(None, label="not_complied")  # reviewed, never done: no time
+                    L.verdict(None, label="not_complied", criteria_sha256=SYN_SHA)  # reviewed, never done
                 L.ev(type="completion_claim", chain_id="c1", t=14.5)
                 scores.append(L.score())
     expected = {(f"T{t}", s, "c1") for t in range(12) for s in range(3)}  # registered pair set
-    md = build_report(scores, pairs=[("A2", "A1")], n_boot=500, expected=expected)
+    md = build_report(scores, pairs=[("A2", "A1")], n_boot=500, expected=expected, tasks=synth_tasks(12))
     assert "## Paired comparisons" in md and "| A2 - A1 | 36 |" in md
     assert "TVC (action chains)" in md and "FCR" in md
     assert "nan" not in md.lower().replace("n/a", "")

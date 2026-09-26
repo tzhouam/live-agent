@@ -106,6 +106,13 @@ class WSTransport:
         self._epoch += 1
         await self.ws.send_text(json.dumps({"type": "stop"}))
 
+    def in_flight(self):
+        """(request, chunk, start time) of a chunk that started playing but has not ended."""
+        if not self._starts:
+            return None
+        (k, ci), t = max(self._starts.items(), key=lambda kv: kv[1])
+        return (k, ci, t)
+
     def on_clock(self, msg: dict) -> None:
         rtt = float(msg["rtt"]) / 1000.0
         if self.clock_rtt_s is None or rtt <= self.clock_rtt_s:

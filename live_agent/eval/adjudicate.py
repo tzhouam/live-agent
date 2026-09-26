@@ -226,6 +226,14 @@ def _sha(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
+def final_criteria_sha(task: Any, label: str) -> str | None:
+    """Hash of the preregistered criteria of chain ``label``'s final intent in ``task`` (the
+    value merge writes as ``criteria_sha256`` on chain verdicts); None if it ends withdrawn."""
+    hist = [u.intent for u in task.utterances if u.chain == label and u.annotation in ("new", "revision")]
+    final = task.final_intents().get(label)
+    return _sha(_criteria_from_intent(hist[-1])) if final is not None and hist else None
+
+
 PAGE = """<!doctype html><html lang="zh"><meta charset="utf-8"><title>Adjudication</title>
 <style>
 :root{--bg:#fff;--fg:#111;--mut:#666;--line:#ddd;--acc:#1f6feb;--bad:#c62828}
@@ -692,7 +700,9 @@ def _review_need(info: dict[str, Any], r: dict[str, Any], step: int,
     origin + 15 s + duration; multistep step i: the rater's step i-1 time + 15 s, step 0
     origin + 15 s). A multistep step marked done only *before* its predecessor is
     nonqualifying evidence and needs the same window. "No response onset": origin + 15 s.
-    None = no requirement."""
+    Positive marks need continuous coverage from the request to the mark: the first
+    compliant frame, the answer end (content "done") and the response onset. None = no
+    requirement."""
     o, kind = float(info["origin"]), info["kind"]
     prev_t = (float(prev["t_first_compliant"]) if prev is not None and prev["label"] == "complied"
               and prev.get("t_first_compliant") is not None else None)
@@ -710,6 +720,9 @@ def _review_need(info: dict[str, Any], r: dict[str, Any], step: int,
         need = prev_t + STEP_D  # early: must show it did not also happen within its window
     if r.get("onset_none"):
         need = max(need or 0.0, o + ONSET_D)
+    for k in ("t_first_compliant", "t_evidence", "t_onset"):  # positive marks: watched up to them
+        if r.get(k) is not None:
+            need = max(need or 0.0, float(r[k]))
     return need
 
 
@@ -730,7 +743,8 @@ def _repair_to_session(lab: dict[str, Any], info: dict[str, Any], annotator: str
         raise LabelError(f"{where}: 'done' needs v_first")
     iv = _watched(lab, v_len, where)
     r["_watched"] = r["v_watched"] = iv
-    r["review_ok"] = label == "complied" or covered(iv, v0, v1)
+    # negative: the whole window; "done": continuously from the window start to the marked frame
+    r["review_ok"] = covered(iv, v0, float(lab["v_first"]) if label == "complied" else v1)
     r["t_review_start"] = video_to_session(segs, v0)
     r["t_review_end"] = video_to_session(segs, max([v0, *(b for _, b in iv)]))
     return r
@@ -938,16 +952,67 @@ def _batch_events(log: str, batch: str) -> int:
     return n
 
 
-def _rewrite(per_log: dict[str, list[dict]], logs: set[str], batch: str) -> dict[str, int]:
-    """Atomically replace this batch's events in every log: write all temp files first,
-    then os.replace them."""
+def adjudication_identity(ev: dict[str, Any]) -> tuple | None:
+    """What an adjudication event finalizes within its session: a chain (its verdicts, onset,
+    ratings), one RQ2 repair target (chain, j, revision, step), or the session's claim sweep.
+    None for events that are not adjudication output."""
+    t = ev.get("type")
+    adj = ev.get("source") == "adjudicated"
+    if t == "claim_sweep" or (t == "completion_claim" and adj) or (t == "rating" and ev.get("kind") == "claim_sweep") \
+            or (t in ("verdict", "rating") and ev.get("claim_t") is not None and (adj or t == "rating")):
+        return ("sweep",)
+    if t in ("verdict", "rating") and ev.get("repair_request") is not None and (adj or t == "rating"):
+        return ("repair", ev["chain_id"], int(ev["repair_request"]), ev.get("revision"), ev.get("step"))
+    if (t == "verdict" and adj) or t == "rating" or (t == "speech_onset" and adj):
+        return ("chain", ev.get("chain_id"))
+    return None
+
+
+def _item_identity(info: dict[str, Any]) -> tuple:
+    if info["type"] == "sweep":
+        return ("sweep",)
+    if info["type"] == "repair_target":
+        return ("repair", info["chain_id"], int(info["repair_request"]), info["revision"], info.get("step"))
+    return ("chain", info["chain_id"])
+
+
+def _foreign_finalized(logs: set[str], batch: str, mine: dict[str, set[tuple]]) -> dict[str, set[tuple]]:
+    """Per log: identities of this batch's items already finalized by another batch (an
+    adjudicated verdict or claim sweep with a different or no ``batch``)."""
+    out: dict[str, set[tuple]] = {}
+    for log in logs:
+        with open(log, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                e = json.loads(line)
+                if e.get("batch") == batch or e.get("type") not in ("verdict", "claim_sweep"):
+                    continue
+                if e.get("type") == "verdict" and e.get("source") != "adjudicated":
+                    continue
+                ident = adjudication_identity(e)
+                if ident in mine.get(log, set()):
+                    out.setdefault(log, set()).add(ident)
+    return out
+
+
+def _rewrite(per_log: dict[str, list[dict]], logs: set[str], batch: str,
+             drop: dict[str, set[tuple]] | None = None) -> dict[str, int]:
+    """Atomically replace this batch's events in every log -- and, with ``drop``, every
+    other batch's adjudication events for those identities (cross-batch replacement): write
+    all temp files first, then os.replace them."""
     tmps = []
     for log in sorted(logs):
         kept = []
+        gone = (drop or {}).get(log, set())
         with open(log, encoding="utf-8") as f:
             for line in f:
-                if line.strip() and json.loads(line).get("batch") != batch:
-                    kept.append(line if line.endswith("\n") else line + "\n")
+                if not line.strip():
+                    continue
+                e = json.loads(line)
+                if e.get("batch") == batch or (gone and adjudication_identity(e) in gone):
+                    continue
+                kept.append(line if line.endswith("\n") else line + "\n")
         new = [json.dumps(e, ensure_ascii=False) + "\n" for e in per_log.get(log, [])]
         tmp = f"{log}.tmp-{secrets.token_hex(4)}"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -994,6 +1059,15 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
                                   or (prior["arbiter"] is not None and prior["arbiter"] != fp["arbiter"])):
             raise MergeConflictError(f"batch {batch!r} was finalized with different inputs; "
                                      "use --replace to atomically replace its adjudication")
+    mine: dict[str, set[tuple]] = {}
+    for info in items.values():
+        mine.setdefault(info["log"], set()).add(_item_identity(info))
+    foreign = _foreign_finalized(logs, batch, mine)
+    if foreign and not replace:
+        raise MergeConflictError(
+            "already finalized by another batch (each session's chain / repair target / claim sweep is "
+            "finalized by exactly one batch; --replace removes the earlier batch's events for them): "
+            + "; ".join(f"{Path(log).name}: {sorted(map(str, ids))}" for log, ids in foreign.items()))
     rs = [_load_ratings(p, a, items) for p, a in ratings]
     arb = _load_ratings(arbiter[0], arbiter[1], items) if arbiter else {}
 
@@ -1129,7 +1203,8 @@ def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tupl
                        "chain_id": info["chain_id"], "batch": batch, "item": iid, "annotators": who})
     if pairs_lab[0]:
         res["kappa"] = stats.cohens_kappa(*pairs_lab, categories=VERDICT_LABELS)
-    res["appended"] = _rewrite(per_log, logs, batch)
+    res["appended"] = _rewrite(per_log, logs, batch, foreign if replace else None)
+    res["replaced_other_batches"] = {Path(log).name: len(ids) for log, ids in foreign.items()} if replace else {}
     state_path.write_text(json.dumps(fp, indent=1), encoding="utf-8")
     (key_path.parent / "unresolved.json").write_text(
         json.dumps({"unresolved": res["unresolved"], "missing": res["missing"]}, indent=1), encoding="utf-8")

@@ -87,8 +87,10 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
     def gt_revision(dchain: str, drev: int | None) -> int | None:
         """Director revision r -> GT revision index of the utterance that defined it."""
         uids = dchain_uids.get(dchain, [])
-        gt = dchain_to_gt.get(dchain)
-        if gt is None or drev is None or drev >= len(uids) or uids[drev] not in gt_uids.get(gt, []):
+        if drev is None or not 0 <= drev < len(uids):
+            return None
+        gt = uid_to_chain.get(uids[drev])  # the GT chain of the *served* utterance, not the last one
+        if gt is None or uids[drev] not in gt_uids.get(gt, []):
             return None
         return gt_uids[gt].index(uids[drev])
 

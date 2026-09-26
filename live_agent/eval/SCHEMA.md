@@ -154,6 +154,9 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   * a multistep step marked done only **before** its predecessor (nonqualifying
     evidence): its own window, step *i−1* time + 15 s.
 
+  **Positive marks** need continuous coverage from the request to the mark: the first
+  compliant frame, the response onset, and the answer end of a content "done". A
+  repair-target "done" needs coverage from the window start to its first compliant frame.
   A sweep must cover the whole recording. If either primary review is too short, the item
   stays **unresolved and must be relabelled**; the arbiter never replaces an insufficient
   primary review.
@@ -172,6 +175,12 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   both raters heard but the arbiter did not rate stays unresolved. A resolved sweep writes adjudicated `completion_claim` +
   claim-level `verdict` (`chain_id` + `claim_t`) events and a `claim_sweep` marker.
   Unresolved and missing items are listed in `unresolved.json` next to the key.
+* **One batch per item**: each session's chain, RQ2 repair target and claim sweep is
+  finalized by exactly one batch. Merging a batch whose items another batch already
+  finalized raises `MergeConflictError`. `--replace` atomically removes the earlier batch's
+  events for those items (ratings, verdicts, onsets, claims) and writes the new ones.
+  Scoring lists any item that still has adjudicated verdicts from two batches as an
+  adjudication gap.
 * **Immutability**: the inputs of a merged batch are fingerprinted (`merge_state.json` next
   to the key). Re-running with identical inputs is a no-op, and adding an arbiter to a
   batch merged without one is allowed. Any other change raises `MergeConflictError` unless
@@ -191,8 +200,10 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   refused/degraded (fail, at or after the final origin) → adjudication completeness →
   deadline rules → observation check.
 * **Adjudication completeness (primary):** an attempted chain needs an adjudicated verdict
-  bound to its final intent. **Every** chain also needs a response-onset decision
-  (`onset_reviewed` or an adjudicated `speech_onset`). Multistep needs a verdict for every step up to the first
+  bound to its final intent. **Every** effective chain also needs a response-onset decision,
+  (`onset_reviewed` or an adjudicated `speech_onset`). This includes capacity-skipped,
+  refused and degraded chains, which keep their failure outcome and use the decision for
+  TFMR (a missing one is a gap). Multistep needs a verdict for every step up to the first
   one not done. Otherwise the outcome is `unadjudicated`, and the primary report refuses
   to run and lists the gaps. Every session also needs an adjudicated `claim_sweep`, and
   every adjudicated claim needs its claim-level verdict.
@@ -276,8 +287,15 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
     * a key is missing from either condition, even from both;
     * a key lies outside the set.
 
-    Duplicate keys are always an error. `--allow-incomplete-pairs` instead shows that
-    comparison as EXPLORATORY, with no p-value and no decision.
+    Duplicate keys are always an error.
+  * **Registered script:** every session's logged user side must equal the registered task:
+    utterance texts, annotation actions and labels, and the intent fields `kind`,
+    `intent`, `content_type`, `prereg_duration_s` and `steps`. Every scored chain's
+    adjudicated verdicts must carry the hash of the registered final criteria
+    (`criteria_sha256`, see `adjudicate.final_criteria_sha`). A mismatch, or no registered
+    suite (`build_report(tasks=...)`; the CLI always loads `--suite`), is a pair problem.
+  * `--allow-incomplete-pairs` shows a comparison with any of these pair problems as
+    EXPLORATORY, with no p-value and no decision.
   * **Minimum clusters:** below `MIN_TASKS` = 10 independent task clusters (*proposed
     target*), the p-value and decision are suppressed ("no inference").
   * Suppressed family members count as p = 1 in Holm.

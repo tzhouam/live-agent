@@ -234,6 +234,8 @@ class ChainOutcome:
     n_claims_unadjudicated: int = 0  # primary mode: claims without a usable adjudication
     repairs: list[dict[str, Any]] = field(default_factory=list)  # one per RQ2 failure point
     missing: str = ""  # what adjudication is missing / why observation is insufficient
+    onset_unadjudicated: bool = False  # skipped/refused chain without a response-onset decision
+    criteria_sha256: list[str] = field(default_factory=list)  # criteria hashes on its adjudicated verdicts
 
     @property
     def success(self) -> bool:
@@ -274,6 +276,8 @@ class SessionScore:
     observation_end: float | None = None
     claim_sweep: bool = False  # an adjudicated audio claim sweep covers this session
     mode: str | None = None  # header mode: only "browser" is the end-to-end E2 path
+    script: list[dict[str, Any]] = field(default_factory=list)  # user utterances + annotations (pairing check)
+    conflicts: list[str] = field(default_factory=list)  # items adjudicated by more than one batch
     rq2_problems: list[str] = field(default_factory=list)  # RQ2 audit (RQ2_CONDITIONS only)
 
 
@@ -720,6 +724,7 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
 
         info: dict[str, Any] = {}
         missing = ""
+        onset_decided = any(v.get("onset_reviewed") for v in vs) or bool(adj_onsets)
         if ch.withdrawn:
             outcome = Outcome.WITHDRAWN
         elif skips:
@@ -767,6 +772,10 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
             competing_failure=outcome == Outcome.ORDER_FAIL,
             steps_complied=int(info.get("steps_complied", 0)),
             missing=missing,
+            # skipped / refused chains keep their failure outcome but still need the onset decision
+            onset_unadjudicated=(not cfg.diagnostic and not onset_decided
+                                 and outcome in (Outcome.CAPACITY_SKIPPED, Outcome.REFUSED, Outcome.DEGRADED)),
+            criteria_sha256=sorted({v["criteria_sha256"] for v in vs if v.get("criteria_sha256")}),
         )
         if rec.in_primary and ch.kind == TaskKind.ACTION:
             if info.get("tvc") is not None and info["tvc"] <= D:
@@ -829,7 +838,40 @@ def score_session(session: SessionLog, cfg: ScoringConfig | None = None) -> Sess
         claim_sweep=any(e.get("source") == "adjudicated" for e in session.of_type("claim_sweep")),
         rq2_problems=rq2_probs,
         mode=session.meta.get("mode"),
+        script=session_script(session),
+        conflicts=[] if cfg.diagnostic else batch_conflicts(session),
     )
+
+
+INTENT_FIELDS = ("kind", "intent", "content_type", "prereg_duration_s", "steps")
+
+
+def session_script(session: SessionLog) -> list[dict[str, Any]]:
+    """The user side of the session as logged: each user utterance's text with its chain
+    annotation(s) (action, label and intent fields), in time order."""
+    anns: dict[str, list[dict[str, Any]]] = {}
+    for a in session.of_type("chain_annotation"):
+        anns.setdefault(a["uid"], []).append(
+            {"action": a["action"], "label": a.get("label", a["chain_id"]),
+             **({k: a.get(k, "" if k == "intent" else None) for k in INTENT_FIELDS} if a["action"] != "withdrawal" else {})})
+    utts = sorted((u for u in session.of_type("utterance") if u.get("speaker") == "user"), key=lambda u: u["t_start"])
+    return [{"text": u["text"], "ann": anns.get(u["uid"], [])} for u in utts]
+
+
+def batch_conflicts(session: SessionLog) -> list[str]:
+    """Chains, repair targets or claim sweeps finalized by more than one adjudication batch."""
+    seen: dict[tuple, set] = {}
+    for e in session.events:
+        if e.get("source") != "adjudicated" or e.get("type") not in ("verdict", "claim_sweep"):
+            continue
+        if e.get("claim_t") is not None or e["type"] == "claim_sweep":
+            ident: tuple = ("sweep",)
+        elif e.get("repair_request") is not None:
+            ident = ("repair", e["chain_id"], e["repair_request"], e.get("revision"), e.get("step"))
+        else:
+            ident = ("chain", e.get("chain_id"))
+        seen.setdefault(ident, set()).add(e.get("batch"))
+    return [f"{ident} adjudicated by batches {sorted(map(str, b))}" for ident, b in seen.items() if len(b) > 1]
 
 
 def adjudication_gaps(sessions: list[SessionScore]) -> list[str]:
@@ -838,9 +880,12 @@ def adjudication_gaps(sessions: list[SessionScore]) -> list[str]:
     for s in sessions:
         if not s.diagnostic and not s.claim_sweep:
             gaps.append(f"{s.session_id}: no adjudicated audio claim sweep (FCR needs every audible claim)")
+        gaps += [f"{s.session_id}: {c} (finalize by exactly one batch)" for c in s.conflicts]
         for c in s.chains:
             if c.outcome == Outcome.UNADJUDICATED:
                 gaps.append(f"{s.session_id} {c.chain_id}: {c.missing}")
+            if c.onset_unadjudicated:
+                gaps.append(f"{s.session_id} {c.chain_id}: {c.outcome.value} chain: response onset not adjudicated")
             if c.n_claims_unadjudicated:
                 gaps.append(f"{s.session_id} {c.chain_id}: {c.n_claims_unadjudicated} completion "
                             "claim(s) without a reconciled claim-level verdict")

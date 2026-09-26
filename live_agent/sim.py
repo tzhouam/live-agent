@@ -40,6 +40,10 @@ class SimClient:
     async def send_chunk(self, chunk: Chunk, script: BlockScript) -> None:
         await self._q.put((chunk, script))
 
+    def in_flight(self):
+        """(request, chunk, start time) of the chunk playing right now, if any."""
+        return (self._current.request_index, self._current.chunk_index, self._current_t0) if self._current else None
+
     async def stop_playback(self) -> None:
         """Barge-in: stop *now*. The chunk being played is cut (never acknowledged as presented)
         and everything queued is discarded."""
@@ -63,6 +67,7 @@ class SimClient:
             ch, _script = await self._q.get()
             self._current = ch
             t0 = now()
+            self._current_t0 = t0
             if self._last_end is not None and t0 - self._last_end > 0.05 / self.speed:
                 self.stalls.append(Stall(self._last_end, t0))
             await asyncio.sleep(ch.duration_s / self.speed)

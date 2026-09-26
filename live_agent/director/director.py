@@ -137,6 +137,8 @@ class Director:
         self.awaiting_decision = False
         self.deferred: list[Segment] = []
         self.deferred_verifications: list[tuple] = []
+        self.step_base_t: dict[str, float] = {}  # chain -> time the current step's clock started
+        self._suppress_remarks: set[str] = set()
 
     @property
     def closed(self) -> bool:
@@ -161,13 +163,19 @@ class Director:
         deferred, self.deferred = self.deferred, []
         self._apply_decision(utt, d)
         touched = {(d.get("target_chain") or "")} if d.get("relation") in ("revision", "withdrawal") else set()
+        instruction = self.latest_chain is not None and d.get("relation") in ("new", "revision", "withdrawal") \
+            and d.get("kind") not in ("chat", "memory")
         for seg in reversed(deferred):
-            if seg.chain_id not in touched:
-                self.queue.appendleft(seg)
+            if seg.chain_id in touched or (instruction and seg.is_completion_remark):
+                continue  # a new instruction resolves the barge-in: the old "好了。" is not spoken
+            self.queue.appendleft(seg)
         pending, self.deferred_verifications = self.deferred_verifications, []
         for chain_id, intent, k, t, revision, step in pending:
             # a revised chain has a new revision count, so a stale verification no longer matches
+            if instruction:
+                self._suppress_remarks.add(chain_id)
             self.on_verified(chain_id, intent, k, t, revision=revision, step=step)
+            self._suppress_remarks.discard(chain_id)
         for seg in self.queue:
             if id(seg) not in before:
                 seg.memory_ids = list(memory_ids) if memory_ids is not None else None
@@ -409,6 +417,7 @@ class Director:
             return False
         self.ledger.apply_verified_action(intent)
         done_step = self._expected_step(chain)
+        self.step_base_t[chain_id] = t  # the next step's deadline counts from this verification
         chain.step_index += 1
         if chain.first_compliant_t is None:
             chain.first_compliant_t = t
@@ -422,7 +431,7 @@ class Director:
             chain.status = ChainStatus.COMPLIED
             released += held.pop(len(chain.steps) - 1, []) if held else []
             self.held.pop(chain_id, None)
-            if self.closed:
+            if self.closed and chain_id not in self._suppress_remarks:
                 # Narration policy: completion is voiced only after verification (after the
                 # chain's remaining spoken content, if any).
                 released.append(Segment(chain_id=chain_id, plan_version=self.plan_version,
@@ -436,6 +445,14 @@ class Director:
         for seg in reversed(released):
             self.queue.appendleft(seg)
         return True
+
+    def expire(self, chain_id: str, revision: int | None) -> None:
+        """The current step's deadline passed before its check: the chain has failed (no late
+        verification, step release or repair)."""
+        c = self.chains.get(chain_id)
+        if c is not None and c.status == ChainStatus.OPEN and (revision is None or revision == len(c.revisions)):
+            c.status = ChainStatus.FAILED
+            self._drop_chain_segments(chain_id)
 
     def schedule_correction(self, request_index: int, sentence: str) -> None:
         self.pending_corrections.setdefault(request_index, []).append(sentence)
@@ -614,8 +631,8 @@ _COMPLETION = re.compile(
     r"[喝吃写翻挥放拿站坐鞠点摇]了(?![吗呢])|[喝吃]光|[了完好过光]啦|done|finished)")
 
 
-_ACTION_VERB = "喝吃写翻挥放拿站坐鞠点摇倒扇笑看读唱讲画收摆捧端举"
-_VERB_PERFECTIVE = re.compile(rf"[{_ACTION_VERB}][^，。！？,.!?；;]{{0,4}}[了啦过完光净好掉]")
+_ACTION_VERB = "喝饮品吃尝写翻挥放拿站坐鞠点摇倒扇笑看读唱讲画收摆捧端举"
+_VERB_PERFECTIVE = re.compile(rf"[{_ACTION_VERB}][^，。！？,.!?；;]{{0,4}}[了啦过完光净尽好掉]")
 
 
 def _claims_completion(line: str) -> bool:

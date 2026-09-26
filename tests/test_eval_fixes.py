@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from test_eval import Log
+from test_eval import SYN_SHA, Log, synth_tasks
 
 from live_agent.eval import report, stats
 from live_agent.eval.adjudicate import (
@@ -317,6 +317,7 @@ def test_time_to_success_has_no_early_censoring_and_per_kind_table():
     L.verdict(5.0, step=1, chain="m")  # order_fail: deterministic
     L.new(0.0, chain="a1")
     L.ev(type="refusal", chain_id="a1", t=1.0)
+    L.onset(2.0, chain="a1")  # refused chains still need the response-onset decision
     L.new(0.0, chain="a2")
     L.verdict(6.0, chain="a2")
     L.ev(type="observation_end", t=40.0)
@@ -350,10 +351,10 @@ def _sessions(conds_p, n_tasks=12, n_seeds=3, seed=0):
                 L = Log(cond, f"T{t}", s)
                 L.new(0.0)
                 if rng.random() < p:
-                    L.verdict(float(rng.uniform(3, 14)))
+                    L.verdict(float(rng.uniform(3, 14)), criteria_sha256=SYN_SHA)
                     L.aclaim(14.5, "complied")
                 else:
-                    L.verdict(None, label="not_complied")
+                    L.verdict(None, label="not_complied", criteria_sha256=SYN_SHA)
                     if rng.random() < 0.5:
                         L.aclaim(14.5, "not_complied")
                 out.append(L.score())
@@ -365,7 +366,7 @@ def test_families_are_fixed_and_compare_only_selects_display():
     by = {}
     for s in ss:
         by.setdefault(s.condition, []).append(s)
-    md = "\n".join(compare(by, n_boot=300, expected=_exp(12, 3)))
+    md = "\n".join(compare(by, n_boot=300, expected=_exp(12, 3), tasks=synth_tasks(12)))
     assert "Family: primary (H1a)** (m = 1; tested: 1)" in md
     assert "Family: secondary (H1c ablations)** (m = 4; tested: 1)" in md
     row = next(x for x in md.splitlines() if x.startswith("| A2 - A2-noqc |"))
@@ -373,7 +374,7 @@ def test_families_are_fixed_and_compare_only_selects_display():
     p, p_adj = float(cells[6]), float(cells[7])
     assert p_adj == pytest.approx(min(1.0, 4 * p))  # family size 4 even though 1 was run
     assert "reject H0" in "\n".join(x for x in md.splitlines() if x.startswith("| A2 - A1 |"))
-    md2 = "\n".join(compare(by, display=[("A2", "A2-noqc"), ("A2-noqc", "A1")], n_boot=300, expected=_exp(12, 3)))
+    md2 = "\n".join(compare(by, display=[("A2", "A2-noqc"), ("A2-noqc", "A1")], n_boot=300, expected=_exp(12, 3), tasks=synth_tasks(12)))
     assert "| A2 - A1 |" not in md2 and row in md2
     assert "Exploratory (not preregistered" in md2 and "| A2-noqc - A1 |" in md2
 
@@ -480,6 +481,13 @@ def _items(page: Path) -> list[dict]:
 
 
 def _labels(tmp_path: Path, name: str, d: dict) -> Path:
+    """Write a label file. A label without ``v_watched`` gets continuous playback from 0 to
+    its latest mark (tests of review coverage set ``v_watched`` explicitly)."""
+    d = {k: dict(v) for k, v in d.items()}
+    for v in d.values():
+        marks = [float(v[m]) for m in ("v_first", "v_end", "v_onset") if v.get(m) is not None]
+        if "label" in v and "v_watched" not in v and marks:
+            v["v_watched"] = [[0.0, max(marks)]]
     p = tmp_path / f"{name}.json"
     p.write_text(json.dumps(d), encoding="utf-8")
     return p
@@ -800,9 +808,9 @@ def _paired_sessions(conds, tasks, seeds=2, drop=()):
                 L = Log(cond, f"T{t}", s)
                 L.new(0.0)
                 if cond == "A2" or (t + s) % 2:
-                    L.verdict(5.0)
+                    L.verdict(5.0, criteria_sha256=SYN_SHA)
                 else:
-                    L.verdict(None, label="not_complied")
+                    L.verdict(None, label="not_complied", criteria_sha256=SYN_SHA)
                 out.append(L.score())
     return out
 
@@ -810,8 +818,8 @@ def _paired_sessions(conds, tasks, seeds=2, drop=()):
 def test_incomplete_pair_set_blocks_decision_unless_allowed(tmp_path, capsys):
     ss = _paired_sessions(("A1", "A2"), 12, drop={("A1", 3, 1)})
     with pytest.raises(PairingError, match="missing in A1"):
-        build_report(ss, n_boot=100, expected=_exp(12, 2))
-    md = build_report(ss, n_boot=100, allow_incomplete_pairs=True, expected=_exp(12, 2))
+        build_report(ss, n_boot=100, expected=_exp(12, 2), tasks=synth_tasks(12))
+    md = build_report(ss, n_boot=100, allow_incomplete_pairs=True, expected=_exp(12, 2), tasks=synth_tasks(12))
     row = next(x for x in md.splitlines() if x.startswith("| A2 - A1 |"))
     assert "EXPLORATORY: 1 pair key(s) missing" in row and "reject" not in row
     # CLI: exit 2
@@ -831,16 +839,16 @@ def test_duplicate_pair_keys_rejected_even_when_incomplete_allowed():
     ss = _paired_sessions(("A1", "A2"), 12)
     ss.append(ss[0])  # the same A1 session twice
     with pytest.raises(PairingError, match="duplicate"):
-        build_report(ss, n_boot=100, allow_incomplete_pairs=True, expected=_exp(12, 2))
+        build_report(ss, n_boot=100, allow_incomplete_pairs=True, expected=_exp(12, 2), tasks=synth_tasks(12))
 
 
 def test_no_inference_below_min_tasks():
     assert MIN_TASKS == 10
-    md = build_report(_paired_sessions(("A1", "A2"), 5, seeds=4), n_boot=200, expected=_exp(5, 4))
+    md = build_report(_paired_sessions(("A1", "A2"), 5, seeds=4), n_boot=200, expected=_exp(5, 4), tasks=synth_tasks(5))
     row = next(x for x in md.splitlines() if x.startswith("| A2 - A1 |"))
     assert "no inference: 5 < 10 task clusters" in row and "reject" not in row
     assert "MIN_TASKS = 10" in md
-    md = build_report(_paired_sessions(("A1", "A2"), 10), n_boot=200, expected=_exp(10, 2))
+    md = build_report(_paired_sessions(("A1", "A2"), 10), n_boot=200, expected=_exp(10, 2), tasks=synth_tasks(10))
     assert "reject H0" in next(x for x in md.splitlines() if x.startswith("| A2 - A1 |"))
 
 
@@ -986,11 +994,11 @@ def test_rq2_audit_eligible_failures_and_arm_drawn():
 
 def test_pairs_checked_against_the_registered_set():
     ss = _paired_sessions(("A1", "A2"), 12, drop={("A1", 3, 1), ("A2", 3, 1)})  # both omit the same key
-    build_report(ss, n_boot=100, expected=_exp(12, 2) - {("T3", 1, "c1")})  # fine if that key is not registered
+    build_report(ss, n_boot=100, expected=_exp(12, 2) - {("T3", 1, "c1")}, tasks=synth_tasks(12))  # fine if that key is not registered
     with pytest.raises(PairingError, match=r"missing in A1: \('T3', 1, 'c1'\)"):
-        build_report(ss, n_boot=100, expected=_exp(12, 2))
+        build_report(ss, n_boot=100, expected=_exp(12, 2), tasks=synth_tasks(12))
     with pytest.raises(PairingError, match="outside the registered set"):
-        build_report(_paired_sessions(("A1", "A2"), 12), n_boot=100, expected=_exp(11, 2))
+        build_report(_paired_sessions(("A1", "A2"), 12), n_boot=100, expected=_exp(11, 2), tasks=synth_tasks(11))
     with pytest.raises(PairingError, match="no registered pair set"):
         build_report(_paired_sessions(("A1", "A2"), 12), n_boot=100)
     md = build_report(_paired_sessions(("A1", "A2"), 12), n_boot=100, allow_incomplete_pairs=True)
@@ -1225,3 +1233,102 @@ def test_arbiter_never_replaces_an_insufficient_primary_review(tmp_path):
                       (_labels(tmp_path, "b", {**chain, sk: short}), "R2")],
               arbiter=(_labels(tmp_path, "c", {sk: full}), "R3"))
     assert "relabel" in r["unresolved"][sk] and r["arbitrated"] == 0
+
+
+# --------------------------------------------------------------------------- round 7 (impl2h)
+
+
+def test_skipped_and_refused_chains_need_the_onset_decision():
+    L = Log()
+    L.new(0.0, chain="c1")
+    L.ev(type="capacity_skip", chain_id="c1", t=1.0)
+    L.new(0.0, chain="c2")
+    L.ev(type="refusal", chain_id="c2", t=1.0)
+    sc = L.score()
+    assert {c.outcome for c in sc.chains} == {Outcome.CAPACITY_SKIPPED, Outcome.REFUSED}
+    with pytest.raises(IncompleteAdjudicationError, match="capacity_skipped chain: response onset"):
+        build_report([sc], n_boot=50)
+    L.onset(3.0, chain="c1")
+    L.verdict(None, chain="c2", label="not_complied", onset_reviewed=True)  # "none by the deadline"
+    sc = L.score()
+    out = {c.chain_id: c for c in sc.chains}
+    assert out["c1"].outcome == Outcome.CAPACITY_SKIPPED and out["c1"].tfmr == 3.0 and out["c1"].tfmr_event
+    assert out["c2"].outcome == Outcome.REFUSED and not out["c2"].tfmr_event
+    build_report([sc], n_boot=50)
+
+
+def test_positive_labels_need_coverage_from_the_request_to_the_mark(tmp_path):
+    _, batch, items, sw = _one_item(tmp_path)  # origin 3
+    iid, sk = items[0]["id"], f"{sw['id']}/0"
+    jump = {f"{iid}/0": {"v_onset": 4.0, "label": "complied", "v_first": 8.0, "v_watched": [[0.0, 4.5], [7.5, 9.0]]},
+            sk: SWEEP_NONE}  # skipped 4.5-7.5, then "first compliant" at 8
+    r = merge(batch, [(_labels(tmp_path, "a", jump), "R1"), (_labels(tmp_path, "b", jump), "R2")])
+    assert f"{iid}/0" in r["unresolved"]
+    utts = [(3.0, "《静夜思》是谁写的？", "new", "c1", {"kind": "content", "content_type": "qa"})]
+    _, batch2, items2, sw2 = _one_item(tmp_path, "E2-C01", utts, name="c")
+    j, sk2 = items2[0]["id"], f"{sw2['id']}/0"
+    lab = {j + "/0": {"label": "complied", "v_onset": 6.0, "v_end": 12.0, "v_watched": [[0.0, 10.0]]}, sk2: SWEEP_NONE}
+    r = merge(batch2, [(_labels(tmp_path, "c", lab), "R1"), (_labels(tmp_path, "d", lab), "R2")])
+    assert f"{j}/0" in r["unresolved"]  # content "done" needs coverage through the answer end
+
+
+def test_repair_done_needs_coverage_from_window_start(tmp_path):
+    utts = [(3.0, "跟我挥挥手吧。", "new", "c1", {"kind": "action"})]
+    assign = {"type": "repair_assignment", "chain_id": "A2-rq2-E2-A03-s0:c1", "arm": "repeat", "failure_request": 0,
+              "target_request": 1, "t": 4.0, "arm_drawn": True, "revision": 0}
+    log = _session_file(tmp_path, "s", "E2-A03", utts, extra=[assign], cond="A2-rq2", chunks_per_request=5)
+    items = _items(prepare([log], tmp_path / "b"))
+    (rt,) = [i for i in items if i["type"] == "repair_target"]
+    k = f"{rt['id']}/0"
+    lab = {k: {"label": "complied", "v_first": 8.0, "v_watched": [[7.5, 8.0]]}}  # jumped into the window
+    r = merge(tmp_path / "b", [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
+    assert k in r["unresolved"]
+
+
+def test_one_batch_finalizes_each_item(tmp_path):
+    log, batch, items, sw = _one_item(tmp_path)
+    iid, sk = items[0]["id"], f"{sw['id']}/0"
+    lab = {f"{iid}/0": {"v_onset": 4.0, "label": "complied", "v_first": 8.0}, sk: SWEEP_NONE}
+    merge(batch, [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
+    batch2 = tmp_path / "second"
+    items2 = _items(prepare([log], batch2))
+    ch2 = next(i for i in items2 if i["type"] == "chain")["id"]
+    sw2 = next(i for i in items2 if i["type"] == "sweep")["id"]
+    lab2 = {f"{ch2}/0": {"v_onset": 4.0, "label": "not_complied", "v_watched": [[0.0, 20.0]]}, f"{sw2}/0": SWEEP_NONE}
+    with pytest.raises(MergeConflictError, match="already finalized by another batch"):
+        merge(batch2, [(_labels(tmp_path, "c", lab2), "R1"), (_labels(tmp_path, "d", lab2), "R2")])
+    r = merge(batch2, [(_labels(tmp_path, "c", lab2), "R1"), (_labels(tmp_path, "d", lab2), "R2")], replace=True)
+    assert r["replaced_other_batches"]
+    s = load_session(log)
+    batches = {e.get("batch") for e in s.events if e.get("batch")}
+    assert batches == {"second"}  # the earlier batch's events for those items were removed atomically
+    sc = score_session(s)
+    assert sc.conflicts == [] and sc.chains[0].outcome == Outcome.NEVER
+
+
+def test_scoring_flags_items_adjudicated_by_two_batches():
+    L = Log()
+    L.new(0.0)
+    L.verdict(5.0, batch="b1")
+    L.verdict(6.0, batch="b2")
+    sc = L.score()
+    assert sc.conflicts and "b1" in sc.conflicts[0]
+    with pytest.raises(IncompleteAdjudicationError, match="exactly one batch"):
+        build_report([sc], n_boot=50)
+
+
+def test_pairing_validates_script_and_criteria_against_registered_task():
+    ss = _paired_sessions(("A1", "A2"), 12)
+    reg = {"expected": _exp(12, 2), "tasks": synth_tasks(12)}
+    build_report(ss, n_boot=100, **reg)
+    bad = _paired_sessions(("A1", "A2"), 12)
+    a1 = next(s for s in bad if s.condition == "A1" and s.task_id == "T2")
+    a1.script[0]["text"] = "y"  # the A1 session heard a different instruction
+    with pytest.raises(PairingError, match="annotation sequence differs"):
+        build_report(bad, n_boot=100, **reg)
+    bad = _paired_sessions(("A1", "A2"), 12)
+    next(s for s in bad if s.condition == "A2").chains[0].criteria_sha256 = ["deadbeef"]
+    with pytest.raises(PairingError, match="adjudicated against criteria"):
+        build_report(bad, n_boot=100, **reg)
+    with pytest.raises(PairingError, match="task scripts not validated"):
+        build_report(ss, n_boot=100, expected=_exp(12, 2))

@@ -26,10 +26,13 @@ import sys
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import Any
 
 from live_agent.eval import stats
+from live_agent.eval.adjudicate import final_criteria_sha
 from live_agent.eval.schema import load_session
 from live_agent.eval.scoring import (
+    INTENT_FIELDS,
     RQ2_CONDITIONS,
     ChainOutcome,
     IncompleteAdjudicationError,
@@ -263,6 +266,52 @@ def parse_seeds(spec: str) -> list[int]:
     return out
 
 
+def expected_script(task: Any) -> list[dict[str, Any]]:
+    """The registered user side of a task in ``scoring.session_script`` form (what the
+    simulated user emits: texts, annotation actions and labels, intent fields)."""
+    out = []
+    for u in task.utterances:
+        ann = []
+        if u.annotation != "none":
+            a: dict[str, Any] = {"action": u.annotation, "label": u.chain}
+            if u.annotation != "withdrawal":
+                it = u.intent or {}
+                a.update({k: it.get(k) for k in INTENT_FIELDS})
+                a["intent"] = it.get("intent", "")
+                if "steps" in it:
+                    a["steps"] = [st.get("intent", "") for st in it["steps"]]
+            ann = [a]
+        out.append({"text": u.text, "ann": ann})
+    return out
+
+
+def script_problems(ss: list[SessionScore], tasks: dict[str, Any]) -> list[str]:
+    """Sessions whose logged annotation sequence or adjudicated final criteria differ from
+    the registered task: the utterance texts, annotation actions and labels, and intent
+    fields must match, and every scored chain's adjudicated verdicts must carry the hash of
+    the registered final criteria (``adjudicate.final_criteria_sha``)."""
+    probs = []
+    for s in ss:
+        t = tasks.get(s.task_id)
+        if t is None:
+            probs.append(f"{s.session_id}: task {s.task_id} not in the registered suite")
+            continue
+        exp = expected_script(t)
+        if s.script != exp:
+            i = next((i for i, (x, y) in enumerate(zip(s.script, exp, strict=False)) if x != y), min(len(s.script), len(exp)))
+            probs.append(f"{s.session_id}: annotation sequence differs from the registered task at utterance {i}")
+        for c in s.chains:
+            if not c.in_primary:
+                continue
+            want = final_criteria_sha(t, c.label)
+            if c.criteria_sha256 and c.criteria_sha256 != [want]:
+                probs.append(f"{s.session_id} {c.chain_id}: adjudicated against criteria {c.criteria_sha256}, "
+                             f"registered {want}")
+            elif not c.criteria_sha256 and c.served:
+                probs.append(f"{s.session_id} {c.chain_id}: adjudicated verdicts carry no criteria hash")
+    return probs
+
+
 def pair_problems(by_cond: dict[str, list[SessionScore]], a: str, b: str,
                   expected: set[tuple] | None = None) -> dict[str, list]:
     """Duplicate pair keys (in either condition); keys missing from either condition
@@ -304,7 +353,8 @@ def _paired(by_cond: dict[str, list[SessionScore]], a: str, b: str, n_boot: int,
 
 
 def _check_pairs(by_cond: dict[str, list[SessionScore]], pairs: Iterable[tuple[str, str]],
-                 allow_incomplete: bool, expected: set[tuple] | None = None) -> dict[tuple[str, str], str]:
+                 allow_incomplete: bool, expected: set[tuple] | None = None,
+                 tasks: dict[str, Any] | None = None) -> dict[tuple[str, str], str]:
     """Check each comparison against the registered pair set. Duplicate keys always raise
     PairingError. No registered set, missing keys, or keys outside the set raise unless
     ``allow_incomplete``; returns the reason a comparison is exploratory, per pair."""
@@ -318,6 +368,11 @@ def _check_pairs(by_cond: dict[str, list[SessionScore]], pairs: Iterable[tuple[s
         why = []
         if expected is None:
             why.append("no registered pair set")
+        script = [p for c in (a, b) for p in script_problems(by_cond[c], tasks)] if tasks is not None else []
+        if tasks is None:
+            why.append("task scripts not validated (no registered suite)")
+        elif script:
+            why.append(f"{len(script)} session/chain(s) differ from the registered task")
         if pr["missing"]:
             why.append(f"{len(pr['missing'])} pair key(s) missing")
         if pr["unexpected"]:
@@ -326,7 +381,7 @@ def _check_pairs(by_cond: dict[str, list[SessionScore]], pairs: Iterable[tuple[s
             missing[(a, b)] = "; ".join(why)
             if not allow_incomplete:
                 errs.append(f"{a} - {b}: " + "; ".join(why) + ": "
-                            + "; ".join([f"missing in {c}: {k}" for c, k in pr["missing"][:20]]
+                            + "; ".join(script[:20] + [f"missing in {c}: {k}" for c, k in pr["missing"][:20]]
                                         + [f"unexpected in {c}: {k}" for c, k in pr["unexpected"][:10]]
                                         + (["pass --suite and --expected-seeds"] if expected is None else [])))
     if errs:
@@ -341,6 +396,7 @@ def compare(
     alpha: float = 0.05,
     allow_incomplete_pairs: bool = False,
     expected: set[tuple] | None = None,
+    tasks: dict[str, Any] | None = None,
 ) -> list[str]:
     """Preregistered families, Holm over the preregistered family size. ``display``
     (default: every family member present) only selects the rows shown; it never changes
@@ -354,7 +410,7 @@ def compare(
     display = list(display) if display is not None else None
     fam_pairs = {p for fam in FAMILIES.values() for p in fam}
     extra = [tuple(p) for p in (display or []) if tuple(p) not in fam_pairs]
-    missing = _check_pairs(by_cond, [*fam_pairs, *extra], allow_incomplete_pairs, expected)
+    missing = _check_pairs(by_cond, [*fam_pairs, *extra], allow_incomplete_pairs, expected, tasks)
     L = ["## Paired comparisons (instruction-level success; cluster = task)", "",
          (f"Families are fixed before data collection; Holm is applied over the preregistered "
           f"family size (alpha = {alpha}); family members not run count as p = 1. "
@@ -476,6 +532,7 @@ def build_report(
     allow_incomplete_pairs: bool = False,
     expected: set[tuple] | None = None,
     allow_non_e2e: bool = False,
+    tasks: dict[str, Any] | None = None,
 ) -> str:
     """``pairs`` selects displayed comparisons (None = all preregistered ones present).
 
@@ -533,7 +590,8 @@ def build_report(
                  f"{_ci(*stats.wilson(sm['n_success'], sm['n_effective']))} | "
                  f"{sm['n_insufficient_observation']} |")
     L.append("")
-    L += compare(by_cond, pairs, n_boot=n_boot, allow_incomplete_pairs=allow_incomplete_pairs, expected=expected)
+    L += compare(by_cond, pairs, n_boot=n_boot, allow_incomplete_pairs=allow_incomplete_pairs, expected=expected,
+                 tasks=tasks)
     L += repair_comparison(by_cond, n_boot=n_boot)
     for cond, ss in sorted(by_cond.items()):
         L += condition_section(cond, ss, n_boot=n_boot)
@@ -576,7 +634,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                     if args.expected_seeds else None)
         md = build_report(scores, pairs, n_boot=args.n_boot, missing_rule=args.missing_rule,
                           allow_incomplete_pairs=args.allow_incomplete_pairs, expected=expected,
-                          allow_non_e2e=args.allow_non_e2e)
+                          allow_non_e2e=args.allow_non_e2e,
+                          tasks={t.task_id: t for t in load_suite(args.suite)})
     except IncompleteAdjudicationError as e:
         print(f"error: {e}\n(use --source judge for a DIAGNOSTIC report)", file=sys.stderr)
         raise SystemExit(2) from e

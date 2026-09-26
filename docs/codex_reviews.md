@@ -480,3 +480,13 @@ Model gpt-6-sol, verified.
 - **impl2g:** 8 of 10 RESOLVED, 2 PARTIAL, plus 3 new findings (1 blocking: in a private session, a `viewer:`-tagged utterance was written into public scope).
 
 Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit (all tests pass).
+
+### impl1h + impl2h: round 7
+
+Model gpt-6-sol, verified.
+- **impl1h:** 35 RESOLVED or scoped, 5 PARTIAL (2 only because the worker code was not inlined), plus 3 new findings (1 blocking: QC still running during an erasure could re-log erased content).
+- **impl2h:** 10 RESOLVED, 2 PARTIAL, plus 3 new major findings.
+
+Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit.
+
+**Documented residual (impl1 #36):** the narration guard is a pattern-based mitigation (explicit markers; action verb + perfective or resultative in one clause; questions exempt). It cannot recognise every paraphrase of completion. The outcome measure does not depend on it: false completion claims are counted from the recorded audio by the adjudicated claim sweep (FCR, H1b).

@@ -186,6 +186,18 @@ python3 -m pytest
   `generator_path` logs, because text is injected without TTS → VAD/ASR. A TTS-driven client (or human users) on
   the browser path is required; no TTS model is part of this repo yet.
 
+- **Round-7 additions:**
+  - An erasure invalidates and drains pending QC before redaction, so no late write can restore erased text.
+  - QC never runs past the step deadline; an expired step fails with no late transition.
+  - After a barge-in resolved by a new instruction, the old chain's "好了。" is dropped.
+  - Speech (and claims) that became audible in a chunk cut mid-play are logged, and that request is bridged as
+    partly shown.
+  - The browser schedules decoded chunks strictly in arrival order.
+  - `Orchestrator.stop` is cancellation-safe.
+  - Ground-truth revision mapping follows the served utterance.
+- **Narration guard limit:** the completion guard is pattern-based and cannot catch every paraphrase. False
+  completion claims are measured independently from the recorded audio (adjudicated claim sweep).
+
 ## Not yet verified
 
 - **E1:** a judge-only pilot ran (24 × 5 trials on TaoMate-H3, `docs/e1_pilot.md`). It showed the VLM judge failing

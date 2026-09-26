@@ -265,7 +265,17 @@ def test_completion_remark_deferred_while_barge_in_decision_pending():
     assert d.on_verified(tea.chain_id, "drink_tea", 0, 1.0, revision=0)
     assert not any(x.is_completion_remark for x in d.queue)  # held while the decision is pending
     say(d, "挥挥手", "u2", 2.0)
-    assert any(x.is_completion_remark for x in d.queue)  # released after an unrelated decision
+    assert tea.status == ChainStatus.COMPLIED  # verification applied...
+    assert not any(x.is_completion_remark for x in d.queue)  # ...but a new instruction drops the old "好了。"
+    chat = {"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "嗯？"}]}
+    d2 = make(replies=[TEA, chat])
+    say(d2, "喝口茶", "u1")
+    tea2 = next(iter(d2.chains.values()))
+    d2.next_script(0)
+    d2.on_barge_in()
+    d2.on_verified(tea2.chain_id, "drink_tea", 0, 1.0, revision=0)
+    say(d2, "嗯", "u2", 2.0)
+    assert any(x.is_completion_remark for x in d2.queue)  # after chat the remark is released
 
 
 def test_validate_refusal_never_speaks_acceptance():
@@ -304,3 +314,14 @@ def test_partially_shown_request_is_not_claimed_unsaid():
     d.ledger.mark_generated_not_presented(3, partially_shown=True)
     note = d.ledger.bridging_note()
     assert "did not say" not in note and "mid-way" in note
+
+
+def test_expired_step_fails_without_late_transitions():
+    d = make(MULTI)
+    say(d, "先喝茶再翻页然后讲讲")
+    chain = next(iter(d.chains.values()))
+    d.next_script(0)
+    d.expire(chain.chain_id, 0)
+    assert chain.status == ChainStatus.FAILED
+    assert not d.on_verified(chain.chain_id, "drink_tea", 0, 99.0, revision=0, step=0)  # no late release
+    assert not d.held.get(chain.chain_id)

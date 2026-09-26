@@ -48,7 +48,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const canvas = $("screen"), g = canvas.getContext("2d");
-let ws = null, audioCtx = null, playhead = 0, queue = [], pending = null, recorder = null, epoch = 0;
+let ws = null, audioCtx = null, playhead = 0, queue = [], pending = null, recorder = null, epoch = 0, decoding = [];
 
 function logLine(s) { const el = $("log"); el.textContent += s + "\n"; el.scrollTop = el.scrollHeight; }
 function setStatus(s) { $("status").textContent = s; }
@@ -90,8 +90,13 @@ async function onMessage(ev) {
   } else {
     pending.pcm = new Int16Array(ev.data);
     const c = pending; pending = null;
+    decoding.push(c);  // arrival order = presentation order; decodes may finish out of order
     c.frames = await Promise.all(c.frames);
-    if (c.epoch === epoch) schedule(c);
+    c.decoded = true;
+    while (decoding.length && decoding[0].decoded) {  // schedule only the contiguous head
+      const h = decoding.shift();
+      if (h.epoch === epoch) schedule(h);
+    }
   }
 }
 
@@ -108,7 +113,7 @@ function schedule(c) {
 }
 
 function stopAll() {
-  epoch += 1; pending = null;
+  epoch += 1; pending = null; decoding = [];
   for (const q of queue) { try { q.src.stop(); } catch (e) {} }
   queue = []; playhead = audioCtx ? audioCtx.currentTime : 0;
 }
