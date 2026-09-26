@@ -144,6 +144,10 @@ class ScopeViolationError(ValueError):
     the write in a wider scope."""
 
 
+class SpeakerRoleError(ValueError):
+    """An utterance's speaker role is not one this ingestion path accepts."""
+
+
 class ErasureInProgressError(RuntimeError):
     """The store is blocked while :meth:`MemoryStore.forget_async` runs in a worker thread."""
 
@@ -719,6 +723,12 @@ class MemoryStore:
             ep = self.ingest_viewer_chat(utt.text, utt.speaker.split(":", 1)[1], stream_id,
                                          session_id=utt.session_id, source_id=utt.uid)
             return IngestResult(episode=ep)
+        if utt.speaker != "user":
+            # only the authenticated session user asserts facts here; agent inferences go through
+            # record_inference, system observations through record_observation
+            self.stats["speaker_rejected"] += 1
+            raise SpeakerRoleError(f"speaker role {utt.speaker!r} is not accepted as a user turn "
+                                   "(use record_inference / record_observation for agent / system)")
 
         prov = lambda: Provenance(
             source_id=utt.uid, speaker="user", session_id=utt.session_id, timestamp=self.clock(),
@@ -1457,8 +1467,10 @@ class MemoryStore:
         priv = private_scope(user_id)
         return self._ids(
             f"SELECT r.id FROM records r WHERE {self._erasable_sql()} AND ("
-            " instr(lower(r.text), lower(?)) > 0 OR instr(lower(coalesce(r.value, '')), lower(?)) > 0)",
-            [user_id, priv, priv, term, term])
+            " instr(lower(r.text), lower(?)) > 0 OR instr(lower(coalesce(r.value, '')), lower(?)) > 0"
+            " OR instr(lower(coalesce(r.subject, '')), lower(?)) > 0 OR instr(lower(r.provenance), lower(?)) > 0"
+            " OR instr(lower(r.meta), lower(?)) > 0)",  # the same fields verify_erased treats as residue
+            [user_id, priv, priv, term, term, term, term, term])
 
     def forget(
         self,
@@ -1536,6 +1548,47 @@ class MemoryStore:
                     if content and rid.lower() in {t.lower() for t in content["terms"]}:
                         return r["id"]
         return None
+
+    def _delete_rows(self, ids: Sequence[str], now: float, reason: str) -> None:
+        """Physical row deletion + tombstones + meta ref scrub (caller owns the transaction)."""
+        for i in range(0, len(ids), 500):
+            chunk = list(ids[i:i + 500])
+            q = ",".join("?" * len(chunk))
+            self.db.execute(f"DELETE FROM embeddings WHERE record_id IN ({q})", chunk)
+            self.db.execute(f"DELETE FROM record_scopes WHERE record_id IN ({q})", chunk)
+            self.db.execute(f"DELETE FROM derivations WHERE child_id IN ({q}) OR parent_id IN ({q})", chunk + chunk)
+            self.db.execute(f"DELETE FROM records WHERE id IN ({q})", chunk)
+        self.db.executemany(
+            "INSERT INTO tombstones (id_hash, t, reason) VALUES (?, ?, ?)",
+            [(hashlib.sha256(i.encode()).hexdigest(), now, reason) for i in ids],
+        )
+        self._scrub_refs(set(ids))
+
+    def _reselect_residue(self, report: ErasureReport) -> list[str]:
+        """On resume: erase records that now match the erasure's terms (e.g. residue found
+        by verification in fields the first selection missed), with their descendants, in
+        one transaction with the updated receipt. Needs the in-memory terms and the user."""
+        if not report.terms or not report.user_id:
+            return []
+        extra: set[str] = set()
+        for t in report.terms:
+            extra |= set(self._content_match(t, report.user_id))
+        extra = self._descendants(extra)
+        doomed = [r for r in self._load(sorted(extra)) if not r.immutable]
+        if not doomed:
+            return []
+        ids = [r.id for r in doomed]
+        report.deleted_ids += ids
+        for r in doomed:
+            report.kinds[r.kind.value] = report.kinds.get(r.kind.value, 0) + 1
+            if r.provenance.session_id:
+                report.sessions.add(r.provenance.session_id)
+        report.erased_texts = sorted(set(report.erased_texts) | {
+            x for r in doomed for x in (r.text, r.value or "") if len(x.strip()) >= 2})
+        with self.db:
+            self._write_receipt(report, commit=False)
+            self._delete_rows(ids, self.clock(), report.reason)
+        return ids
 
     def _regenerate_summaries(self, sessions: Iterable[str], summ: Summarizer | None = None) -> list[str]:
         """Rebuild the summary of each session that has none active (after an erasure)."""
@@ -1621,7 +1674,9 @@ class MemoryStore:
             query_vecs=content["query_vecs"] if content else None,
             receipt_id=receipt_id, content_lost=bool(row["content_lost"]) or content is None)
         if MEMORY_DB_TARGET in report.pending_targets:
-            # an interrupted erasure: finish the DB side (summaries, physical purge, verification)
+            # an interrupted / unverified erasure: select residue again, then finish the DB side
+            # (summaries, physical purge, verification)
+            self._reselect_residue(report)
             if report.kinds.get(Kind.SUMMARY.value):
                 report.regenerated += self._regenerate_summaries(report.sessions)
             physical = self._physical_purge()
@@ -1756,18 +1811,7 @@ class MemoryStore:
         # after it leaves a receipt (memory_db pending) that resume / pending_erasures() recover.
         with self.db:
             self._write_receipt(report, commit=False)
-            for i in range(0, len(ids), 500):
-                chunk = ids[i:i + 500]
-                q = ",".join("?" * len(chunk))
-                self.db.execute(f"DELETE FROM embeddings WHERE record_id IN ({q})", chunk)
-                self.db.execute(f"DELETE FROM record_scopes WHERE record_id IN ({q})", chunk)
-                self.db.execute(f"DELETE FROM derivations WHERE child_id IN ({q}) OR parent_id IN ({q})", chunk + chunk)
-                self.db.execute(f"DELETE FROM records WHERE id IN ({q})", chunk)
-            self.db.executemany(
-                "INSERT INTO tombstones (id_hash, t, reason) VALUES (?, ?, ?)",
-                [(hashlib.sha256(i.encode()).hexdigest(), now, reason) for i in ids],
-            )
-            self._scrub_refs(set(ids))
+            self._delete_rows(ids, now, reason)
         if regenerate and kinds.get(Kind.SUMMARY.value):
             report.regenerated += self._regenerate_summaries(
                 sessions, regenerate if not isinstance(regenerate, bool) else None)

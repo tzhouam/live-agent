@@ -274,6 +274,7 @@ class Director:
             target.revisions.append(utt.uid)
             target.final_intent = utt.text
             target.clock_origin = utt.t_end
+            self.step_base_t.pop(target.chain_id, None)  # the revised intent's clock starts at its utterance
             target.kind = kind if kind != TaskKind.CHAT else target.kind
             target.steps = [s.get("intent", "") for s in steps]
             target.step_index = 0

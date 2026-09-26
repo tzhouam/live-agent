@@ -521,3 +521,21 @@ Model gpt-6-sol, verified.
 Both verdicts: **not ready**. Every finding was accepted and fixed in the next commit (all tests pass).
 
 **Bug found while fixing #4:** the mock recording wrote one frame per chunk, and the simulated client stamped chunk ends with the wall clock, which the speed-up amplified. The recorder now writes exactly `n_frames` per chunk, and the sim reports nominal chunk ends. `chunk_presented` carries `n_frames`.
+
+### impl1k + impl2k: round 10
+
+Model gpt-6-sol, verified.
+- **impl1k:** 1 new major finding: a step with abstaining QC never reached a terminal state.
+- **impl2k:** 2 PARTIAL, plus 4 new major findings.
+
+Both verdicts: **not ready**. Fixed in the next commit (full suite green in 3 consecutive runs).
+- **Deadline sweeper:** an independent step-deadline sweeper, with deadlines scaled by the simulation time scale; a revision resets the step clock.
+- **Mapping:** the runner maps an ambiguous chain merge only when it is unambiguous without a revision.
+- **Evaluation:**
+  - claims are matched by occurrence first, and a three-way dispute stays unresolved;
+  - batch commit manifests make `--replace` crash-detectable.
+- **Memory:**
+  - only the authenticated `user` role asserts facts;
+  - erasure selects every residue field, and resume re-selects.
+- **Accepted as a documented limit:** swapped equal-length chunks in a recording are undetectable, because frame hashes do not survive lossy encoding.
+- **Consequence surfaced by the deadline sweeper:** forward repair of an action rarely fits D = 15 s with 5 s requests. This is recorded in `docs/implementation.md` as a proposal-level decision.

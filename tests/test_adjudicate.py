@@ -12,11 +12,11 @@ import pytest
 
 from live_agent.eval.adjudicate import (
     RecordingMismatchError,
+    commit_problems,
     default_key_path,
     merge,
     prepare,
     presented_segments,
-    recorded_length,
     session_to_video,
     video_to_session,
 )
@@ -98,3 +98,4 @@ def test_adjudication_roundtrip(tmp_path):
     assert res["agreed"] == 2 and not res["unresolved"]
     after = score_session(load_session(log))
     assert after.chains[0].outcome.value == "success" and after.claim_sweep
+    assert commit_problems([log]) == []  # the batch manifest is committed and matches the log

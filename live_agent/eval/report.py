@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from live_agent.eval import stats
-from live_agent.eval.adjudicate import final_criteria_sha
+from live_agent.eval.adjudicate import commit_problems, final_criteria_sha
 from live_agent.eval.schema import load_session
 from live_agent.eval.scoring import (
     INTENT_FIELDS,
@@ -637,6 +637,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         cfg = ScoringConfig.diagnostic_config(tuple(args.source))
     else:
         cfg = ScoringConfig()
+    if not cfg.diagnostic:
+        bad = commit_problems(args.logs)
+        if bad:
+            print("error: adjudication writes are not committed consistently:\n  " + "\n  ".join(bad),
+                  file=sys.stderr)
+            raise SystemExit(2)
     scores = [score_session(load_session(p), cfg) for p in args.logs]
     pairs = [tuple(p.split(":", 1)) for p in args.compare] if args.compare else None
     try:

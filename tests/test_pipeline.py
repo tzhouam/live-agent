@@ -110,7 +110,11 @@ def test_failed_action_gets_forward_correction():
                    if any("clearly and visibly" in c for c in e.data.get("corrections", []))]
     assert retry_locks, "the retried request carries the forward correction"
     assert retry_locks[0].request_index >= repairs[0].data["next_unlocked"]
-    assert next(iter(orch.director.chains.values())).status.value == "complied"
+    # the retry is verified only after the 15 s action deadline (repair offset 2 with 5 s requests),
+    # so by the preregistered rule the step has failed: no late "complied", no late "好了。"
+    chain = next(iter(orch.director.chains.values()))
+    assert chain.status.value == "failed"
+    assert not events(orch, EventType.COMPLETION_CLAIM)
 
 
 def test_unsupported_action_is_refused():
@@ -219,3 +223,18 @@ def test_erasure_confirmation_spoken_only_after_verified_erasure(tmp_path):
     lines = [e.data.get("transcript", "") for e in events(orch, EventType.LOCK)]
     assert "好的，这件事我已经忘掉了。" in lines
     assert not any("妹妹" in x for x in lines)
+
+
+def test_abstaining_qc_still_reaches_a_terminal_state_by_the_deadline():
+    from live_agent.types import ChainStatus
+
+    class Abstain:
+        async def judge(self, q, chunks, k, t_evidence):
+            from live_agent.types import Verdict, VerdictLabel
+            return Verdict(q.qid, k, VerdictLabel.UNKNOWN, 0.0, "cannot tell", t_evidence, now())
+
+    orch, client = build(max_requests=10)
+    orch.judge = Abstain()
+    asyncio.run(run(orch, client, [(1.0, "喝口茶")]))
+    chain = next(iter(orch.director.chains.values()))
+    assert chain.status == ChainStatus.FAILED  # expired by the step deadline, not left open

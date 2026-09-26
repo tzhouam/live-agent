@@ -65,6 +65,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import time
 import warnings
 from collections.abc import Sequence
 from pathlib import Path
@@ -956,47 +957,51 @@ def _combine(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ref(c: dict) -> tuple:
-    """Referent of a swept claim: chain, step and the intent revision in force."""
+    """Referent of a swept claim: chain, step and the intent revision the rater chose."""
     return (c["chain_id"], c["step"], c["revision"])
 
 
-def _assign(groups: list[list[dict]], pool: list[dict], used: set[int], tol: float) -> dict[int, int]:
-    """Greedy one-to-one assignment of claim groups to pool claims with the same referent
-    within tol (distance = nearest group member); pool indices in ``used`` are taken."""
-    cand = sorted((min(abs(g["t"] - p["t"]) for g in grp), gi, pi)
-                  for gi, grp in enumerate(groups) for pi, p in enumerate(pool)
-                  if pi not in used and _ref(p) == _ref(grp[0]) and min(abs(g["t"] - p["t"]) for g in grp) <= tol)
+def _match_times(xs: list[dict], ys: list[dict], tol: float, used_y: set[int] | None = None) -> dict[int, int]:
+    """Greedy one-to-one matching of claim occurrences by time only (within tol): the same
+    audible statement, whatever referent or truth the raters gave it."""
+    used_y = used_y if used_y is not None else set()
+    cand = sorted((abs(x["t"] - y["t"]), i, j) for i, x in enumerate(xs) for j, y in enumerate(ys)
+                  if j not in used_y and abs(x["t"] - y["t"]) <= tol)
     out: dict[int, int] = {}
-    for _, gi, pi in cand:
-        if gi not in out and pi not in used:
-            out[gi] = pi
-            used.add(pi)
+    for _, i, j in cand:
+        if i not in out and j not in used_y:
+            out[i] = j
+            used_y.add(j)
     return out
 
 
 def _reconcile_sweep(a: dict, b: dict, c: dict | None, tol: float) -> tuple[list[dict] | None, str, str]:
-    """-> (accepted claims or None if unresolved, how, reason). Strictly one-to-one across
-    the three raters: A-B pairs first (same chain, step and revision, within tol); arbiter
-    claims are then reserved for agreed pairs and assigned to at most one dispute each, so
-    each audible claim is accepted at most once. A claim heard by one rater and not by the
-    arbiter is dropped; a claim both raters heard but labelled differently needs the arbiter."""
+    """-> (accepted claims, or None if the sweep is unresolved; how; reason).
+
+    Claims are matched by **occurrence** (time) first, one-to-one across all three raters,
+    and only then reconciled on referent (chain, step, revision) and truth:
+
+    * both primary raters heard it and agree on referent and label: accepted;
+    * both heard it but disagree (referent or label): the arbiter's time-matched claim
+      decides only if its referent equals one of the two raters' referents; a third
+      referent (three-way dispute) or no arbiter mark leaves the sweep unresolved;
+    * one primary rater heard it: accepted with the arbiter's referent/label if the arbiter
+      heard it with the same referent; dropped if the arbiter did not hear it (two of three
+      raters heard nothing); unresolved if the arbiter heard it with another referent.
+
+    Arbiter marks matched to agreed claims are reserved, so no arbiter mark is used twice.
+    Any unresolved claim leaves the whole sweep unresolved (no ``claim_sweep`` is written)."""
     arb = c if c is not None and c["review_ok"] else None
     if not (a["review_ok"] and b["review_ok"]):  # the arbiter never replaces an insufficient primary review
         return None, "", "incomplete review of the recording: relabel"
-    cand = sorted((abs(x["t"] - y["t"]), i, j) for i, x in enumerate(a["claims"]) for j, y in enumerate(b["claims"])
-                  if _ref(x) == _ref(y) and abs(x["t"] - y["t"]) <= tol)
-    ua, ub, pairs = set(), set(), []
-    for _, i, j in cand:
-        if i not in ua and j not in ub:
-            ua.add(i)
-            ub.add(j)
-            pairs.append([a["claims"][i], b["claims"][j]])
-    singles = [[x] for i, x in enumerate(a["claims"]) if i not in ua] + \
-              [[y] for j, y in enumerate(b["claims"]) if j not in ub]
-    agreed = [p for p in pairs if p[0]["label"] == p[1]["label"]]
-    split = [p for p in pairs if p[0]["label"] != p[1]["label"]]
+    A, B = a["claims"], b["claims"]
+    ab = _match_times(A, B, tol)
+    pairs = [(A[i], B[j]) for i, j in ab.items()]
+    singles = [A[i] for i in range(len(A)) if i not in ab] + [B[j] for j in range(len(B)) if j not in set(ab.values())]
+    agreed = [(x, y) for x, y in pairs if _ref(x) == _ref(y) and x["label"] == y["label"]]
+    split = [(x, y) for x, y in pairs if (x, y) not in agreed]
     if (split or singles) and arb is None:
-        return None, "", "claim label disagreement" if split else "claim heard by one rater only"
+        return None, "", "claim disagreement (referent or truth)" if split else "claim heard by one rater only"
     acc = []
     for x, y in agreed:
         t = max(x["t"], y["t"])
@@ -1006,15 +1011,21 @@ def _reconcile_sweep(a: dict, b: dict, c: dict | None, tol: float) -> tuple[list
             z["t_evidence"] = min(max(ev), t)
         acc.append(z)
     if arb is not None:
-        used: set[int] = set()
-        _assign(agreed, arb["claims"], used, tol)  # the arbiter's marks of agreed claims
-        got = _assign(split + singles, arb["claims"], used, tol)
-        for gi, grp in enumerate(split + singles):
-            if gi in got:
-                acc.append(dict(arb["claims"][got[gi]], _how="arbitration"))
-            elif gi < len(split):
-                return None, "", "arbiter did not rate a claim both raters heard"
-            # else: heard by one rater only and not by the arbiter -> dropped
+        C, used = arb["claims"], set()
+        # reserve the arbiter's marks of agreed claims (by time), so they cannot settle another dispute
+        _match_times([dict(x, t=max(x["t"], y["t"])) for x, y in agreed], C, tol, used)
+        disputes = [list(p) for p in split] + [[x] for x in singles]
+        reps = [dict(g[0], t=min(m["t"] for m in g)) for g in disputes]
+        got = _match_times(reps, C, tol, used)
+        for gi, grp in enumerate(disputes):
+            if gi not in got:
+                if len(grp) == 2:
+                    return None, "", "arbiter did not rate a claim both raters heard"
+                continue  # heard by one rater only, not by the arbiter: dropped
+            m = C[got[gi]]
+            if _ref(m) not in {_ref(g) for g in grp}:
+                return None, "", "three-way referent dispute"
+            acc.append(dict(m, _how="arbitration"))
     how = "arbitration" if split or singles else "agreement"
     return acc, how, ""
 
@@ -1101,9 +1112,74 @@ def _rewrite(per_log: dict[str, list[dict]], logs: set[str], batch: str,
         with open(tmp, "w", encoding="utf-8") as f:
             f.writelines(kept + new)
         tmps.append((tmp, log, len(new)))
+    entries = {str(Path(log).resolve()): {"pre": _file_sha(Path(log)), "post": _file_sha(Path(tmp))}
+               for tmp, log, _ in tmps}
+    seq = time.time_ns()
+    _write_manifest(batch, entries, "pending", seq)  # before any log changes
     for tmp, log, _ in tmps:
         os.replace(tmp, log)
+    _write_manifest(batch, entries, "committed", seq)  # after all of them
     return {Path(log).name: n for _, log, n in tmps}
+
+
+MANIFEST_DIR = ".adjudication"  # next to the session logs: <log dir>/.adjudication/<batch>.json
+
+
+def _write_manifest(batch: str, entries: dict[str, dict[str, str]], state: str, seq: int) -> None:
+    """Batch-wide commit manifest, one copy in every log directory it touches (atomic
+    write): the batch, its state (``pending`` while logs are being replaced, then
+    ``committed``), a sequence number and each log's pre/post content fingerprint."""
+    doc = json.dumps({"batch": batch, "state": state, "seq": seq, "logs": entries}, indent=1)
+    for d in sorted({str(Path(p).parent) for p in entries}):
+        md = Path(d) / MANIFEST_DIR
+        md.mkdir(exist_ok=True)
+        tmp = md / f".{batch}.json.tmp-{secrets.token_hex(4)}"
+        tmp.write_text(doc, encoding="utf-8")
+        os.replace(tmp, md / f"{batch}.json")
+
+
+def commit_problems(log_paths: Sequence[str | Path]) -> list[str]:
+    """Primary-report guard against partial or later-modified adjudication writes. For each
+    log: every adjudication batch in it must have a ``committed`` manifest listing the log;
+    no manifest listing it may be ``pending`` (an interrupted merge); the log's current
+    content must equal the post fingerprint of the latest committed manifest listing it; and
+    adjudicated events must carry a ``batch``. Recovery: re-run the interrupted (or
+    affected) ``merge ... --replace``, which rewrites every log of that batch from its current
+    content and commits a new manifest."""
+    probs = []
+    for p in map(Path, log_paths):
+        rp = str(p.resolve())
+        batches, unbatched = set(), 0
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                e = json.loads(line)
+                if e.get("batch"):
+                    batches.add(e["batch"])
+                elif e.get("source") == "adjudicated" or e.get("type") in ("rating", "claim_sweep"):
+                    unbatched += 1
+        if unbatched:
+            probs.append(f"{p.name}: {unbatched} adjudication event(s) not written by a committed merge (no batch)")
+        mans = []
+        md = p.parent / MANIFEST_DIR
+        for mf in sorted(md.glob("*.json")) if md.is_dir() else []:
+            m = json.loads(mf.read_text(encoding="utf-8"))
+            if rp in m.get("logs", {}):
+                mans.append(m)
+        for m in mans:
+            if m["state"] != "committed":
+                probs.append(f"{p.name}: batch {m['batch']!r} merge was interrupted (manifest {m['state']}); "
+                             "re-run that merge with --replace")
+        committed = {m["batch"] for m in mans if m["state"] == "committed"}
+        for b in sorted(batches - committed):
+            probs.append(f"{p.name}: batch {b!r} has no committed manifest")
+        done = [m for m in mans if m["state"] == "committed"]
+        if batches and done:
+            last = max(done, key=lambda m: m["seq"])
+            if _file_sha(p) != last["logs"][rp]["post"]:
+                probs.append(f"{p.name}: modified after batch {last['batch']!r} was committed")
+    return probs
 
 
 def merge(batch_dir: Path, ratings: Sequence[tuple[Path, str]], *, arbiter: tuple[Path, str] | None = None,

@@ -82,7 +82,8 @@ def convert(orch: Orchestrator, user_events: list[dict], *, t0: float, speed: fl
         uids = dchain_uids.get(dchain, [])
         if drev is not None and 0 <= drev < len(uids):
             return uid_to_chain.get(uids[drev])
-        return dchain_to_gt.get(dchain)
+        gts = {uid_to_chain[u] for u in uids if u in uid_to_chain}
+        return gts.pop() if len(gts) == 1 else None  # ambiguous merge without a revision: unmapped
 
     def gt_revision(dchain: str, drev: int | None) -> int | None:
         """Director revision r -> GT revision index of the utterance that defined it."""

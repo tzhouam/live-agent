@@ -152,6 +152,10 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   * if every `chunk_presented` has `n_frames`, the frame count equals their sum and each
     chunk's frames / fps matches its presented duration to the nearest frame.
 
+  **Known limit:** two equal-length chunks swapped in the recording pass both checks.
+  Frame hashes do not survive lossy re-encoding. A per-chunk content signature from the
+  recorder (e.g. mean luma) would catch only visually distinct chunks, so it is not
+  required.
   A mismatching session is rejected and listed in the key's `rejected_sessions`. If every
   session is rejected, `RecordingMismatchError` is raised. A diagnostic
   (`--allow-unstripped`) batch keeps the session with a warning.
@@ -184,13 +188,20 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   later time is used), or when both reviewed enough but disagree and the arbiter (with a
   sufficient review) breaks the tie. Every accepted item therefore rests on two sufficient
   independent reviews. Sweep
-  claims are reconciled **strictly one-to-one across all three raters**. The referent is the
-  chain, step and the intent revision the rater chose. Rater A–B pairs with the same
-  referent within `--tol` are matched first, and agreed pairs are accepted. Arbiter marks
-  are then reserved for agreed pairs and assigned to at most one dispute each: a label
-  disagreement, or a claim heard by one rater only. Each audible claim is therefore
-  accepted at most once. A one-rater claim the arbiter did not hear is dropped; a claim
-  both raters heard but the arbiter did not rate stays unresolved. A resolved sweep writes adjudicated `completion_claim` +
+  claims are matched by **occurrence first**: time within `--tol`, one-to-one across all
+  three raters. Only then are the referent (chain, step and the revision the rater chose,
+  or "none") and truth reconciled:
+  * both raters heard it and agree on referent and label: accepted;
+  * both heard it but disagree: the arbiter's time-matched mark decides only if its
+    referent equals one of theirs. A third referent (three-way dispute), or no arbiter
+    mark, leaves the sweep unresolved;
+  * one rater heard it: accepted with the arbiter's mark if the arbiter heard it with the
+    same referent; dropped if the arbiter heard nothing (two of three did not);
+    unresolved if the arbiter gave another referent.
+
+  Arbiter marks matched to agreed claims are reserved, so each audible claim is emitted at
+  most once. While any claim is unresolved the sweep is not complete: no `claim_sweep` is
+  written, which is an adjudication gap. A resolved sweep writes adjudicated `completion_claim` +
   claim-level `verdict` (`chain_id` + `claim_t`) events and a `claim_sweep` marker.
   Unresolved and missing items are listed in `unresolved.json` next to the key.
 * **One batch per item**: each session's chain, RQ2 repair target and claim sweep is
@@ -199,6 +210,19 @@ whether an RQ2 target request was fully observed. Other keys are free-form metad
   events for those items (ratings, verdicts, onsets, claims) and writes the new ones.
   Scoring lists any item that still has adjudicated verdicts from two batches as an
   adjudication gap.
+* **Commit manifest**: every merge writes `<log dir>/.adjudication/<batch>.json` in each
+  directory it touches. The manifest holds the batch, `state`, a sequence number, and each
+  log's pre/post content SHA-256. It is written `pending` before any log is replaced and
+  `committed` after all of them. `report` (primary, CLI) runs
+  `adjudicate.commit_problems` and exits 2 if a log:
+  * holds a batch without a committed manifest;
+  * is listed in a `pending` manifest (an interrupted merge);
+  * no longer matches the post fingerprint of the latest committed manifest listing it
+    (modified afterwards);
+  * holds adjudication events without a `batch`.
+
+  **Recovery:** delete leftover `*.tmp-*` files and re-run the same `merge ... --replace`.
+  It rewrites every log of the batch from its current content and commits a new manifest.
 * **Immutability**: the inputs of a merged batch are fingerprinted (`merge_state.json` next
   to the key). Re-running with identical inputs is a no-op, and adding an arbiter to a
   batch merged without one is allowed. Any other change raises `MergeConflictError` unless

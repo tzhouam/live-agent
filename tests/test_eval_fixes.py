@@ -7,6 +7,7 @@ preregistered Holm families, RQ2 per failure point, blinded media, immutable bat
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,6 +23,7 @@ from live_agent.eval.adjudicate import (
     MergeConflictError,
     RecordingMismatchError,
     check_blinded,
+    commit_problems,
     container_metadata,
     covered,
     default_key_path,
@@ -92,7 +94,17 @@ def test_incomplete_a2_vs_a1_batch_is_rejected_not_biased():
 
 
 def _write_log(path: Path, recs: list[dict]) -> Path:
+    """Write a hand-built log. If it holds adjudication events, tag them with a batch and
+    commit a manifest for it, as ``merge`` would."""
+    adj = [r for r in recs if r.get("source") == "adjudicated" or r.get("type") in ("rating", "claim_sweep")]
+    recs = [dict(r, batch="hand") if r in adj and not r.get("batch") else r for r in recs]
     path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n", encoding="utf-8")
+    if adj:
+        from live_agent.eval.adjudicate import _file_sha, _write_manifest
+        mf = path.parent / ".adjudication" / "hand.json"
+        entries = json.loads(mf.read_text())["logs"] if mf.exists() else {}
+        entries[str(path.resolve())] = {"pre": "", "post": _file_sha(path)}
+        _write_manifest("hand", entries, "committed", 1)
     return path
 
 
@@ -950,7 +962,8 @@ def test_sweep_matching_respects_intent_revision(tmp_path):
                 "claims": [{"v_claim": t, "ref": r0, "rev": rev, "label": "not_complied"}]}
     r = merge(batch, [(_labels(tmp_path, "a", {**chain, sk: mk(6.8, 0)}), "R1"),
                       (_labels(tmp_path, "b", {**chain, sk: mk(7.2, 1)}), "R2")])  # revision 0 vs 1
-    assert "one rater only" in r["unresolved"][sk]
+    # the same audible claim (matched by time) with different referent revisions: a dispute, not two claims
+    assert "disagreement" in r["unresolved"][sk]
 
 
 def test_repair_withdrawal_rule_applies_before_success():
@@ -1460,3 +1473,84 @@ def test_swept_claims_name_the_referent_revision(tmp_path):
     lab = {**chain, sk: dict(SWEEP_NONE, claims=[old])}
     r = merge(batch, [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
     assert not r["unresolved"]
+
+
+# --------------------------------------------------------------------------- round 10 (impl2k)
+
+
+def test_sweep_matches_occurrences_first_then_referent(tmp_path):
+    log, batch, items, sw = _sweep_session(tmp_path)
+    ch, sk = items[0]["id"], f"{sw['id']}/0"
+    r0, r1 = sw["refs"][0]["ref"], sw["refs"][1]["ref"]
+    chain = {f"{ch}/0": {"v_onset": 11.0, "label": "complied", "v_first": 12.0}}
+    full = [[0.0, 40.0]]
+
+    def sweep(*claims):
+        return {"complete": True, "v_watched": full, "claims": list(claims)}
+    a = sweep({"v_claim": 14.0, "ref": r0, "rev": 0, "label": "not_complied"})
+    b = sweep({"v_claim": 14.3, "ref": r1, "rev": 0, "label": "complied", "v_evidence": 12.0})
+    # the same statement, two referents: one dispute (not two one-rater claims)
+    r = merge(batch, [(_labels(tmp_path, "a", {**chain, sk: a}), "R1"), (_labels(tmp_path, "b", {**chain, sk: b}), "R2")])
+    assert "disagreement" in r["unresolved"][sk]
+    third = sweep({"v_claim": 14.2, "ref": "none"})  # the arbiter names a third referent
+    r = merge(batch, [(_labels(tmp_path, "a", {**chain, sk: a}), "R1"), (_labels(tmp_path, "b", {**chain, sk: b}), "R2")],
+              arbiter=(_labels(tmp_path, "c", {sk: third}), "R3"))
+    assert "three-way referent dispute" in r["unresolved"][sk]
+    assert not load_session(log).of_type("claim_sweep")  # not complete while a claim is unresolved
+    side = sweep({"v_claim": 14.1, "ref": r1, "rev": 0, "label": "complied", "v_evidence": 12.0})
+    merge(batch, [(_labels(tmp_path, "a", {**chain, sk: a}), "R1"), (_labels(tmp_path, "b", {**chain, sk: b}), "R2")],
+          arbiter=(_labels(tmp_path, "c2", {sk: side}), "R3"), replace=True)
+    adj = [e for e in load_session(log).of_type("completion_claim") if e.get("source") == "adjudicated"]
+    assert len(adj) == 1 and adj[0]["chain_id"].endswith(":c2")  # emitted once, the arbiter's referent
+
+
+def _two_log_batch(tmp_path):
+    logs = [_session_file(tmp_path, f"s{i}", "E2-A01", [(3.0, "请喝口茶吧。", "new", "c1", {"kind": "action"})],
+                          cond=cond) for i, cond in enumerate(("A1", "A2"))]
+    batch = tmp_path / "b"
+    items = _items(prepare(logs, batch))
+    lab = {}
+    for it in items:
+        lab[f"{it['id']}/0"] = (dict(SWEEP_NONE) if it["type"] == "sweep"
+                                else {"v_onset": 4.0, "label": "complied", "v_first": 8.0})
+    return logs, batch, lab
+
+
+def test_merge_commits_a_batch_manifest(tmp_path):
+    logs, batch, lab = _two_log_batch(tmp_path)
+    merge(batch, [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
+    m = json.loads((tmp_path / ".adjudication" / "b.json").read_text())
+    assert m["state"] == "committed" and set(m["logs"]) == {str(p.resolve()) for p in logs}
+    assert commit_problems(logs) == []
+    with open(logs[0], "a", encoding="utf-8") as f:  # edited after the commit
+        f.write(json.dumps({"type": "playback_stop", "t": 1.0}) + "\n")
+    assert "modified after batch 'b' was committed" in commit_problems(logs)[0]
+
+
+def test_interrupted_replace_is_detected_and_recoverable(tmp_path, monkeypatch, capsys):
+    import live_agent.eval.adjudicate as adj
+    logs, batch, lab = _two_log_batch(tmp_path)
+    merge(batch, [(_labels(tmp_path, "a", lab), "R1"), (_labels(tmp_path, "b", lab), "R2")])
+    real, calls = os.replace, []
+
+    def crash(src, dst):
+        if str(dst).endswith(".jsonl"):
+            calls.append(dst)
+            if len(calls) == 2:
+                raise OSError("disk full")  # after the first log was replaced
+        return real(src, dst)
+    monkeypatch.setattr(adj.os, "replace", crash)
+    lab2 = {k: (dict(v, label="not_complied", v_watched=[[0.0, 20.0]]) if "label" in v else v) for k, v in lab.items()}
+    with pytest.raises(OSError):
+        merge(batch, [(_labels(tmp_path, "c", lab2), "R1"), (_labels(tmp_path, "d", lab2), "R2")], replace=True)
+    monkeypatch.setattr(adj.os, "replace", real)
+    probs = commit_problems(logs)
+    assert any("interrupted" in p for p in probs)
+    with pytest.raises(SystemExit) as e:
+        report.main([str(p) for p in logs])
+    assert e.value.code == 2 and "not committed consistently" in capsys.readouterr().err
+    for p in tmp_path.glob("*.tmp-*"):  # leftover temp file of the interrupted write
+        p.unlink()
+    merge(batch, [(_labels(tmp_path, "c", lab2), "R1"), (_labels(tmp_path, "d", lab2), "R2")], replace=True)  # recovery
+    assert commit_problems(logs) == []
+    assert all(score_session(load_session(p)).chains[0].outcome == Outcome.NEVER for p in logs)

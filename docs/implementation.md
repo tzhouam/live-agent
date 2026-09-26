@@ -198,6 +198,15 @@ python3 -m pytest
 - **Narration guard limit:** the completion guard is pattern-based and cannot catch every paraphrase. False
   completion claims are measured independently from the recorded audio (adjudicated claim sweep).
 
+- **Step deadlines are enforced online (round 10).** An independent sweeper expires every open action or
+  multistep step at its deadline (D = 15 s from the utterance end, or from the previous step's verification),
+  whatever happened to QC. **Consequence (research-relevant):** with 5 s requests, a failed first attempt is
+  known only after that request has been fully presented (about 12–17 s after the instruction), and the retry
+  lands two requests later. So in simulation a forward repair of an action essentially never completes within
+  D. RQ2 (repair arm comparison) can still be measured on the repair targets, but H1a gains from repair should
+  not be expected unless the first-attempt check can finish earlier (per-chunk QC, shorter requests) or D is
+  re-registered for repairs. This is a proposal-level issue to decide before E2, not a code defect.
+
 ## Not yet verified
 
 - **E1:** a judge-only pilot ran (24 × 5 trials on TaoMate-H3, `docs/e1_pilot.md`). It showed the VLM judge failing

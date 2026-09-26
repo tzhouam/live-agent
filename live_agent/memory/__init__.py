@@ -33,6 +33,7 @@ from .store import (
     Resolution,
     RetrievalResult,
     ScopeViolationError,
+    SpeakerRoleError,
 )
 from .summarize import ExtractiveSummarizer, Summarizer
 
@@ -62,7 +63,7 @@ __all__ = [
     "RetrievalResult",
     "RuleExtractor",
     "SanitizedText",
-    "ScopeViolationError",
+    "ScopeViolationError", "SpeakerRoleError",
     "Status",
     "Summarizer",
     "private_scope",

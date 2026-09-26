@@ -841,3 +841,52 @@ def test_deletion_and_receipt_roll_back_together(tmp_path, monkeypatch):
         mem.forget(f.id, U)
     assert mem.get(f.id) is not None and mem.pending_erasures(U) == []  # all or nothing
     mem.close()
+
+
+# ---------------------------------------------------------------- round 10
+
+
+@pytest.mark.parametrize("speaker", ["agent", "system", "assistant", "User", "", "user:bob"])
+def test_only_the_user_role_asserts_on_the_user_path(mem, speaker):
+    from live_agent.memory import SpeakerRoleError
+
+    with pytest.raises(SpeakerRoleError):
+        mem.ingest_user_utterance(utt("I live in Paris", speaker=speaker), user_id=U, stream_id=S, mode="private")
+    assert mem.db.execute("SELECT count(*) FROM records").fetchone()[0] == 0
+    b = bridge(mem, mode="private")
+    b.on_user_utterance(utt("I live in Paris", speaker=speaker))  # dropped, reason recorded
+    assert "not accepted as a user turn" in b.scope_violations[-1]["reason"]
+    assert mem.db.execute("SELECT count(*) FROM records").fetchone()[0] == 0
+    r = mem.ingest_user_utterance(utt("I live in Paris", speaker="user"), user_id=U, mode="private")
+    assert r.facts[0].claim_type == ClaimType.OWN_ASSERTION
+
+
+def test_term_erasure_selects_every_residue_field(mem):
+    (f,) = mem.ingest_user_utterance(utt("I work at Acme"), user_id=U).facts
+    # a private record whose only mention of the term is in metadata / provenance / subject
+    meta_only = mem.add_ledger("persona noted a workplace", derived_from=[f.derived_from[0]])
+    mem._update_meta(meta_only.id, note="acme hq visit")
+    subj = mem.add_record(Kind.USER_FACT, private_scope(U), "a colleague fact", ClaimType.OWN_ASSERTION,
+                          Provenance(speaker="user", user_id=U, source_id="acme-chat-1"),
+                          subject=f"user:{U}/colleague", predicate="likes", value="tea")
+    mem.db.commit()
+    rep = mem.forget("Acme", U)
+    assert meta_only.id in rep.deleted_ids and subj.id in rep.deleted_ids
+    assert rep.acks["memory_db"].ok and mem.verify_erased("Acme", U).ok
+
+
+def test_resume_reselects_new_residue(mem, monkeypatch):
+    mem.ingest_user_utterance(utt("I work at Acme"), user_id=U)
+    real = mem._content_match
+    monkeypatch.setattr(mem, "_content_match", lambda t, u: [])  # first selection misses everything
+    late = mem.add_ledger("postcard to acme office", private_scope(U), curated=True)
+    rep = mem.forget("Acme", U)
+    assert not rep.acks["memory_db"].ok and mem.get(late.id) is not None
+    (p,) = mem.pending_erasures(U)
+    monkeypatch.setattr(mem, "_content_match", real)
+    rep2 = mem.forget("Acme", U, resume=p["receipt_id"])  # retry resumes and selects the residue
+    assert rep2.receipt_id == rep.receipt_id and late.id in rep2.deleted_ids and mem.get(late.id) is None
+    assert rep2.acks["memory_db"].ok and "memory_db" not in rep2.pending_targets
+    rep2.acknowledge(SIMILARITY_REVIEW_TARGET, detail="reviewed")  # first pass flagged the fact for review
+    assert rep2.complete and mem.pending_erasures(U) == []
+    assert mem.verify_erased("Acme", U).ok

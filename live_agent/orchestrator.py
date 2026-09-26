@@ -170,7 +170,31 @@ class Orchestrator:
         await self.gen.start()
         self._tasks = [asyncio.create_task(self._guarded(self._lock_loop(), "lock_loop")),
                        asyncio.create_task(self._guarded(self._chunk_loop(), "chunk_loop")),
-                       asyncio.create_task(self._guarded(self._lag_monitor(), "lag_monitor", fatal=False))]
+                       asyncio.create_task(self._guarded(self._lag_monitor(), "lag_monitor", fatal=False)),
+                       asyncio.create_task(self._guarded(self._deadline_sweeper(), "deadline_sweeper"))]
+
+    async def _deadline_sweeper(self) -> None:
+        """Independent step-deadline expiry (closed loop): every open action/multistep chain reaches
+        a terminal state by its current step's deadline, whatever happened to QC (abstention,
+        'unknown', no repair mode, frames not presented)."""
+        if self.director.mode != DirectorMode.CLOSED_LOOP:
+            return
+        from live_agent.types import TaskKind
+
+        while not self._stop.is_set():
+            t = now()
+            for c in list(self.director.chains.values()):
+                if c.status != ChainStatus.OPEN or c.kind not in (TaskKind.ACTION, TaskKind.MULTISTEP):
+                    continue
+                if self.director.awaiting_decision:
+                    continue  # a barge-in decision may revise this chain; it decides first
+                base = self.director.step_base_t.get(c.chain_id, c.clock_origin)
+                if t > base + 15.0 * self.sched.cfg.time_scale:  # action step D [proposed target, §7]
+                    self.director.expire(c.chain_id, len(c.revisions))
+                    self.log.emit(EventType.AUDIT, t, ok=False, issues=["step_deadline_expired"],
+                                  chain_id=c.chain_id, revision=len(c.revisions))
+            self._drain_director_events(t)
+            await asyncio.sleep(0.1)
 
     async def _lag_monitor(self) -> None:
         """Diagnostic: an event-loop stall delays acks, barge-in and locks; log the long ones.
@@ -451,7 +475,7 @@ class Orchestrator:
         d = next((q.deadline_s for q in script.checks if q.kind == "action"), None)
         if c is None or d is None:
             return None  # no action check: content/speech replies are not cut by an action deadline
-        return self.director.step_base_t.get(c.chain_id, c.clock_origin) + d
+        return self.director.step_base_t.get(c.chain_id, c.clock_origin) + d * self.sched.cfg.time_scale
 
     def _qc_budget(self, script: BlockScript) -> float:
         """A check may use at most qc_timeout_s and never runs past the step's deadline."""

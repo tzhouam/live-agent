@@ -46,6 +46,7 @@ from live_agent.memory.store import (
     ErasureReport,
     MemoryStore,
     ScopeViolationError,
+    SpeakerRoleError,
 )
 from live_agent.types import Utterance, new_id
 
@@ -172,7 +173,7 @@ class MemoryBridge:
         try:
             res = self.store.ingest_user_utterance(utt, user_id=self.user_id, stream_id=self.stream_id,
                                                    mode=self._mode)
-        except ScopeViolationError as e:  # e.g. a viewer event in a private session: dropped
+        except (ScopeViolationError, SpeakerRoleError) as e:  # e.g. a viewer event in a private session
             self._violation(utt.text, f"utterance not stored: {e}", [])
             return
         for rec in [res.episode, *res.facts, res.generated_event]:
