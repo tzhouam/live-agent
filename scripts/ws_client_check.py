@@ -22,7 +22,10 @@ async def main(args) -> None:
     turns = sorted((float(x.split(":", 1)[0]), x.split(":", 1)[1]) for x in args.say)
     summary = {"chunks": 0, "max_gap_s": 0.0, "gaps_over_50ms": 0, "rtt_ms": [], "messages": {}}
     async with websockets.connect(args.url, max_size=None) as ws:
-        await ws.send(json.dumps({"type": "hello", "mode": "private", "user_id": "check"}))
+        hello = {"type": "hello", "mode": "private", "user_id": "check"}
+        if args.h264:
+            hello["video_codecs"] = ["h264"]  # like a WebCodecs page: one H.264 segment per chunk
+        await ws.send(json.dumps(hello))
         t0 = time.monotonic()
         playhead = None
         pending = None
@@ -72,7 +75,10 @@ async def main(args) -> None:
                     if pending is None:
                         continue
                     pending["got"] += 1
-                    if pending["got"] == pending["n_frames"] + 1:  # frames + pcm
+                    video_msgs = 1 if pending.get("codec") == "h264" else pending["n_frames"]
+                    if pending.get("codec") == "h264" and pending["got"] == 1:
+                        summary["h264_bytes"] = summary.get("h264_bytes", 0) + len(msg)
+                    if pending["got"] == video_msgs + 1:  # video (n JPEGs or one H.264 segment) + pcm
                         plays.put_nowait(pending)
                         pending = None
                     continue
@@ -105,4 +111,5 @@ if __name__ == "__main__":
     p.add_argument("--url", default="ws://127.0.0.1:8200/ws")
     p.add_argument("--seconds", type=float, default=45)
     p.add_argument("--say", action="append", default=[])
+    p.add_argument("--h264", action="store_true", help="announce H.264 support (as a WebCodecs browser does)")
     asyncio.run(main(p.parse_args()))
