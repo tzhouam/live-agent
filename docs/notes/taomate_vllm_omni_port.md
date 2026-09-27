@@ -100,3 +100,50 @@ permuted; fixed). With the fix the persona is stable across a 13-request session
 - Done 2026-09-27 (D-028): the live demo runs on this port through `VllmOmniH3Generator`
   (`scripts/run_live.sh omni`) with the just-in-time prompt hold
   (`taomate_h3_hold_for_prompt`, vllm-omni commits 6747a4042, 78a90e04e, 68d8106a7).
+
+## Two GPUs (USP2): baseline and levers (2026-09-28)
+
+Owner directive: "further optimize the model, so that we can have real time inference in 2
+H200". Decision D-036. Config under test: `devices "0,1"`, `sequence_parallel_size 2`,
+`ulysses_degree 2`, `text_encoder_tp_size 2`, `vae_patch_parallel_size 2`, eager BF16,
+load-time warmup; 100.7 GB per rank after load.
+
+Baseline (measured locally, 5 requests, constant prompt, rank 0 with device syncs):
+
+| Stage | 34-frame phase | 17-frame phase |
+| --- | --- | --- |
+| audio teacher (per request, 9 forwards) | 0.78-0.84 s | - |
+| 3 student forwards | 0.77-0.81 s | 0.43 s |
+| clean-commit forward | 0.29-0.32 s | 0.16 s |
+| video VAE decode (2 tiles) | 0.35-0.37 s | 0.18 s |
+| audio VAE decode | 0.03 s | 0.03 s |
+
+Per request 2.29 + 1.55 + 1.59 + 0.86 = **6.3 s per 4.958 s** (real-time factor 1.27; client
+period 6.4 s). Not real time. Versus USP4: DiT forwards 1.9x per rank, VAE 1.8x, teacher
+unchanged (launch-bound).
+
+Estimate of the gap (from the breakdown): the request must lose at least 1.4 s, 1.9 s for a
+margin like USP4's. Levers implemented in the worktree (commit after 37edffce8):
+
+- **Teacher CUDA graphs** (`taomate_h3_teacher_cuda_graph`, new `taomate_h3/cuda_graph.py`):
+  the nine teacher forwards are captured once per document shape and replayed; the
+  teacher's timestep vector is a fixed three-slot tensor (no `torch.unique` sync) and the
+  sequence-parallel embedding uses precomputed row selections (`LocalEmbedPlan`, no
+  boolean-mask sync). Estimate: 0.8 s -> 0.2-0.3 s per request. Guarded: sync-debug probe
+  before the first capture, all-reduce agreement on success, eager fallback.
+- **FP8 online linears** (`quantization: fp8`) at USP2, where the GEMMs are about 60% of a
+  student forward (estimate). Gave nothing at USP4 (attention and overhead dominated there).
+- Not offered: LingBot-style reuse of the last denoise step's K/V for the commit. TaoMate's
+  last student forward runs at sigma 0.853 (ladder 1.0, 0.961, 0.853, 0; from
+  `schedule.py`), so its K/V is far from clean; the commit forward stays.
+- Remaining fixed cost: VAE decode 1.26 s per request (7-latent windows, stride 5: 14
+  latents decoded per 10 new ones, exact parity with the release's incremental decode).
+
+Status: code and CPU tests done (`tests/diffusion/models/taomate_h3/test_taomate_h3_cuda_graph.py`,
+28 tests pass), `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml` written; the optimized
+USP2 run is **not measured yet** because the shared GPUs were queued (FCFS with partial
+allocation: releasing the baseline server's two cards would have parked them in a queued
+job waiting hours for the rest), and swapping the server inside the reservation was not
+permitted. Next: start the FP8 + graph server with `--wait`, capture five requests, record
+the stage breakdown here and in the recipe; then decide on further levers (VAE decode on a
+side stream, text-encoder cost per prompt update at TP2).
