@@ -19,10 +19,17 @@ mode=${1:-demo}
 PORT=${PORT:-8200}; HOST=${HOST:-127.0.0.1}; HOURS=${HOURS:-2h}
 DIRECTOR=${DIRECTOR:-closed_loop}; ALLOW_UNCALIBRATED=${ALLOW_UNCALIBRATED:-1}
 PERSONA=${PERSONA:-hanfu}  # configs/persona_<name>: hanfu (reading host) | teacher (classroom Q&A)
+# Responder LLM: local Qwen3-8B by default; a hosted OpenAI-compatible model with LLM_URL + LLM_MODEL, its key read
+# from LLM_API_KEY_FILE (default .cache/llm_api_key, git-ignored) into the web server's environment only
+LLM_URL=${LLM_URL:-http://127.0.0.1:8101/v1}; LLM_MODEL=${LLM_MODEL:-qwen3-8b}
+LLM_API_KEY_FILE=${LLM_API_KEY_FILE:-.cache/llm_api_key}
+if [ -z "${LLM_API_KEY:-}" ] && [ -s "$LLM_API_KEY_FILE" ]; then LLM_API_KEY=$(tr -d '[:space:]' < "$LLM_API_KEY_FILE"); fi
+export LLM_API_KEY=${LLM_API_KEY:-}
 mkdir -p .cache/logs .cache/sessions
 extra=()
 [ -d "configs/persona_$PERSONA" ] || { echo "unknown PERSONA=$PERSONA (no configs/persona_$PERSONA)"; exit 2; }
 extra+=(--config "configs/persona_$PERSONA")
+[ "$mode" != "demo" ] && extra+=(--llm-url "$LLM_URL" --llm-model "$LLM_MODEL")
 [ "$ALLOW_UNCALIBRATED" = "1" ] && extra+=(--dev-allow-uncalibrated)
 [ "${RECORD:-1}" = "1" ] && extra+=(--record)  # traces: event log + presented video per session (/traces)
 pids=()

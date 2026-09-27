@@ -265,7 +265,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         from live_agent.llm import OpenAICompatLLM
 
         if args.llm_url != "scripted":
-            await OpenAICompatLLM(args.llm_url, args.llm_model).warmup()  # SDK lazy imports, off the session path
+            await OpenAICompatLLM(args.llm_url, args.llm_model, api_key=llm_api_key(args)).warmup()  # SDK lazy imports
         # Heavy generators are started once and shared (reset per session); the mock is per session.
         if args.generator != "mock":
             gen = make_generator(args)
@@ -353,7 +353,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
                 llm = RuleResponder(manifest)
             else:
-                llm = OpenAICompatLLM(args.llm_url, args.llm_model)
+                llm = OpenAICompatLLM(args.llm_url, args.llm_model, api_key=llm_api_key(args))
             if args.dev_allow_uncalibrated:
                 manifest.min_status = Status.DOCUMENTED
             ledger = StateLedger.from_config(cfg_dir / "canon.json")
@@ -520,6 +520,14 @@ def build_app(args: argparse.Namespace) -> FastAPI:
     return app
 
 
+def llm_api_key(args: argparse.Namespace) -> str:
+    """The responder's API key comes from an environment variable (never argv: visible in ps); local vLLM
+    needs none."""
+    import os
+
+    return os.environ.get(args.llm_api_key_env) or "EMPTY"
+
+
 def make_generator(args: argparse.Namespace):
     if args.generator == "mock":
         from live_agent.generator.mock import MockGenerator
@@ -553,6 +561,8 @@ def main() -> None:
     p.add_argument("--generator", default="mock", choices=["mock", "taomate_h3", "vllm_omni_h3"])
     p.add_argument("--llm-url", default="http://127.0.0.1:8101/v1")
     p.add_argument("--llm-model", default="qwen3-8b")
+    p.add_argument("--llm-api-key-env", default="LLM_API_KEY",
+                   help="environment variable holding the responder's API key (hosted models)")
     p.add_argument("--vlm-url", default="http://127.0.0.1:8102/v1")
     p.add_argument("--vlm-model", default="qwen3-vl-8b")
     p.add_argument("--asr-url", default="http://127.0.0.1:8103/v1")

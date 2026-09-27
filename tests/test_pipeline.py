@@ -301,3 +301,27 @@ def test_a_comment_keeps_the_video_playing_until_the_reply_is_ready():
     lock = next(e for e in events(orch, EventType.LOCK) if e.request_index == target)
     assert "wave" in lock.data["action"]  # the switch target is the reply
     assert any(e.request_index == target for e in events(orch, EventType.CHUNK_PRESENTED))
+
+
+def test_hosted_qwen_gets_the_top_level_thinking_switch_and_local_vllm_the_template_one():
+    from types import SimpleNamespace
+
+    from live_agent.llm import OpenAICompatLLM
+
+    def fake(llm):
+        seen = {}
+
+        async def create(**kw):
+            seen.update(kw)
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))])
+        llm._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        return seen
+
+    hosted = OpenAICompatLLM("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-flash", api_key="k")
+    seen = fake(hosted)
+    asyncio.run(hosted.chat([{"role": "user", "content": "hi"}], json_mode=True))
+    assert seen["extra_body"] == {"enable_thinking": False} and seen["response_format"] == {"type": "json_object"}
+    local = OpenAICompatLLM("http://127.0.0.1:8101/v1", "qwen3-8b")
+    seen = fake(local)
+    asyncio.run(local.chat([{"role": "user", "content": "hi"}]))
+    assert seen["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
