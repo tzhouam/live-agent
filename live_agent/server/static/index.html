@@ -489,7 +489,24 @@ function schedule(c) {
   const dur = m.duration || m.n_frames / m.fps;
   const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(outGain()); src.start(start);
   playhead = start + dur;
-  queue.push({...c, start, end: start + dur, src, startedSent: false, endedSent: false});
+  const q = {...c, start, end: start + dur, src, startedSent: false, endedSent: false};
+  // Playback acks also come from the audio clock: in a background tab requestAnimationFrame stops (no frames are
+  // painted, so render() sends nothing) while the audio plays on, and the server would stop locking new clips.
+  const ep = epoch;
+  src.onended = () => { if (ep === epoch) ackChunk(q); };
+  queue.push(q);
+}
+
+function ackChunk(q) {  // start/end acks with their scheduled times; painted frames only as actually painted
+  if (!q.startedSent) {
+    q.startedSent = true;
+    send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.start)});
+  }
+  if (!q.endedSent) {
+    q.endedSent = true;
+    send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.end),
+          painted: Array.from(q.painted || []), tp_last_paint: q.lastPaint});
+  }
 }
 
 function stopAll() {
