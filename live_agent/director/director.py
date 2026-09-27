@@ -197,9 +197,9 @@ class Director:
             self._answer_boards += 1
             b = Board(key=f"a{self._answer_boards}", title=str(board.get("title") or "")[:24],
                       items=[str(x)[:60] for x in board["items"] if str(x).strip()][:MAX_ITEMS])
-            fig = board.get("figure")
-            if isinstance(fig, dict) and str(fig.get("prompt") or "").strip():
-                b.figure_prompt, b.figure_caption = str(fig["prompt"])[:400], str(fig.get("caption") or "")[:20]
+            from live_agent.lesson import set_figure
+
+            if set_figure(b, board.get("figure")):
                 self.pending_figures.append(b)
             for seg in self.queue:
                 if id(seg) not in before and seg.board is None:
@@ -659,7 +659,7 @@ class Director:
     def add_lesson_lines(self, lines) -> None:
         """Append lesson.LessonLine items (a section, or the intro) to the lesson backlog."""
         for ln in lines:
-            if ln.board is not None and ln.board.figure_prompt and not ln.board.figure_url \
+            if ln.board is not None and (ln.board.figure_prompt or ln.board.figure_plot) and not ln.board.figure_url \
                     and all(b is not ln.board for b in self.pending_figures):
                 self.pending_figures.append(ln.board)
             self.lesson_backlog.append(Segment(chain_id=None, plan_version=self.plan_version, line=ln.text,

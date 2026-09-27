@@ -105,7 +105,8 @@ PANEL_FIELDS = ("action", "transcript", "chain_ids", "chain_id", "step", "retry_
                 "original", "cleaned", "erasure", "erasure_complete", "pending_targets", "deleted", "dropped",
                 "decision", "chains", "recalled", "issues", "error", "where", "lead_s", "total_s", "onset_source",
                 "audibility", "revision", "speaker", "uid", "counts", "expected", "wrong", "target", "gave_up", "anchor_removed", "stage",
-                "title", "sections", "section", "lines", "points", "board", "seconds")
+                "title", "sections", "section", "lines", "points", "board", "seconds",
+                "attempt", "labels")
 
 
 def panel_event(ev, t0: float) -> dict | None:
@@ -295,7 +296,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
     trace_name = _re.compile(r"^sess-[A-Za-z0-9_-]+(\.generated(-part\d+)?)?\.(jsonl|mp4)$")
 
-    board_image = _re.compile(r"^[0-9a-f]{16}\.png$")
+    board_image = _re.compile(r"^(p[0-9a-f]{15}|[0-9a-f]{16})\.png$")
 
     @app.get("/board/img/{name}")
     async def board_img(name: str) -> FileResponse:
@@ -418,6 +419,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 from live_agent.board_images import ImageMaker
 
                 orch.image_maker = ImageMaker(args.image_url, BOARD_IMAGES)
+            orch.figure_dir = BOARD_IMAGES  # exact plots need no model
             if args.record:  # everything the generator produced, incl. chunks dropped by barge-ins
                 from live_agent.sim import Recorder
 

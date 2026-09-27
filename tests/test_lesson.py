@@ -105,7 +105,7 @@ class FakeImages:
     def __init__(self):
         self.prompts = []
 
-    async def make(self, prompt):
+    async def make(self, prompt, seed=42):
         self.prompts.append(prompt)
         await asyncio.sleep(0.01)
         return f"/board/img/{len(self.prompts):016x}.png"
@@ -158,3 +158,63 @@ def test_image_maker_calls_the_images_api_and_reuses_files(tmp_path, monkeypatch
     assert url.startswith("/board/img/") and (tmp_path / url.rsplit("/", 1)[1]).read_bytes() == b"PNGDATA"
     assert calls[0]["num_inference_steps"] == 4 and calls[0]["size"] == "1024x768" and "直角三角形" in calls[0]["prompt"]
     assert asyncio.run(maker.make("一个直角三角形")) == url and len(calls) == 1  # same prompt: the file is reused
+
+
+def test_figure_labels_are_checked_for_absence_and_misspelt_copies():
+    from live_agent.board_images import expected_labels, missing_labels
+
+    want = expected_labels("一片绿叶，太阳的箭头标注「阳光」，左侧标注「二氧化碳」，根部标注「水」")
+    assert want == ["阳光", "二氧化碳", "水"]
+    assert missing_labels(want, ["阳光", "二氧化碳", "水", "叶绿体"]) == []  # extra labels are fine
+    assert missing_labels(want, ["阳光", "二氧化碳", "二氧化硼", "水"]) == ["二氧化硼"]  # seen live
+    assert missing_labels(want, ["阳光", "水"]) == ["二氧化碳"]
+
+    assert missing_labels(["细胞壁", "细胞膜"], ["细胞壁", "细胞膜", "液泡"]) == []  # one char apart, both asked for
+    assert missing_labels(["x₁", "x₂"], ["x1", "x2", "顶点"]) == []  # subscripts read as digits
+
+
+def test_exact_plots_parse_safely_and_render(tmp_path):
+    from live_agent.board_plot import parse_function, render_plot
+
+    f = parse_function("x^2-2*x-3")
+    assert list(f(__import__("numpy").array([-1.0, 3.0]))) == [0.0, 0.0]
+    for bad in ["__import__('os').system('id')", "x.real", "open('f')", "[x for x in ()]"]:
+        with pytest.raises((ValueError, SyntaxError)):
+            parse_function(bad)
+    name = render_plot({"functions": ["x**2-2*x-3"], "x": [-3, 5], "points": [{"x": 1, "y": -4, "label": "顶点"}]}, tmp_path)
+    assert name.startswith("p") and (tmp_path / name).stat().st_size > 10_000
+    assert render_plot({"functions": ["x**2-2*x-3"], "x": [-3, 5], "points": [{"x": 1, "y": -4, "label": "顶点"}]},
+                       tmp_path) == name  # same spec, same file
+
+
+def test_a_figure_is_a_plot_or_an_illustration_and_prompt_text_on_a_picture_is_rejected():
+    from live_agent.board_images import missing_labels
+    from live_agent.lesson import set_figure
+
+    b = Board("s0", "二次函数", [])
+    assert set_figure(b, {"plot": {"functions": ["x**2"]}, "caption": "图像"}) and b.figure_plot and not b.figure_prompt
+    b2 = Board("s1", "光合作用", [])
+    assert set_figure(b2, {"prompt": "一片叶子，标注「水」"}) and b2.figure_prompt and b2.figure_plot is None
+    assert not set_figure(Board("s2", "", []), {"caption": "only"})
+    prompt = "一元二次方程的抛物线示意图：开口向上，顶点标注「顶点」"
+    assert missing_labels(["顶点"], ["一元二次方程的抛物线", "顶点"], prompt) == ["一元二次方程的抛物线"]  # seen live
+
+
+def test_a_lesson_plot_is_drawn_and_shown(tmp_path):
+    def llm(messages):
+        if messages[0]["role"] != "system":
+            text = messages[-1]["content"]
+            if "课程大纲" in text:
+                return json.dumps(OUTLINE, ensure_ascii=False)
+            sec = section(1)
+            sec["board"]["figure"] = {"plot": {"functions": ["x**2-1"], "x": [-2, 2]}, "caption": "y=x²-1"}
+            return json.dumps(sec, ensure_ascii=False)
+        return json.dumps({"relation": "new", "kind": "lesson", "topic": "二次函数",
+                           "steps": [{"intent": "", "line": "好，我们来上一节二次函数。"}]}, ensure_ascii=False)
+
+    orch, client = tp.build(max_requests=12)
+    orch.director.llm.fn = llm
+    orch.figure_dir = tmp_path  # no image model needed for plots
+    asyncio.run(tp.run(orch, client, [(2.0, "给我上一节二次函数的课")]))
+    figs = [s.board["figure"] for s in orch.scripts.values() if s.board and "figure" in s.board]
+    assert figs and figs[0]["url"].startswith("/board/img/p") and list(tmp_path.glob("p*.png"))

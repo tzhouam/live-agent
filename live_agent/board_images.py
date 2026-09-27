@@ -27,14 +27,14 @@ class ImageMaker:
         self.timings: list[float] = []
 
     @staticmethod
-    def name_for(prompt: str) -> str:
-        return hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:16] + ".png"
+    def name_for(prompt: str, seed: int = 42) -> str:
+        return hashlib.sha1(f"{seed}:{prompt}".encode("utf-8")).hexdigest()[:16] + ".png"
 
-    async def make(self, prompt: str) -> str:
+    async def make(self, prompt: str, seed: int = 42) -> str:
         """Generate (or reuse) the figure for ``prompt``; returns its page URL. Raises on failure."""
         import httpx
 
-        name = self.name_for(prompt)
+        name = self.name_for(prompt, seed)
         path = self.out_dir / name
         if path.exists():
             return f"/board/img/{name}"
@@ -43,7 +43,7 @@ class ImageMaker:
             async with httpx.AsyncClient(timeout=self.timeout_s) as client:
                 r = await client.post(self.url + "/v1/images/generations", json={
                     "model": self.model, "prompt": STYLE + prompt, "size": self.size, "n": 1,
-                    "num_inference_steps": self.steps, "guidance_scale": 1.0, "seed": 42,
+                    "num_inference_steps": self.steps, "guidance_scale": 1.0, "seed": seed,
                     "response_format": "b64_json"})
             if r.status_code != 200:
                 raise RuntimeError(f"image server {r.status_code}: {r.text[:200]}")
@@ -56,4 +56,53 @@ class ImageMaker:
         return f"/board/img/{name}"
 
 
-__all__ = ["ImageMaker", "STYLE"]
+def expected_labels(prompt: str) -> list[str]:
+    """Labels a figure prompt asks for (the planner quotes them: 标注「阳光」)."""
+    import re
+
+    return [x.strip() for x in re.findall(r"[「“\"]([^」”\"]{1,12})[」”\"]", prompt) if x.strip()]
+
+
+LABEL_PROMPT = """这是一张教学示意图。请逐字列出图中所有可见的文字标注（中文、字母、数字都要），不要纠正错别字，照图上写的抄。
+只输出 JSON：{"labels": ["...", "..."]}"""
+
+
+async def read_labels(vlm, image_path: Path) -> list[str]:
+    """The labels a VLM reads in the image, verbatim (typos included)."""
+    import numpy as np
+    from PIL import Image
+
+    from live_agent.llm import frame_to_data_url, parse_json
+
+    frame = np.asarray(Image.open(image_path).convert("RGB"))
+    url = await asyncio.to_thread(frame_to_data_url, frame)
+    raw = await vlm.chat([{"role": "user", "content": [{"type": "text", "text": LABEL_PROMPT},
+                                                        {"type": "image_url", "image_url": {"url": url}}]}],
+                         max_tokens=256, temperature=0.0, json_mode=True)
+    return [str(x) for x in parse_json(raw).get("labels", [])]
+
+
+_SUB = str.maketrans("₀₁₂₃₄₅₆₇₈₉⁰¹²³⁴⁵⁶⁷⁸⁹", "01234567890123456789")
+
+
+def _norm(s: str) -> str:
+    return s.translate(_SUB).replace(" ", "").strip("「」“”\"'")
+
+
+def missing_labels(expected: list[str], seen: list[str], prompt: str = "") -> list[str]:
+    """Requested labels that are absent, plus seen labels one character off a requested one that are not
+    themselves requested (a misspelt copy, e.g. 二氧化硼 next to 二氧化碳, is wrong even when the right spelling
+    appears elsewhere; 细胞壁 next to 细胞膜 is fine when both were asked for)."""
+    want = {_norm(x) for x in expected}
+    got = {_norm(s) for s in seen}
+    text = " ".join(got)
+    out = [x for x in dict.fromkeys(_norm(x) for x in expected) if x not in text]
+    for s in sorted(got - want):
+        if any(len(s) == len(x) >= 2 and sum(a != b for a, b in zip(s, x)) == 1 for x in want):
+            out.append(s)
+        elif len(s) >= 4 and s in _norm(prompt):  # the prompt itself painted onto the picture
+            out.append(s)
+    return out
+
+
+__all__ = ["ImageMaker", "STYLE", "expected_labels", "missing_labels", "read_labels"]

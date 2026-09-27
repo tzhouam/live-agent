@@ -156,7 +156,8 @@ class Orchestrator:
         self._switch_target: int | None = None  # first request locked with the reply (line or action)
         self._switch_plan = 0
         self._lesson_task: asyncio.Task | None = None
-        self.image_maker = None  # board_images.ImageMaker (board figures), set by the app when configured
+        self.image_maker = None  # board_images.ImageMaker (illustrations), set by the app when configured
+        self.figure_dir = None  # where exact plots are drawn (board_plot); set by the app
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -896,19 +897,52 @@ class Orchestrator:
         after the image exists; without an image model the figure is simply left out)."""
         d = self.director
         boards, d.pending_figures = d.pending_figures, []
-        if self.image_maker is None:
-            return
         for board in boards:
-            self._spawn(self._make_figure(board), "figure")
+            if board.figure_plot is not None and self.figure_dir is not None:
+                self._spawn(self._make_plot(board), "figure")
+            elif board.figure_prompt and self.image_maker is not None:
+                self._spawn(self._make_figure(board), "figure")
 
-    async def _make_figure(self, board) -> None:
-        t0 = now()
+    async def _make_plot(self, board) -> None:
+        from live_agent.board_plot import render_plot
+
         try:
-            board.figure_url = await self.image_maker.make(board.figure_prompt)
-            self.log.emit(EventType.LESSON, now(), stage="figure", board=board.key, title=board.title,
-                          seconds=round(now() - t0, 2))
-        except Exception as e:  # noqa: BLE001 - the board works without its picture
+            name = await asyncio.to_thread(render_plot, board.figure_plot, self.figure_dir)
+            board.figure_url = f"/board/img/{name}"
+            self.log.emit(EventType.LESSON, now(), stage="figure", board=board.key, title=board.title, kind="plot")
+        except Exception as e:  # noqa: BLE001 - a bad spec leaves the board without its graph
             self.log.emit(EventType.LESSON, now(), stage="figure_failed", board=board.key, error=str(e)[:160])
+
+    async def _make_figure(self, board, attempts: int = 3) -> None:
+        """Generate the figure; when the prompt names labels and a VLM judge is available, read the labels back
+        and regenerate with another seed on a missing or misspelt one (Qwen-Image wrote 二氧化硼 for 二氧化碳).
+        No figure is better than a wrong one: after ``attempts`` failures the board keeps its points only."""
+        from live_agent.board_images import expected_labels, missing_labels, read_labels
+
+        t0 = now()
+        want = expected_labels(board.figure_prompt)
+        vlm = getattr(self.judge, "vlm", None)
+        miss: list[str] = []
+        for attempt in range(attempts):
+            try:
+                url = await self.image_maker.make(board.figure_prompt, seed=42 + attempt)
+                if want and vlm is not None:
+                    try:
+                        seen = await read_labels(vlm, self.image_maker.out_dir / url.rsplit("/", 1)[1])
+                    except Exception:  # noqa: BLE001 - the reader failed (e.g. a looping reply), not the image
+                        seen = None
+                    miss = missing_labels(want, seen, board.figure_prompt) if seen is not None else []
+                    if miss:
+                        continue
+                board.figure_url = url
+                self.log.emit(EventType.LESSON, now(), stage="figure", board=board.key, title=board.title,
+                              seconds=round(now() - t0, 2), attempt=attempt, labels=want)
+                return
+            except Exception as e:  # noqa: BLE001 - the board works without its picture
+                self.log.emit(EventType.LESSON, now(), stage="figure_failed", board=board.key, error=str(e)[:160])
+                return
+        self.log.emit(EventType.LESSON, now(), stage="figure_failed", board=board.key,
+                      error=f"labels wrong after {attempts} tries: missing {miss}")
 
     def _stop_lesson(self) -> None:
         if self._lesson_task is not None and not self._lesson_task.done():

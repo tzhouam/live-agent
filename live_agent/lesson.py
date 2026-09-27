@@ -30,10 +30,14 @@ SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这�
 现在讲第 {i}/{n} 节「{section}」，目标：{goal}。
 前面已经讲过：{covered}
 请写这一节的板书和讲稿，只输出 JSON：
-{{"board": {{"title": 小节标题, "items": [板书要点], "figure": {{"prompt": 配图描述, "caption": 图注}} 或 null}}, "lines": [{{"text": 老师说的一句话, "item": 这句话在讲第几条板书要点（从 0 开始）}}]}}
+{{"board": {{"title": 小节标题, "items": [板书要点], "figure": 配图（见下）或 null}}, "lines": [{{"text": 老师说的一句话, "item": 这句话在讲第几条板书要点（从 0 开始）}}]}}
 板书要求：3-{max_items} 条要点，每条不超过 {item_chars} 个字，简洁像真正的板书；公式用 LaTeX 写在 $...$ 里（如 $x^2+y^2=r^2$）。
-配图：只有当一张示意图（几何图形、函数图像、流程图、结构示意、实验装置等）确实能帮助理解时才给 figure，否则写 null；
-prompt 要具体写清画什么、各部分怎么摆放、标注哪些中文文字或字母（如「一个直角三角形，直角在左下角，两条直角边标 a 和 b，斜边标 c」）；caption 不超过 16 个字。
+配图：只有当图确实能帮助理解时才给 figure，否则写 null。两种：
+- 函数图像、坐标系里的点和图形：{{"plot": {{"functions": ["x**2-2*x-3"], "x": [-3, 5], "points": [{{"x": -1, "y": 0, "label": "x₁"}}], "title": 图标题}}, "caption": 图注}}
+  （functions 用 Python 写法：x**2、2*x、sqrt(x)、sin(x)；图会被精确画出）
+- 插图、结构、流程、实验装置示意：{{"prompt": 配图描述, "caption": 图注}}；prompt 具体写清画什么、怎么摆放，要标注的文字都放在「」里
+  （如：一片绿叶，太阳的箭头标注「阳光」，根部箭头标注「水」）；这类图由图像模型画，画不准精确的数学关系。
+caption 不超过 16 个字。
 讲稿要求：
 1. 按板书顺序讲，每条要点讲 2-4 句：先说要点，再解释原因，再举生活中的例子或算一个小例题。
 2. 每句不超过 {chars} 个汉字，口语化；公式和符号全部用中文读出来（如「a 加 b 的和的平方」「x 的平方」），讲稿里不要出现 $、LaTeX、括号、加减乘除号或等号。
@@ -48,6 +52,7 @@ class Board:
     title: str
     items: list[str] = field(default_factory=list)  # raw text with $...$ LaTeX
     figure_prompt: str = ""  # an explanatory image is wanted (generated in the background)
+    figure_plot: dict | None = None  # an exact graph instead (board_plot spec: functions, x range, points)
     figure_caption: str = ""
     figure_url: str = ""  # set once the image exists; boards locked after that show it
 
@@ -73,6 +78,20 @@ class Outline:
     title: str
     sections: list[dict]
     intro: list[str]
+
+
+def set_figure(board: Board, fig) -> bool:
+    """Attach a figure request (an exact plot spec or an illustration prompt) to ``board``; True if one was set."""
+    if not isinstance(fig, dict):
+        return False
+    if isinstance(fig.get("plot"), dict) and (fig["plot"].get("functions") or fig["plot"].get("points")):
+        board.figure_plot = fig["plot"]
+    elif str(fig.get("prompt") or "").strip():
+        board.figure_prompt = str(fig["prompt"]).strip()[:400]
+    else:
+        return False
+    board.figure_caption = str(fig.get("caption") or "")[:20]
+    return True
 
 
 def render_item(text: str) -> str:
@@ -171,10 +190,7 @@ class LessonPlanner:
         b = d.get("board") or {}
         items = [str(x)[:ITEM_CHARS] for x in (b.get("items") or []) if str(x).strip()][:MAX_ITEMS]
         board = Board(key=f"s{i}", title=str(b.get("title") or sec["title"])[:24], items=items)
-        fig = b.get("figure")
-        if isinstance(fig, dict) and str(fig.get("prompt") or "").strip():
-            board.figure_prompt = str(fig["prompt"]).strip()[:400]
-            board.figure_caption = str(fig.get("caption") or "")[:20]
+        set_figure(board, b.get("figure"))
         lines: list[LessonLine] = []
         seen: set[int] = set()
         for ln in d.get("lines") or []:
