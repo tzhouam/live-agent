@@ -58,6 +58,49 @@ class OpenAICompatLLM:
         return r.choices[0].message.content or ""
 
 
+@dataclass
+class AnthropicCompatLLM:
+    """Anthropic Messages API client (e.g. Alibaba Model Studio's ``.../apps/anthropic`` endpoint for hosted Qwen).
+    Same ``chat`` contract as OpenAICompatLLM; system messages go to the top-level ``system`` field."""
+
+    base_url: str  # e.g. https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic
+    model: str
+    api_key: str = ""
+    timeout_s: float = 30.0
+
+    def __post_init__(self) -> None:
+        import httpx
+
+        self._client = httpx.AsyncClient(timeout=self.timeout_s)
+
+    async def warmup(self) -> None:
+        try:
+            await self.chat([{"role": "user", "content": "hi"}], max_tokens=1)
+        except Exception:  # noqa: BLE001 - reported by the first real call
+            pass
+
+    async def chat(self, messages, *, max_tokens=512, temperature=0.3, json_mode=False) -> str:
+        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system" and isinstance(m["content"], str))
+        if json_mode:  # no response_format in this API: say it (the prompts already ask for JSON)
+            system = (system + "\n\n" if system else "") + "只输出一个 JSON 对象，不要输出任何其他文字。"
+        body: dict[str, Any] = {"model": self.model, "max_tokens": max_tokens, "temperature": temperature,
+                                "messages": [m for m in messages if m["role"] != "system"]}
+        if system:
+            body["system"] = system
+        r = await self._client.post(self.base_url.rstrip("/") + "/v1/messages", json=body,
+                                    headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01"})
+        if r.status_code != 200:
+            raise RuntimeError(f"LLM {r.status_code}: {r.text[:200]}")
+        return "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+
+
+def make_chat_llm(base_url: str, model: str, api_key: str = "EMPTY"):
+    """The client matching the endpoint's API: Anthropic Messages for ``.../anthropic`` URLs, else OpenAI-compatible."""
+    if "/anthropic" in base_url:
+        return AnthropicCompatLLM(base_url, model, api_key=api_key)
+    return OpenAICompatLLM(base_url, model, api_key=api_key)
+
+
 class ScriptedLLM:
     """Deterministic stand-in: a function from messages to reply text (tests, simulation)."""
 

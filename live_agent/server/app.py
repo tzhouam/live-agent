@@ -262,10 +262,10 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             fixed = await asyncio.to_thread(salvage_recordings, args.log_dir)
             if fixed:
                 log.info("finalised %d interrupted recording(s): %s", len(fixed), ", ".join(fixed))
-        from live_agent.llm import OpenAICompatLLM
+        from live_agent.llm import OpenAICompatLLM, make_chat_llm
 
         if args.llm_url != "scripted":
-            await OpenAICompatLLM(args.llm_url, args.llm_model, api_key=llm_api_key(args)).warmup()  # SDK lazy imports
+            await make_chat_llm(args.llm_url, args.llm_model, api_key=llm_api_key(args)).warmup()  # SDK lazy imports
         # Heavy generators are started once and shared (reset per session); the mock is per session.
         if args.generator != "mock":
             gen = make_generator(args)
@@ -345,7 +345,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         inputs: asyncio.Queue = asyncio.Queue()
         worker = None
         try:
-            from live_agent.llm import OpenAICompatLLM
+            from live_agent.llm import OpenAICompatLLM, make_chat_llm
 
             manifest = CapabilityManifest.load(cfg_dir / "capabilities.json")
             if args.llm_url == "scripted":  # CPU-only demo: rule-based responder, no model server
@@ -353,7 +353,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
                 llm = RuleResponder(manifest)
             else:
-                llm = OpenAICompatLLM(args.llm_url, args.llm_model, api_key=llm_api_key(args))
+                llm = make_chat_llm(args.llm_url, args.llm_model, api_key=llm_api_key(args))
             if args.dev_allow_uncalibrated:
                 manifest.min_status = Status.DOCUMENTED
             ledger = StateLedger.from_config(cfg_dir / "canon.json")

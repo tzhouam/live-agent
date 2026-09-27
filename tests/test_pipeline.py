@@ -325,3 +325,25 @@ def test_hosted_qwen_gets_the_top_level_thinking_switch_and_local_vllm_the_templ
     seen = fake(local)
     asyncio.run(local.chat([{"role": "user", "content": "hi"}]))
     assert seen["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_anthropic_endpoint_gets_the_messages_api_with_system_on_top():
+    import httpx
+
+    from live_agent.llm import AnthropicCompatLLM, OpenAICompatLLM, make_chat_llm
+
+    seen = {}
+
+    def handler(request):
+        seen["url"], seen["key"] = str(request.url), request.headers.get("x-api-key")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": '{"ok": true}'}]})
+
+    llm = make_chat_llm("https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic", "m", api_key="k")
+    assert isinstance(llm, AnthropicCompatLLM)
+    llm._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    out = asyncio.run(llm.chat([{"role": "system", "content": "S"}, {"role": "user", "content": "U"}], json_mode=True))
+    assert out == '{"ok": true}' and seen["url"].endswith("/apps/anthropic/v1/messages") and seen["key"] == "k"
+    assert seen["body"]["system"].startswith("S") and "JSON" in seen["body"]["system"]
+    assert seen["body"]["messages"] == [{"role": "user", "content": "U"}]
+    assert isinstance(make_chat_llm("http://127.0.0.1:8101/v1", "qwen3-8b"), OpenAICompatLLM)
