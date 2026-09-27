@@ -67,6 +67,7 @@ class AnthropicCompatLLM:
     model: str
     api_key: str = ""
     timeout_s: float = 30.0
+    enable_thinking: bool = False
 
     def __post_init__(self) -> None:
         import httpx
@@ -85,6 +86,8 @@ class AnthropicCompatLLM:
             system = (system + "\n\n" if system else "") + "只输出一个 JSON 对象，不要输出任何其他文字。"
         body: dict[str, Any] = {"model": self.model, "max_tokens": max_tokens, "temperature": temperature,
                                 "messages": [m for m in messages if m["role"] != "system"]}
+        if not self.enable_thinking:  # hybrid-thinking models (qwen3.8-flash) think by default: ~3x slower
+            body["thinking"] = {"type": "disabled"}
         if system:
             body["system"] = system
         r = await self._client.post(self.base_url.rstrip("/") + "/v1/messages", json=body,

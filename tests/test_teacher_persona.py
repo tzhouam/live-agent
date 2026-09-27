@@ -67,3 +67,14 @@ def test_requested_teaching_actions_are_checked_and_idle_is_the_lectern():
     _ask(d, "老师，指一下黑板")
     s = d.next_script(1)
     assert "points at the chalk drawing" in s.action and any(q.kind == "action" for q in s.checks)
+
+
+def test_follow_up_questions_see_the_previous_exchange_and_erasure_removes_it():
+    d, llm, _ = _director(ANSWER)
+    _ask(d, "老师，为什么天空是蓝色的？")
+    _ask(d, "我没听懂，能再讲一遍吗？")
+    second = llm.calls[1]
+    assert [m["role"] for m in second] == ["system", "user", "assistant", "user"]
+    assert second[1]["content"] == "老师，为什么天空是蓝色的？" and "散射" in second[2]["content"]
+    d.purge("天空")
+    assert all("天空" not in t for _, t in d.dialogue)

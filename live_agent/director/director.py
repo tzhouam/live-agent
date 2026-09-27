@@ -24,6 +24,8 @@ the generator, canon compiler, LLM, memory and presentation path.
 
 from __future__ import annotations
 
+import json
+
 import enum
 import re
 from collections import deque
@@ -124,6 +126,9 @@ class Director:
         # persona-specific responder guidance (teaching style, ...) and few-shot examples in its own intents
         self.responder_style = responder_style
         self.responder_examples = responder_examples
+        # recent exchanges (user text, applied decision) for follow-ups such as "I did not understand";
+        # erased terms are purged from it like from every other prompt-reaching state
+        self.dialogue: deque[tuple[str, str]] = deque(maxlen=8)
         self.plan_version = 0
         self.queue: deque[Segment] = deque()
         self.held: dict[str, dict[int, list[Segment]]] = {}  # multistep: steps not yet released
@@ -164,6 +169,9 @@ class Director:
         ``memory_ids``: exactly the memories given to the responder for this decision (lineage)."""
         before = {id(x) for x in self.queue}
         self.awaiting_decision = False
+        if utt.text and d:  # this decision is applied: it becomes context for the next question
+            self.dialogue.append(("user", utt.text))
+            self.dialogue.append(("assistant", json.dumps(d, ensure_ascii=False)))
         deferred, self.deferred = self.deferred, []
         self._apply_decision(utt, d)
         touched = {(d.get("target_chain") or "")} if d.get("relation") in ("revision", "withdrawal") else set()
@@ -207,7 +215,8 @@ class Director:
         else:
             sys = OPEN_LOOP_SYSTEM.format(name=self.persona_name, bio=self.persona_bio, chars=CHARS_PER_REQUEST,
                                           open_chains=open_chains or "无", memories=memories or "无")
-        raw = await self.llm.chat([{"role": "system", "content": sys},
+        history = [{"role": role, "content": text} for role, text in self.dialogue]
+        raw = await self.llm.chat([{"role": "system", "content": sys}, *history,
                                    {"role": "user", "content": utt.text}], json_mode=True)
         try:
             d = parse_json(raw)
@@ -558,6 +567,8 @@ class Director:
         """Erasure (§12): remove the term from all controller state that can reach a prompt."""
         self.erased_terms.add(term)
         n = 0
+        self.dialogue = deque((r, t) for r, t in self.dialogue if term not in t)  # both turns of an exchange
+        self.dialogue = deque(self.dialogue, maxlen=8)
         before = len(self.queue)
         self.queue = deque(s for s in self.queue if term not in s.line and term not in s.action_text)
         for sq in self.queue:
