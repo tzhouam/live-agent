@@ -20,6 +20,9 @@ scripts/run_live.sh full
 
 # TaoMate-H3 served by vLLM-Omni (pure Ulysses SP on 4 GPUs, D-026..D-028) + the helper models on 1 GPU
 GPU_IDS=0,1,2,3 HELPER_GPU=4 PORT=8203 HOURS=8h scripts/run_live.sh omni
+
+# Same, with the classroom teacher persona (students ask, the teacher answers; D-032)
+PERSONA=teacher GPU_IDS=0,1,2,3 HELPER_GPU=4 PORT=8203 HOURS=8h scripts/run_live.sh omni
 ```
 
 `omni` needs the vLLM-Omni worktree `/data/zhoutaichang/worldmodel/vllm-omni-taomate` (branch

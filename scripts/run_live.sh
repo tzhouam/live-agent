@@ -18,8 +18,11 @@ export PYTHONPATH=.
 mode=${1:-demo}
 PORT=${PORT:-8200}; HOST=${HOST:-127.0.0.1}; HOURS=${HOURS:-2h}
 DIRECTOR=${DIRECTOR:-closed_loop}; ALLOW_UNCALIBRATED=${ALLOW_UNCALIBRATED:-1}
+PERSONA=${PERSONA:-hanfu}  # configs/persona_<name>: hanfu (reading host) | teacher (classroom Q&A)
 mkdir -p .cache/logs .cache/sessions
 extra=()
+[ -d "configs/persona_$PERSONA" ] || { echo "unknown PERSONA=$PERSONA (no configs/persona_$PERSONA)"; exit 2; }
+extra+=(--config "configs/persona_$PERSONA")
 [ "$ALLOW_UNCALIBRATED" = "1" ] && extra+=(--dev-allow-uncalibrated)
 [ "${RECORD:-1}" = "1" ] && extra+=(--record)  # traces: event log + presented video per session (/traces)
 pids=()

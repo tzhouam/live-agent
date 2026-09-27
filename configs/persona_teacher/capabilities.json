@@ -1,0 +1,282 @@
+{
+ "min_status": "calibrated",
+ "min_p": 0.6,
+ "capabilities": [
+  {
+   "cap_id": "cap-00-idle_teach",
+   "intent": "idle_teach",
+   "phrase": "she stands behind the lectern, glancing over the textbook {textbook} and back at the lens with small natural movements",
+   "aliases": [
+    "备课"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "",
+   "degrade_to": ""
+  },
+  {
+   "cap_id": "cap-01-listen",
+   "intent": "listen",
+   "phrase": "she looks attentively into the lens and nods slightly as if listening to a student",
+   "aliases": [
+    "听",
+    "听我说"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "",
+   "degrade_to": ""
+  },
+  {
+   "cap_id": "cap-02-explain",
+   "intent": "explain",
+   "phrase": "she explains while gesturing naturally with her right hand, looking into the lens",
+   "aliases": [
+    "讲解"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "",
+   "degrade_to": ""
+  },
+  {
+   "cap_id": "cap-03-point_board",
+   "intent": "point_board",
+   "phrase": "she turns slightly, picks up the wooden pointer and points at the chalk drawing on the chalkboard, then turns back to the lens and lays the pointer back on the lectern",
+   "aliases": [
+    "指黑板",
+    "指一下黑板",
+    "看黑板",
+    "point at the board"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否用教鞭或手指向了身后的黑板？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-04-draw_board",
+   "intent": "draw_board",
+   "phrase": "she turns to the chalkboard, picks up a piece of chalk and draws a large circle with an arrow, then turns back to the lens",
+   "aliases": [
+    "画个图",
+    "在黑板上画",
+    "画一下",
+    "draw"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否转身在黑板上用粉笔画了图形？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-05-hold_up_book",
+   "intent": "hold_up_book",
+   "phrase": "she lifts the open textbook from the lectern and shows the page to the lens, then lays it back down open on the lectern",
+   "aliases": [
+    "给我看看课本",
+    "展示课本",
+    "看看书",
+    "show the book"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否把课本举起来朝向镜头展示？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-06-count_fingers",
+   "intent": "count_fingers",
+   "phrase": "she raises her right hand and counts off three points on her fingers, one by one",
+   "aliases": [
+    "数一数",
+    "列出要点",
+    "一二三",
+    "count"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否举起手用手指依次数了几下？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-07-thumbs_up",
+   "intent": "thumbs_up",
+   "phrase": "she smiles and gives an encouraging thumbs-up to the lens",
+   "aliases": [
+    "点赞",
+    "夸夸我",
+    "竖大拇指",
+    "thumbs up"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否对镜头竖起了大拇指？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-08-spin_globe",
+   "intent": "spin_globe",
+   "phrase": "she gently spins the small globe on the left side of the lectern with her left hand while looking at it",
+   "aliases": [
+    "转地球仪",
+    "转一下地球仪",
+    "看看地球仪",
+    "spin the globe"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否用手转动了地球仪？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-09-drink_water",
+   "intent": "drink_water",
+   "phrase": "she lifts the white mug to her lips and clearly takes a sip, then sets it back down at the right corner of the lectern",
+   "aliases": [
+    "喝水",
+    "喝口水",
+    "drink water"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否把白色水杯送到嘴边喝了一口？只是拿着没有喝，回答 no。",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-10-nod",
+   "intent": "nod",
+   "phrase": "she nods slowly twice while looking into the lens",
+   "aliases": [
+    "点头",
+    "点点头",
+    "nod"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否点头？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-11-shake_head",
+   "intent": "shake_head",
+   "phrase": "she shakes her head gently from side to side",
+   "aliases": [
+    "摇头",
+    "摇摇头",
+    "shake head"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否摇头？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-12-smile",
+   "intent": "smile",
+   "phrase": "she smiles warmly at the lens",
+   "aliases": [
+    "笑一个",
+    "微笑",
+    "笑一笑",
+    "smile"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否对着镜头微笑？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-13-wave",
+   "intent": "wave",
+   "phrase": "she raises her right hand and waves gently toward the lens",
+   "aliases": [
+    "挥手",
+    "挥挥手",
+    "打招呼",
+    "再见",
+    "wave"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否抬起右手向镜头挥手？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-14-bow",
+   "intent": "bow",
+   "phrase": "she places her hands together and bows slightly toward the lens",
+   "aliases": [
+    "鞠躬",
+    "鞠个躬",
+    "bow"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否双手合拢并微微鞠躬？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-15-think",
+   "intent": "think",
+   "phrase": "she taps her chin with one finger and looks thoughtful for a moment",
+   "aliases": [
+    "想一想",
+    "思考一下",
+    "think"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否用手指点着下巴做思考状？",
+   "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  }
+ ]
+}

@@ -357,8 +357,14 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             if args.dev_allow_uncalibrated:
                 manifest.min_status = Status.DOCUMENTED
             ledger = StateLedger.from_config(cfg_dir / "canon.json")
+            intents = canon.get("intents", {})  # persona filler gestures (idle / listen / while speaking)
             director = Director(llm, manifest, ledger, persona_name=canon["display_name"],
-                                persona_bio=canon["persona_bio"], mode=DirectorMode(args.director_mode))
+                                persona_bio=canon["persona_bio"], mode=DirectorMode(args.director_mode),
+                                idle_intent=intents.get("idle", "idle_read"),
+                                listen_intent=intents.get("listen", "listen"),
+                                speak_intent=intents.get("speak"),
+                                responder_style=canon.get("responder_style", ""),
+                                responder_examples=canon.get("responder_examples"))
             generator = SessionView(app.state.shared_gen) if shared else make_generator(args)
             sched = LockScheduler(SchedulerConfig(request_s=generator.info.request_seconds,
                                                   lambda_prior_s=args.lambda_prior))
@@ -426,7 +432,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                            "generator": generator.info.name, "director": args.director_mode,
                                            "judge": "mock" if args.vlm_url == "mock" else ("vlm" if args.vlm_url else "none"),
                                            "responder": "rules" if args.llm_url == "scripted" else args.llm_model,
-                                           "asr": bool(args.asr_url), "persona": canon.get("display_name", "")},
+                                           "asr": bool(args.asr_url), "persona": canon.get("display_name", ""),
+                                           "examples": canon.get("examples", [])},
                                           ensure_ascii=False))
 
             async def handle_inputs() -> None:

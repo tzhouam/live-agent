@@ -171,10 +171,14 @@ function memo(text, cls) {
   el.appendChild(d); el.scrollTop = el.scrollHeight;
 }
 
-EXAMPLES.forEach(x => {
-  const b = document.createElement("button"); b.className = "chip"; b.textContent = x; b.disabled = true;
-  b.onclick = () => sendText(x); $("chips").appendChild(b);
-});
+function setChips(list, enabled) {  // one-click examples; the server sends the persona's own in "status"
+  $("chips").innerHTML = "";
+  list.forEach(x => {
+    const b = document.createElement("button"); b.className = "chip"; b.textContent = x; b.disabled = !enabled;
+    b.onclick = () => sendText(x); $("chips").appendChild(b);
+  });
+}
+setChips(EXAMPLES, false);
 
 // ---------------------------------------------------------------- connection
 $("connect").onclick = () => {
@@ -252,6 +256,7 @@ async function onMessage(ev) {
 
 function onStatus(m) {
   setConn("会话中", true);
+  if (Array.isArray(m.examples) && m.examples.length) setChips(m.examples, true);
   const b = $("badges"); b.querySelectorAll(".badge:not(#conn)").forEach(x => x.remove());
   const items = [
     ["生成", m.generator === "mock" ? "mock（CPU 演示）" : m.generator],

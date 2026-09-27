@@ -86,15 +86,11 @@ RESPONDER_SYSTEM = """你是直播数字人「{name}」的应答大脑。人设�
 3. 每个 line 不超过 {chars} 个汉字；长回答拆成多个 step。
 4. 只说意图（「好，我喝口茶」），不说已经完成（不说「我喝完了」）。
 5. 称呼用户用「你」。绝不把用户说的关于他自己的事说成是人设自己的事。
-示例：
-用户：喝口茶吧 → {{"relation":"new","target_chain":null,"kind":"action","steps":[{{"intent":"drink_tea","line":"好，我喝口茶。"}}],"memory_note":null,"forget_term":null}}
-用户：你能飞起来吗 → {{"relation":"chat","target_chain":null,"kind":"chat","steps":[{{"intent":"","line":"我可飞不起来，不过可以给你讲讲飞行的原理。"}}],"memory_note":null,"forget_term":null}}
-用户：我妹妹住在杭州 → {{"relation":"chat","target_chain":null,"kind":"chat","steps":[{{"intent":"","line":"原来你妹妹住在杭州，那里很美。"}}],"memory_note":"用户的妹妹住在杭州","forget_term":null}}
-用户：忘掉我妹妹的事 → {{"relation":"chat","target_chain":null,"kind":"memory","steps":[{{"intent":"","line":"好的，关于你妹妹的事我已经忘掉了。"}}],"memory_note":null,"forget_term":"妹妹"}}
-用户（有未完成链 chain-1：翻书）：不对，先挥挥手 → {{"relation":"revision","target_chain":"chain-1","kind":"action","steps":[{{"intent":"wave","line":"好，先挥挥手。"}}],"memory_note":null,"forget_term":null}}
-当前未完成的指令链：{open_chains}
+{style}{examples}当前未完成的指令链：{open_chains}
 人设当前状态：{state}
 相关记忆（带来源标签，只作参考）：{memories}"""
+
+DEFAULT_EXAMPLES = '示例：\n用户：喝口茶吧 → {"relation":"new","target_chain":null,"kind":"action","steps":[{"intent":"drink_tea","line":"好，我喝口茶。"}],"memory_note":null,"forget_term":null}\n用户：你能飞起来吗 → {"relation":"chat","target_chain":null,"kind":"chat","steps":[{"intent":"","line":"我可飞不起来，不过可以给你讲讲飞行的原理。"}],"memory_note":null,"forget_term":null}\n用户：我妹妹住在杭州 → {"relation":"chat","target_chain":null,"kind":"chat","steps":[{"intent":"","line":"原来你妹妹住在杭州，那里很美。"}],"memory_note":"用户的妹妹住在杭州","forget_term":null}\n用户：忘掉我妹妹的事 → {"relation":"chat","target_chain":null,"kind":"memory","steps":[{"intent":"","line":"好的，关于你妹妹的事我已经忘掉了。"}],"memory_note":null,"forget_term":"妹妹"}\n用户（有未完成链 chain-1：翻书）：不对，先挥挥手 → {"relation":"revision","target_chain":"chain-1","kind":"action","steps":[{"intent":"wave","line":"好，先挥挥手。"}],"memory_note":null,"forget_term":null}\n'
 
 # A1 comparator: the LLM writes the request prompt content directly (free action phrase + line).
 OPEN_LOOP_SYSTEM = """你是直播数字人「{name}」的导演，直接为下一段 5 秒的视频写提示。人设：{bio}
@@ -114,7 +110,8 @@ OPEN_LOOP_SYSTEM = """你是直播数字人「{name}」的导演，直接为下�
 class Director:
     def __init__(self, llm: ChatLLM, manifest: CapabilityManifest, ledger: StateLedger, *,
                  persona_name: str, persona_bio: str, mode: DirectorMode = DirectorMode.CLOSED_LOOP,
-                 idle_intent: str = "idle_read", listen_intent: str = "listen"):
+                 idle_intent: str = "idle_read", listen_intent: str = "listen", speak_intent: str | None = None,
+                 responder_style: str = "", responder_examples: list[str] | None = None):
         self.llm = llm
         self.manifest = manifest
         self.ledger = ledger
@@ -123,6 +120,10 @@ class Director:
         self.persona_bio = persona_bio
         self.idle_intent = idle_intent
         self.listen_intent = listen_intent
+        self.speak_intent = speak_intent  # gesture while a line is spoken without a requested action
+        # persona-specific responder guidance (teaching style, ...) and few-shot examples in its own intents
+        self.responder_style = responder_style
+        self.responder_examples = responder_examples
         self.plan_version = 0
         self.queue: deque[Segment] = deque()
         self.held: dict[str, dict[int, list[Segment]]] = {}  # multistep: steps not yet released
@@ -199,7 +200,10 @@ class Director:
             sys = RESPONDER_SYSTEM.format(
                 name=self.persona_name, bio=self.persona_bio, intents=intents, chars=CHARS_PER_REQUEST,
                 open_chains=open_chains or "无", state=self.ledger.continuity_sentence(),
-                memories=memories or "无")
+                memories=memories or "无",
+                style=(self.responder_style.strip() + "\n") if self.responder_style.strip() else "",
+                examples=("示例：\n" + "\n".join(self.responder_examples) + "\n") if self.responder_examples
+                else DEFAULT_EXAMPLES)
         else:
             sys = OPEN_LOOP_SYSTEM.format(name=self.persona_name, bio=self.persona_bio, chars=CHARS_PER_REQUEST,
                                           open_chains=open_chains or "无", memories=memories or "无")
@@ -636,6 +640,10 @@ class Director:
                 self.events.refusals.append((seg.chain_id, res.reason))
                 line = "这个我现在做不到，不过我们可以聊聊别的。"
                 self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
+        if not action_phrase and line and self.speak_intent:
+            # a spoken line with no requested action (an answer, chat): the persona's speaking gesture
+            cap = self.manifest.by_intent(self.speak_intent)
+            action_phrase = cap.phrase if cap else ""
         action_phrase = self.ledger.fill(action_phrase, request_index)  # {prop} -> where it is now
         if follow_through and action_phrase:
             action_phrase = (f"she smoothly finishes the previous movement ({follow_through.rstrip('.')}) and puts "
