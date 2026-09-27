@@ -480,6 +480,13 @@ class Orchestrator:
         return replace(ch, audio=out)
 
     # ------------------------------------------------------------------ presentation acks
+    def on_received(self, request_index: int, chunk_index: int, t: float) -> None:
+        """The client has the chunk decoded and ready to play: ready -> received is the delivery time
+        (encode + transport + decode), which the lock lead must cover (a remote bridge adds ~1 s)."""
+        ch = next((c for c in self.chunks.get(request_index, []) if c.chunk_index == chunk_index), None)
+        if ch is not None and ch.t_ready:
+            self.sched.observe_delivery(t - ch.t_ready)
+
     def on_presented(self, request_index: int, chunk_index: int, t_start: float, t_end: float,
                      painted: list[int] | None = None, t_last_paint: float | None = None) -> None:
         """Called by the transport when a chunk *finished* presenting (with its start/end times).

@@ -241,6 +241,8 @@ async function onMessage(ev) {
       c.frames = [];
     }
     c.decoded = true;
+    // arrival + decode time of the chunk: the server adds it to its lock lead (transport over a remote bridge)
+    send({type: "chunk_received", request: c.meta.request, chunk: c.meta.chunk, tp: performance.now()});
     while (decoding.length && decoding[0].decoded) {  // schedule only the contiguous head
       const h = decoding.shift();
       if (h.epoch === epoch) schedule(h);

@@ -79,6 +79,8 @@ async def main(args) -> None:
                     if pending.get("codec") == "h264" and pending["got"] == 1:
                         summary["h264_bytes"] = summary.get("h264_bytes", 0) + len(msg)
                     if pending["got"] == video_msgs + 1:  # video (n JPEGs or one H.264 segment) + pcm
+                        await ws.send(json.dumps({"type": "chunk_received", "request": pending["request"],
+                                                  "chunk": pending["chunk"], "tp": time.monotonic() * 1000}))
                         plays.put_nowait(pending)
                         pending = None
                     continue

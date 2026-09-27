@@ -254,3 +254,18 @@ def test_silent_requests_are_muted_for_the_viewer():
     assert any(not has_line for has_line, _ in sent)
     assert all(peak < 1e-6 for has_line, peak in sent if not has_line)  # silent requests reach the viewer muted
     assert any(peak > 0 for has_line, peak in sent if has_line)  # lines are untouched
+
+
+def test_measured_delivery_replaces_the_transport_guess_in_lambda():
+    from live_agent.generator.base import RequestTiming
+    from live_agent.timeline import LockScheduler, SchedulerConfig
+
+    s = LockScheduler(SchedulerConfig(delta_s=0.15, min_observations=3))
+    for k in range(4):
+        s.observe_timing(RequestTiming(k, t_lock=10.0 * k, t_first_chunk=10.0 * k + 2.4))
+    assert abs(s.lambda_estimate() - (2.4 + 0.15)) < 1e-9  # nothing measured yet: the configured guess
+    for d in (0.9, 1.0, 1.1, 1.6):  # a remote bridge
+        s.observe_delivery(d)
+    assert abs(s.lambda_estimate() - (2.4 + 1.6)) < 1e-9  # high quantile of the measured delivery
+    s.observe_delivery(-1.0)  # clock glitches are ignored
+    assert len(s._delivery) == 4

@@ -33,7 +33,7 @@ class LockMode(str, enum.Enum):
 class SchedulerConfig:
     request_s: float = 5.0
     sigma_s: float = 0.5  # safety margin (also used for the spoken-audio ASR check)
-    delta_s: float = 0.15  # mux + transport estimate until measured
+    delta_s: float = 0.15  # mux + transport estimate until measured (then: measured delivery, see observe_delivery)
     lambda_prior_s: float = 3.0  # used until enough timings are observed
     lambda_quantile: float = 0.9
     min_observations: int = 3
@@ -49,11 +49,25 @@ class LockScheduler:
         self.locks: dict[int, float] = {}  # P_k
         self.durations: dict[int, float] = {}  # playback duration of request k (sum of its chunks)
         self.restart: int = 0  # first request after the latest interruption (timeline restarts here)
+        self._delivery: list[float] = []  # chunk ready -> decoded at the client (s), recent
 
     # ------------------------------------------------------------ observations
     def observe_timing(self, t: RequestTiming) -> None:
         self._timings = [x for x in self._timings if x.request_index != t.request_index] + [t]
         self._timings = self._timings[-50:]
+
+    def observe_delivery(self, seconds: float) -> None:
+        """Chunk ready at the generator -> received and decoded by the client (encode + transport + decode).
+        Measured without the client's playback queue, so earlier locks cannot inflate it."""
+        if 0.0 <= seconds < 30.0:
+            self._delivery = (self._delivery + [seconds])[-40:]
+
+    def delivery_estimate(self) -> float:
+        """The delta in Lambda: a high quantile of measured delivery, the configured delta until measured."""
+        if len(self._delivery) < self.cfg.min_observations:
+            return self.cfg.delta_s
+        d = sorted(self._delivery)
+        return max(self.cfg.delta_s, d[min(len(d) - 1, int(round(self.cfg.lambda_quantile * (len(d) - 1))))])
 
     def on_lock(self, k: int, t: float) -> None:
         self.locks[k] = t
@@ -101,7 +115,7 @@ class LockScheduler:
             return self.cfg.lambda_prior_s
         leads.sort()
         idx = min(len(leads) - 1, int(round(self.cfg.lambda_quantile * (len(leads) - 1))))
-        return leads[idx] + self.cfg.delta_s
+        return leads[idx] + self.delivery_estimate()
 
     def mean_request_time(self) -> float | None:
         vals = [x.t_done - x.t_lock for x in self._timings if x.t_done is not None]

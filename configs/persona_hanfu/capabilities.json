@@ -24,7 +24,7 @@
   {
    "cap_id": "cap-01-turn_page",
    "intent": "turn_page",
-   "phrase": "she turns one page of the open book on the desk with her right hand",
+   "phrase": "she turns one page of the open book lying flat on the desk with her right hand",
    "aliases": [
     "翻页",
     "翻一页",
@@ -268,7 +268,7 @@
   {
    "cap_id": "cap-15-idle_read",
    "intent": "idle_read",
-   "phrase": "she reads the open book quietly with small natural movements",
+   "phrase": "she reads the one open book lying flat on the desk, her hands resting on the desk beside it, with small natural movements",
    "aliases": [
     "读书",
     "看书",

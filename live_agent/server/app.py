@@ -9,6 +9,7 @@ Wire protocol (WS /ws), JSON text frames unless noted:
     {"type":"text","text":"..."}                   typed utterance (fallback / tests)
     {"type":"chunk_start","request":k,"chunk":c}   presentation start (server stamps arrival)
     {"type":"chunk_end","request":k,"chunk":c}     presentation end
+    {"type":"chunk_received","request":k,"chunk":c,"tp":...}   chunk arrived and decoded (delivery time)
     {"type":"ping","t":...}
   server -> client
     {"type":"chunk","request":k,"chunk":c,"n_frames":n,"fps":24,"sample_rate":sr,
@@ -241,6 +242,8 @@ class WSTransport:
             self.orchestrator.on_presented(key[0], key[1], self._starts.pop(key, t), t,
                                            painted=[int(i) for i in painted] if painted is not None else None,
                                            t_last_paint=t_paint)
+        elif msg["type"] == "chunk_received" and self.orchestrator is not None and self.clock_offset_s is not None:
+            self.orchestrator.on_received(key[0], key[1], t)
 
 
 def build_app(args: argparse.Namespace) -> FastAPI:
@@ -473,7 +476,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                     continue
                 data = json.loads(msg["text"])
                 t = data.get("type")
-                if t in ("chunk_start", "chunk_end"):
+                if t in ("chunk_start", "chunk_end", "chunk_received"):
                     transport.on_client_message(data)
                 elif t == "speech_start":
                     await orch.on_speech_start()
