@@ -394,7 +394,7 @@ function schedule(c) {
   for (let i = 0; i < c.pcm.length; i++) ch[i] = c.pcm[i] / 32768;
   const start = Math.max(audioCtx.currentTime + 0.05, playhead);
   const dur = m.duration || m.n_frames / m.fps;
-  const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(audioCtx.destination); src.start(start);
+  const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(outGain()); src.start(start);
   playhead = start + dur;
   queue.push({...c, start, end: start + dur, src, startedSent: false, endedSent: false});
 }
@@ -440,10 +440,18 @@ function render() {
 }
 
 // ---------------------------------------------------------------- input
+// A comment does not cut the video here: the server keeps it playing and sends "stop" when the reply is ready.
+// While the user holds push-to-talk the persona's audio is muted (not the video) so the mic hears only the user.
+let master = null;  // output gain: every chunk's audio goes through it
+function outGain() {
+  if (!master) { master = audioCtx.createGain(); master.connect(audioCtx.destination); }
+  return master;
+}
+function duck(on) { if (audioCtx) outGain().gain.setTargetAtTime(on ? 0 : 1, audioCtx.currentTime, 0.03); }
 $("talk").onpointerdown = async () => {
-  send({type: "speech_start"}); stopAll();
+  send({type: "speech_start"}); duck(true);
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
     const parts = [];
     recorder = new MediaRecorder(stream);
     recorder.ondataavailable = (e) => parts.push(e.data);
@@ -456,13 +464,13 @@ $("talk").onpointerdown = async () => {
   } catch (e) { chat("sys", "无法使用麦克风：" + e.message); }
 };
 $("talk").onpointerup = $("talk").onpointerleave = () => {
+  duck(false);
   if (recorder && recorder.state === "recording") recorder.stop();
   $("talk").classList.remove("recording"); $("talk").textContent = "🎙 按住说话";
 };
 function sendText(v) {
   v = (v ?? $("text").value).trim(); if (!v || !ws) return;
-  send({type: "speech_start"}); stopAll();
-  send({type: "text", text: v, tp: performance.now()});
+  send({type: "text", text: v, tp: performance.now()});  // the server marks the comment and plans the switch
   chat("user", v); $("text").value = "";
 }
 $("send").onclick = () => sendText();

@@ -38,7 +38,7 @@ def responder(messages):
 
 
 def build(p_default=1.0, p_by_phrase=None, boost=0.3, mode=DirectorMode.CLOSED_LOOP,
-          correction=CorrectionMode.GRADIENT, max_requests=8):
+          correction=CorrectionMode.GRADIENT, max_requests=8, soft_switch=True):
     manifest = CapabilityManifest.load(CFG / "capabilities.json")
     manifest.min_status = Status.DOCUMENTED  # dev override: nothing is executed yet in CI
     ledger = StateLedger.from_config(CFG / "canon.json")
@@ -51,7 +51,8 @@ def build(p_default=1.0, p_by_phrase=None, boost=0.3, mode=DirectorMode.CLOSED_L
     client = SimClient(speed=SPEED)
     orch = Orchestrator(gen, director, sched, client,
                         judge=MockJudge(p_default=p_default, p_by_phrase=p_by_phrase or {}, correction_boost=boost),
-                        log=EventLog(), cfg=OrchestratorConfig(correction_mode=correction, max_requests=max_requests))
+                        log=EventLog(), cfg=OrchestratorConfig(correction_mode=correction, max_requests=max_requests,
+                                                               soft_switch=soft_switch))
     client.orchestrator = orch
     return orch, client
 
@@ -144,7 +145,7 @@ def test_jit_locks_follow_presentation():
 
 
 def test_barge_in_drops_queued_and_marks_unshown():
-    orch, client = build(max_requests=6)
+    orch, client = build(max_requests=6, soft_switch=False)  # hard cut (the erasure path, or opt-out)
 
     async def scenario():
         client.start()
@@ -269,3 +270,34 @@ def test_measured_delivery_replaces_the_transport_guess_in_lambda():
     assert abs(s.lambda_estimate() - (2.4 + 1.6)) < 1e-9  # high quantile of the measured delivery
     s.observe_delivery(-1.0)  # clock glitches are ignored
     assert len(s._delivery) == 4
+
+
+def test_a_comment_keeps_the_video_playing_until_the_reply_is_ready():
+    orch, client = build(max_requests=8)  # soft switch (default)
+
+    async def scenario():
+        client.start()
+        await orch.start()
+        await asyncio.sleep(8 / SPEED)
+        await orch.on_speech_start()
+        t_comment = now()
+        await asyncio.sleep(0.5 / SPEED)
+        await orch.on_user_utterance(Utterance(uid="u1", speaker="user", text="挥挥手", t_end=now()))
+        try:
+            await asyncio.wait_for(orch.wait_done(), timeout=20)
+        finally:
+            await orch.stop()
+            client.close()
+        return t_comment
+
+    t_comment = asyncio.run(scenario())
+    stops = events(orch, EventType.PLAYBACK_STOP)
+    assert len(stops) == 1 and stops[0].data["soft"]  # one cut, at the switch, not at the comment
+    target = stops[0].data["switch_to"]
+    ready = min(e.t for e in events(orch, EventType.CHUNK_READY) if e.request_index == target and e.chunk_index == 0)
+    assert stops[0].t >= ready - 1e-6 and stops[0].t > t_comment  # cut exactly when the reply became ready
+    shown_between = [e for e in events(orch, EventType.CHUNK_PRESENTED) if t_comment < e.t < stops[0].t]
+    assert shown_between  # the old video kept playing meanwhile (no freeze)
+    lock = next(e for e in events(orch, EventType.LOCK) if e.request_index == target)
+    assert "wave" in lock.data["action"]  # the switch target is the reply
+    assert any(e.request_index == target for e in events(orch, EventType.CHUNK_PRESENTED))

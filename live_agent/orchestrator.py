@@ -83,6 +83,10 @@ class OrchestratorConfig:
     # Scene continuity (ledger props): count the props on presented frames every N-th request and queue a
     # correction for the next unlocked request when every sampled frame shows the wrong number
     continuity_every: int = 2
+    # A comment (typed or spoken) does not cut the video: already generated content keeps playing and the
+    # player switches to the reply at the moment the reply's first chunk is ready (erasure still cuts at once)
+    soft_switch: bool = True
+    switch_decision_wait_s: float = 10.0  # while old video plays, wait this long for the reply decision
     continuity_cooldown: int = 3  # requests between two corrections of the same prop
     continuity_max_fixes: int = 2  # corrections per prop without effect before giving up on it (logged)
     blocklist: tuple[str, ...] = ()  # operator term blocklist for the script audit (no moderation model)
@@ -147,6 +151,9 @@ class Orchestrator:
         self._home_pose = director.ledger.pose  # the pose the desk props are framed in
         self._continuity_tries: dict[str, int] = {}  # prop label -> corrections issued since it was last right
         self._anchored = False  # the first continuity check of a generator session sets the anchor
+        self._switch_pending = False  # a comment arrived; old video plays until the reply is ready
+        self._switch_target: int | None = None  # first request locked with the reply (line or action)
+        self._switch_plan = 0
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -326,15 +333,18 @@ class Orchestrator:
                 if tl is not None and tl <= now():
                     break
                 await asyncio.sleep(0.01 if tl is None else min(0.05, tl - now()))
-            # Never run more than two requests ahead of presentation (bounded backlog).
-            while k >= 2 and not self._resolved(k - 2) and not self._stop.is_set():
+            # Never run more than two requests ahead of presentation (bounded backlog); a pending soft
+            # switch may lock the reply anyway (the old requests are dropped when it is ready)
+            while k >= 2 and not self._resolved(k - 2) and not self._stop.is_set() \
+                    and not (self._switch_pending and self._switch_target is None):
                 await asyncio.sleep(0.01)
             await self._ready.wait()  # erasure in progress (only the erasure releases it)
             await self._barge_gate.wait()
             if k == self.sched.restart and k > 0:
                 # After an interruption nothing is playing: a short wait for the in-flight decision
                 # avoids spending the first 5-s request on a filler (listen) segment.
-                t_wait = now() + self.cfg.restart_decision_wait_s
+                t_wait = now() + (self.cfg.switch_decision_wait_s if self._switch_pending
+                                  else self.cfg.restart_decision_wait_s)  # old video still plays: waiting is free
                 while self._decisions == self._decisions_at_interrupt and now() < t_wait \
                         and not self._stop.is_set():
                     await asyncio.sleep(0.01)
@@ -361,6 +371,11 @@ class Orchestrator:
             self.sched.on_lock(k, t)
             self.next_lock = k + 1
             self._locking = None
+            if self._switch_pending and self._switch_target is None and script.plan_version >= self._switch_plan:
+                if script.chain_ids or script.transcript:
+                    self._switch_target = k  # the reply: playback switches to it when its first chunk is ready
+                elif self._decisions != self._decisions_at_interrupt:
+                    self._switch_pending = False  # decided, but nothing to say or do: no switch, nothing cut
             self.log.emit(EventType.LOCK, t, request_index=k, plan_version=script.plan_version,
                           lambda_est=self.sched.lambda_estimate(), planned_lock=tl,
                           action=script.action, transcript=script.transcript,
@@ -465,6 +480,8 @@ class Orchestrator:
                         self.log.emit(EventType.REQUEST_DONE, now(), request_index=ch.request_index,
                                       lead_s=tm.lead_s, teacher_s=tm.teacher_s,
                                       total_s=(tm.t_done - tm.t_lock) if tm.t_done else None)
+            if self._switch_pending and ch.request_index == self._switch_target and ch.chunk_index == 0:
+                await self._switch_to(ch.request_index)
             if ch.request_index in self.dropped:
                 if ch.chunk_index == self.n_chunks - 1:
                     self._evict(ch.request_index)
@@ -847,18 +864,45 @@ class Orchestrator:
         self._barge_gate.clear()
         try:
             self.director.on_barge_in()
-            await self._drop_unpresented()
+            if self.cfg.soft_switch:
+                # keep playing what exists; lock the reply as soon as it is decided; cut over when it is ready
+                self.sched.interrupt(self.next_lock)
+                self._decisions_at_interrupt = self._decisions
+                self._switch_pending, self._switch_target = True, None
+                self._switch_plan = self.director.plan_version
+            else:
+                await self._drop_unpresented()
         finally:
             self._barge_gate.set()  # never touches the erasure gate
-        self.log.emit(EventType.PLAYBACK_STOP, now(), t_speech_onset=t, dropped=sorted(self.dropped))
+        if self.cfg.soft_switch:
+            self.log.emit(EventType.INTERRUPT, now(), t_speech_onset=t, soft=True)
+        else:
+            self.log.emit(EventType.PLAYBACK_STOP, now(), t_speech_onset=t, dropped=sorted(self.dropped))
         self._maybe_finish()
+
+    async def _switch_to(self, target: int) -> None:
+        """The reply's first chunk is ready: drop what was generated before it and not yet fully shown, stop
+        the player (it cuts at the current frame) and let the reply play next."""
+        self._switch_pending, self._switch_target = False, None
+        cut = self._mark_dropped(range(target))
+        self.director.on_interrupted(cut)
+        await self.transport.stop_playback()
+        self.log.emit(EventType.PLAYBACK_STOP, now(), soft=True, switch_to=target, dropped=sorted(self.dropped))
 
     async def _drop_unpresented(self) -> None:
         """Stop playback and discard everything locked but not (fully) presented."""
-        cut = []
         self.sched.interrupt(self.next_lock)  # synchronously, before any await
+        self._switch_pending, self._switch_target = False, None  # a hard cut supersedes a pending switch
+        cut = self._mark_dropped(range(self.next_lock))
+        self.director.on_interrupted(cut)
+        self._decisions_at_interrupt = self._decisions
+        await self.transport.stop_playback()
+
+    def _mark_dropped(self, requests) -> list:
+        """Mark locked-but-not-fully-presented requests as dropped (never shown); returns their scripts."""
+        cut = []
         in_flight = getattr(self.transport, "in_flight", lambda: None)()  # (k, ci, t_start) playing now
-        for k in range(self.next_lock):
+        for k in requests:
             if len(self.presented.get(k, ())) < self.n_chunks and k not in self.dropped:
                 if k in self.scripts:
                     cut.append(self.scripts[k])
@@ -869,9 +913,7 @@ class Orchestrator:
                 self.director.ledger.mark_generated_not_presented(
                     k, partially_shown=bool(self.presented.get(k)) or bool(in_flight and in_flight[0] == k))
                 self.director.ledger.revert(k)  # its action was never (fully) shown: no state change
-        self.director.on_interrupted(cut)
-        self._decisions_at_interrupt = self._decisions
-        await self.transport.stop_playback()
+        return cut
 
     async def on_user_utterance(self, utt: Utterance, epoch: int | None = None) -> dict[str, Any]:
         """``epoch``: the input epoch when the utterance was *received* (queued inputs must not
