@@ -34,9 +34,10 @@ SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这�
 板书要求：3-{max_items} 条要点，每条不超过 {item_chars} 个字，简洁像真正的板书；公式用 LaTeX 写在 $...$ 里（如 $x^2+y^2=r^2$）。
 讲稿要求：
 1. 按板书顺序讲，每条要点讲 2-4 句：先说要点，再解释原因，再举生活中的例子或算一个小例题。
-2. 每句不超过 {chars} 个汉字，口语化；公式和符号用中文读出来（如「x 的平方」），讲稿里不要出现 $ 或 LaTeX。
-3. 最后一句简短小结这一节{outro}。
-4. 总共 10-18 句。只讲这一节，不要重复前面讲过的内容。"""
+2. 每句不超过 {chars} 个汉字，口语化；公式和符号全部用中文读出来（如「a 加 b 的和的平方」「x 的平方」），讲稿里不要出现 $、LaTeX、括号、加减乘除号或等号。
+3. 直接从这一节的内容讲起，不要打招呼，不要重复开场白或前面讲过的话。
+4. 最后一句简短小结这一节{outro}。
+5. 总共 10-18 句。"""
 
 
 @dataclass
@@ -87,9 +88,27 @@ def _math(tex: str) -> str:
         return f"<code>{html.escape(tex)}</code>"
 
 
+_SAY = [(r"\(([^()]*[+＋][^()]*)\)\s*(的)?(平方|²)", r"\1的和的平方"),
+        (r"\(([^()]*[-−－][^()]*)\)\s*(的)?(平方|²)", r"\1的差的平方"),
+        (r"\^\s*2|²", "的平方"), (r"\^\s*3|³", "的立方"), (r"√\s*", "根号"),
+        (r"\s*[+＋]\s*", "加"), (r"(?<=[0-9a-zA-Z])\s*[-−－]\s*(?=[0-9a-zA-Z])", "减"),
+        (r"\s*[×✕*]\s*", "乘"), (r"\s*[÷]\s*", "除以"), (r"\s*[=＝]\s*", "等于"), (r"[()（）\[\]{}]", "")]
+
+
+def _say(text: str) -> str:
+    """Symbols a speech model mispronounces (heard: '(a+b)平方' -> 'a a b 平方', CER 0.15) read out in Chinese."""
+    for pat, rep in _SAY:
+        text = re.sub(pat, rep, text)
+    return text
+
+
 def spoken(text: str, chars: int) -> list[str]:
-    """A spoken line: no LaTeX/markup, split at punctuation into pieces of at most ``chars`` characters."""
-    text = re.sub(r"\$[^$]*\$", "", text or "").replace("\\", "").replace("*", "").strip()
+    """A spoken line: no LaTeX/markup/symbols, split at punctuation into pieces of at most ``chars`` characters
+    (a fragment shorter than 6 characters is merged into its neighbour, up to ``chars`` + 4)."""
+    # inline LaTeX is read out, not dropped (dropping left "公式是 ，记住它。"): commands and braces go, symbols are said
+    text = re.sub(r"\$([^$]*)\$", lambda m: re.sub(r"\\[a-zA-Z]+|[{}]", "", m.group(1)), text or "")
+    text = text.replace("\\", "").strip()
+    text = _say(text).replace("*", "").strip()
     if not text:
         return []
     pieces, cur = [], ""
@@ -107,7 +126,13 @@ def spoken(text: str, chars: int) -> list[str]:
             cur = tok
     if cur:
         pieces.append(cur)
-    return pieces
+    merged: list[str] = []
+    for p in pieces:  # no 5-second request for "列式子：" alone
+        if merged and (len(p) < 6 or len(merged[-1]) < 6) and len(merged[-1]) + len(p) <= chars + 4:
+            merged[-1] += p
+        else:
+            merged.append(p)
+    return merged
 
 
 class LessonPlanner:

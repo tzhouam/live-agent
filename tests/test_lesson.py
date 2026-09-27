@@ -33,7 +33,8 @@ def planner_llm(messages):
 
 
 def test_spoken_lines_carry_no_latex_and_fit_one_request():
-    assert spoken("公式是 $a^2+b^2=c^2$，记住它。", 22) == ["公式是 ，记住它。"]
+    assert spoken("公式是 $a^2+b^2=c^2$，记住它。", 22) == ["公式是 a的平方加b的平方等于c的平方，记住它。"]
+    assert spoken("列式子：(a+b)平方等于c平方加2ab。", 22) == ["列式子：a加b的和的平方等于c平方加2ab。"]  # no 3-char request
     parts = spoken("第一句很长很长很长很长很长很长，第二句也很长很长很长很长很长很长很长。", 22)
     assert all(len(p) <= 22 for p in parts) and len(parts) == 2
 
