@@ -2,7 +2,8 @@
 
 Wire protocol (WS /ws), JSON text frames unless noted:
   client -> server
-    {"type":"hello","mode":"private"|"public","user_id":"u1"}
+    {"type":"hello","mode":"private"|"public","user_id":"u1","video_codecs":["h264"]}
+    {"type":"video_codec","codec":"jpeg"}          the page cannot decode H.264 after all: fall back
     {"type":"speech_start"}                        barge-in (push-to-talk pressed)
     binary frame                                   recorded speech (webm/opus or wav) -> ASR
     {"type":"text","text":"..."}                   typed utterance (fallback / tests)
@@ -11,7 +12,10 @@ Wire protocol (WS /ws), JSON text frames unless noted:
     {"type":"ping","t":...}
   server -> client
     {"type":"chunk","request":k,"chunk":c,"n_frames":n,"fps":24,"sample_rate":sr,
-     "width":w,"height":h,"transcript":"..."}      followed by n binary JPEG frames and one binary PCM16 frame
+     "width":w,"height":h,"transcript":"...",
+     "codec":"jpeg"|"h264","sizes":[...]}          then n binary JPEG frames (jpeg) or one binary H.264 Annex-B
+                                                    segment of n access units with the given byte sizes (h264),
+                                                    then one binary PCM16 frame
     {"type":"stop"}                                 drop everything queued (barge-in)
     {"type":"transcript","text":"..."}             ASR result of the user's speech
     {"type":"status", ...}
@@ -25,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import io
+from fractions import Fraction
 import json
 import logging
 from pathlib import Path
@@ -51,6 +56,35 @@ def encode_jpeg(frame: np.ndarray, quality: int = 80) -> bytes:
     buf = io.BytesIO()
     Image.fromarray(frame).save(buf, format="JPEG", quality=quality)
     return buf.getvalue()
+
+
+def encode_h264(frames: np.ndarray, crf: int = 26) -> tuple[bytes, list[int]]:
+    """One self-contained H.264 segment per chunk (baseline, IDR first, no B-frames: decodable on its own,
+    so a barge-in can drop any chunk). Returns the Annex-B bytes and the size of each frame's access unit.
+    About 5x smaller than per-frame JPEG q80 at 480x864 [measured locally], which the remote bridge needs."""
+    import av
+
+    n, h, w = frames.shape[:3]
+    enc = av.CodecContext.create("libx264", "w")
+    enc.width, enc.height, enc.pix_fmt = w, h, "yuv420p"
+    enc.time_base = Fraction(1, 24)
+    enc.framerate = Fraction(24, 1)
+    enc.options = {"preset": "ultrafast", "tune": "zerolatency", "profile": "baseline", "crf": str(crf),
+                   "g": str(max(n, 1) + 1), "bf": "0", "threads": "4"}
+    out, sizes = [], []
+
+    def keep(packets):
+        for pkt in packets:
+            b = bytes(pkt)
+            out.append(b)
+            sizes.append(len(b))
+
+    for i, f in enumerate(frames):
+        vf = av.VideoFrame.from_ndarray(np.ascontiguousarray(f), format="rgb24").reformat(format="yuv420p")
+        vf.pts = i
+        keep(enc.encode(vf))
+    keep(enc.encode(None))
+    return b"".join(out), sizes
 
 
 def to_pcm16(audio: np.ndarray | None, n_samples: int) -> bytes:
@@ -91,8 +125,9 @@ class WSTransport:
     offset = t_server - (t_client_send + rtt/2)). Until a mapping exists, arrival time is used
     (and the event says so)."""
 
-    def __init__(self, ws: WebSocket, record_path: Path | None = None):
+    def __init__(self, ws: WebSocket, record_path: Path | None = None, video_codec: str = "jpeg"):
         self.ws = ws
+        self.video_codec = video_codec  # "h264" when the page can decode it (WebCodecs), else "jpeg"
         self.orchestrator: Orchestrator | None = None
         # trace recording: exactly the chunks the client reports as played (chunk_end acks), in order
         self.record_path = record_path
@@ -127,21 +162,38 @@ class WSTransport:
         frames = chunk.video if chunk.video is not None else np.zeros((chunk.n_frames, 8, 8, 3), np.uint8)
         # Encode off the event loop.
         loop = asyncio.get_running_loop()
-        jpegs = await loop.run_in_executor(None, lambda: [encode_jpeg(f) for f in frames])
+        segment, sizes, jpegs = None, None, None
+        if self.video_codec == "h264" and chunk.video is not None and len(frames):
+            try:
+                segment, sizes = await loop.run_in_executor(None, encode_h264, frames)
+                if len(sizes) != len(frames):
+                    segment = sizes = None  # one access unit per frame or nothing: fall back for this chunk
+            except Exception:  # noqa: BLE001 - never lose a chunk to the encoder
+                log.exception("H.264 encode failed; sending JPEG")
+                segment = sizes = None
+        if segment is None:
+            jpegs = await loop.run_in_executor(None, lambda: [encode_jpeg(f) for f in frames])
         pcm = to_pcm16(chunk.audio, int(chunk.duration_s * chunk.sample_rate))
         async with self._send_lock:
             if epoch != self._epoch:
                 return
             h, w = frames.shape[1:3]
-            await self.ws.send_text(json.dumps({
+            header = {
                 "type": "chunk", "request": chunk.request_index, "chunk": chunk.chunk_index,
-                "n_frames": len(jpegs), "fps": chunk.fps, "sample_rate": chunk.sample_rate,
-                "duration": chunk.duration_s,  # media duration (may differ from len(jpegs) / fps)
-                "width": int(w), "height": int(h), "transcript": script.transcript}))
-            for j in jpegs:
-                if epoch != self._epoch:
-                    return  # interrupted mid-chunk: the client discards the partial chunk
-                await self.ws.send_bytes(j)
+                "n_frames": len(frames), "fps": chunk.fps, "sample_rate": chunk.sample_rate,
+                "duration": chunk.duration_s,  # media duration (may differ from n_frames / fps)
+                "width": int(w), "height": int(h), "transcript": script.transcript,
+                "codec": "h264" if segment is not None else "jpeg"}
+            if segment is not None:
+                header["sizes"] = sizes
+            await self.ws.send_text(json.dumps(header))
+            if segment is not None:
+                await self.ws.send_bytes(segment)
+            else:
+                for j in jpegs:
+                    if epoch != self._epoch:
+                        return  # interrupted mid-chunk: the client discards the partial chunk
+                    await self.ws.send_bytes(j)
             if epoch == self._epoch:
                 await self.ws.send_bytes(pcm)
 
@@ -277,7 +329,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         record_path = Path(args.log_dir) / f"{session_id}.mp4" if args.record else None
         if record_path is not None:
             record_path.parent.mkdir(parents=True, exist_ok=True)
-        transport = WSTransport(ws, record_path)
+        codec = "h264" if args.video_codec == "auto" and "h264" in (hello.get("video_codecs") or []) else "jpeg"
+        transport = WSTransport(ws, record_path, video_codec=codec)
         shared = app.state.shared_gen is not None
         if shared:
             if app.state.session_lock.locked():
@@ -434,6 +487,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                     await ws.send_text(json.dumps({"type": "pong", "t": data.get("t"), "ts": now()}))
                 elif t == "clock":
                     transport.on_clock(data)
+                elif t == "video_codec" and data.get("codec") == "jpeg":
+                    transport.video_codec = "jpeg"  # the page failed to decode H.264
         except WebSocketDisconnect:
             pass
         finally:
@@ -501,6 +556,8 @@ def main() -> None:
     p.add_argument("--mock-judge-p", type=float, default=1.0, help="with --vlm-url mock: P(action judged done)")
     p.add_argument("--dev-allow-uncalibrated", action="store_true",
                    help="allow capabilities that were never executed (development only)")
+    p.add_argument("--video-codec", default="auto", choices=["auto", "jpeg"],
+                   help="auto: H.264 segments to pages that can decode them (WebCodecs), else JPEG frames")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8200)
     # Generator options (--taomate-*, --omni-*) are parsed by the adapters (taomate_h3.py, vllm_omni_h3.py).

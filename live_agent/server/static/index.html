@@ -183,8 +183,10 @@ $("connect").onclick = () => {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
   setConn("连接中…");
-  ws.onopen = () => {
-    ws.send(JSON.stringify({type: "hello", mode: $("mode").value, user_id: $("uid").value}));
+  ws.onopen = async () => {
+    // H.264 segments need ~1/6 of the bandwidth of per-frame JPEG (a remote bridge cannot carry JPEG in real time)
+    const video_codecs = (await h264Supported()) ? ["h264"] : [];
+    ws.send(JSON.stringify({type: "hello", mode: $("mode").value, user_id: $("uid").value, video_codecs}));
     ["talk","text","send","disconnect"].forEach(id => $(id).disabled = false);
     document.querySelectorAll(".chip").forEach(b => b.disabled = false);
     $("connect").disabled = true; $("overlay").textContent = "正在启动生成…";
@@ -221,13 +223,23 @@ async function onMessage(ev) {
     return;
   }
   if (!pending) return;
-  if (pending.frames.length < pending.meta.n_frames) {
+  const h264 = pending.meta.codec === "h264";
+  if (h264 && !pending.video) {
+    pending.video = decodeH264(ev.data, pending.meta);  // one Annex-B segment: all of the chunk's frames
+    pending.video.catch(() => {});  // handled when the chunk completes (below)
+  } else if (!h264 && pending.frames.length < pending.meta.n_frames) {
     pending.frames.push(createImageBitmap(new Blob([ev.data], {type: "image/jpeg"})));
   } else {
     pending.pcm = new Int16Array(ev.data);
     const c = pending; pending = null;
     decoding.push(c);  // arrival order = presentation order; decodes may finish out of order
-    c.frames = await Promise.all(c.frames);
+    try {
+      c.frames = h264 ? await c.video : await Promise.all(c.frames);
+    } catch (e) {  // this browser cannot decode the segment: ask for JPEG from now on
+      console.warn("H.264 decode failed, falling back to JPEG", e);
+      send({type: "video_codec", codec: "jpeg"});
+      c.frames = [];
+    }
     c.decoded = true;
     while (decoding.length && decoding[0].decoded) {  // schedule only the contiguous head
       const h = decoding.shift();
@@ -336,6 +348,33 @@ function onEvent(m) {
   }
 }
 
+// ---------------------------------------------------------------- H.264 (WebCodecs)
+const H264 = "avc1.42E01F";  // baseline, level 3.1 (480x864 @ 24 fps)
+async function h264Supported() {
+  try {
+    if (typeof VideoDecoder === "undefined") return false;
+    const r = await VideoDecoder.isConfigSupported({codec: H264, codedWidth: 480, codedHeight: 864});
+    return !!r.supported;
+  } catch (e) { return false; }
+}
+function decodeH264(buf, meta) {
+  return new Promise((resolve, reject) => {
+    const out = [];
+    const dec = new VideoDecoder({
+      output: f => out.push(createImageBitmap(f).finally(() => f.close())),
+      error: e => reject(e),
+    });
+    dec.configure({codec: H264, codedWidth: meta.width, codedHeight: meta.height, optimizeForLatency: true});
+    let off = 0;
+    meta.sizes.forEach((n, i) => {
+      dec.decode(new EncodedVideoChunk({type: i === 0 ? "key" : "delta", timestamp: Math.round(i * 1e6 / meta.fps),
+                                        data: new Uint8Array(buf, off, n)}));
+      off += n;
+    });
+    dec.flush().then(() => Promise.all(out)).then(frames => { dec.close(); resolve(frames); }, reject);
+  });
+}
+
 // ---------------------------------------------------------------- playback (master clock = AudioContext)
 function schedule(c) {
   const m = c.meta, sr = m.sample_rate;
@@ -373,7 +412,7 @@ function render() {
         send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.start)});
         if (q.meta.transcript) $("caption").innerHTML = `<small>台词</small>${esc(q.meta.transcript)}`;
       }
-      if (q.startedSent && t < q.end) {
+      if (q.startedSent && t < q.end && q.frames.length) {
         const idx = Math.min(q.frames.length - 1, Math.floor((t - q.start) / (q.end - q.start) * q.frames.length));
         g.drawImage(q.frames[idx], 0, 0, canvas.width, canvas.height);
         (q.painted = q.painted || new Set()).add(idx);  // frames actually shown (QC evidence)
