@@ -31,6 +31,7 @@ class PropState:
     label: str = ""  # judge noun (中文), e.g. "团扇"; empty = never counted
     home: str = ""  # canon place; an effect "home" returns the prop here
     count: int = 1  # how many exist (the continuity check expects exactly this many)
+    present: bool = True  # in the scene: False when the anchor shot never drew it (until an action uses it)
 
     def __post_init__(self) -> None:
         self.noun = self.noun or self.name
@@ -169,7 +170,12 @@ class StateLedger:
             self.pending[request_index] = effects
 
     def commit(self, request_index: int) -> None:
-        """The action of ``request_index`` was verified on presented frames: its effects become canon state."""
+        """The action of ``request_index`` was verified on presented frames: its effects become canon state,
+        and every prop the action names is in the scene from now on (drinking tea brings the teacup)."""
+        action = next((r.action for r in self.history if r.request_index == request_index), "")
+        for p in self.props.values():
+            if not p.present and p.noun.lower() in action.lower():
+                p.present = True
         effects = self.pending.pop(request_index, None)
         if not effects:
             return
@@ -200,7 +206,7 @@ class StateLedger:
         if not self.room:
             return ""
         props, pose = self.state_for(request_index)
-        items = [f"the {self.props[n].noun} {loc}" for n, (loc, _c) in props.items()]
+        items = [f"the {self.props[n].noun} {loc}" for n, (loc, _c) in props.items() if self.props[n].present]
         return (f"S1 is {pose}. Exactly these objects are in the scene, one of each, each in its place: "
                 + "; ".join(items))
 
@@ -208,13 +214,25 @@ class StateLedger:
         """Negative sentence generated from the inventory: nothing doubles, nothing new appears."""
         if not self.room:
             return ""
-        nouns = [p.noun for p in self.props.values()][:6]
+        nouns = [p.noun for p in self.props.values() if p.present][:6]
         return (f"Each object appears exactly once: no second {', no second '.join(nouns)}, "
                 "and no new objects appear on the desk or in her hands")
 
     def expected_counts(self) -> dict[str, int]:
         """Judge noun -> expected count for the props the continuity check counts."""
-        return {p.label: p.count for p in self.props.values() if p.label}
+        return {p.label: p.count for p in self.props.values() if p.label and p.present}
+
+    def anchor(self, counts: dict[str, list[int]]) -> list[str]:
+        """The session's first shot is what every later request copies (the video sink): a counted prop the
+        anchor never drew leaves the inventory (text must not contradict the picture); it re-enters when a
+        verified action uses it. Returns the labels removed."""
+        removed = []
+        for p in self.props.values():
+            seen = [n for n in counts.get(p.label, []) if isinstance(n, int)] if p.label else []
+            if seen and all(n == 0 for n in seen):
+                p.present = False
+                removed.append(p.label)
+        return removed
 
     def continuity_fix(self, label: str, found: int, request_index: int) -> str | None:
         """One correction sentence (<= 200 chars) for a prop the frames show the wrong number of times."""

@@ -146,6 +146,7 @@ class Orchestrator:
         self._continuity_fixed: dict[str, int] = {}  # prop label -> request that carried its last correction
         self._home_pose = director.ledger.pose  # the pose the desk props are framed in
         self._continuity_tries: dict[str, int] = {}  # prop label -> corrections issued since it was last right
+        self._anchored = False  # the first continuity check of a generator session sets the anchor
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -672,6 +673,13 @@ class Orchestrator:
         if k in self.dropped:
             return
         target = self.next_lock + (1 if self._locking == self.next_lock else 0)
+        anchored = []
+        if not self._anchored:
+            # the first checked shot of this generator session is the anchor: props it never drew leave the
+            # inventory instead of being nagged about (the text follows the picture); duplicates still count
+            self._anchored = True
+            anchored = ledger.anchor(counts or {})
+            expected = ledger.expected_counts()
         home_pose = ledger.pose == self._home_pose
         wrong, fixes = {}, []
         gave_up = []
@@ -697,7 +705,8 @@ class Orchestrator:
                 self._continuity_tries[label] = self._continuity_tries.get(label, 0) + 1
                 fixes.append(fix)
         self.log.emit(EventType.CONTINUITY, now(), request_index=k, counts=counts, expected=expected,
-                      wrong=wrong, corrections=fixes, target=target if fixes else None, gave_up=gave_up)
+                      wrong=wrong, corrections=fixes, target=target if fixes else None, gave_up=gave_up,
+                      anchor_removed=anchored)
 
     async def _run_checks_inner(self, k: int, t_evidence: float) -> None:
         script = self.scripts.get(k)
@@ -964,6 +973,7 @@ class Orchestrator:
             for k in [k for k in self.chunks if k in self.dropped]:
                 self._evict(k)  # unshown media may carry the erased speech
             try:
+                self._anchored = False  # a reset generator starts a new anchor shot
                 confirm = getattr(self.gen, "reset_confirmed", None)
                 ok = await confirm() if confirm is not None else (await self.gen.reset()) is None
                 acknowledge("generator_state", bool(ok),

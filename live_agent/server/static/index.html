@@ -348,6 +348,7 @@ function onEvent(m) {
       break;
     case "error": feed(t, "bad", "错误", `${d.where || ""} ${d.error || ""}`); break;
     case "continuity":
+      if ((d.anchor_removed || []).length) feed(t, "", `场景锚定 #${k}`, `首个镜头未出现：${d.anchor_removed.join("、")}（不再在提示中描述）`);
       if (d.wrong && Object.keys(d.wrong).length) {
         feed(t, (d.corrections || []).length ? "warn" : "", `场景连续性 #${k}`,
              Object.entries(d.wrong).map(([n, c]) => `${n}×${c.join("/")}`).join("，") +

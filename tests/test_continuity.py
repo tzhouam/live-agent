@@ -99,3 +99,22 @@ def test_a_duplicated_prop_on_every_frame_gets_a_correction_in_a_later_request()
 def test_one_disagreeing_frame_is_not_evidence():
     orch = _run(counts={"书": [1, 2, 2]}, script=())
     assert not any(e.data.get("corrections") for e in tp.events(orch, EventType.CONTINUITY))
+
+
+def test_the_anchor_shot_defines_the_scene_and_a_verified_action_brings_a_prop_back():
+    ledger = _ledger()
+    removed = ledger.anchor({"书": [1, 1, 1], "茶杯": [0, 0, 0], "团扇": [0, 1, 0]})
+    assert removed == ["茶杯"]  # never drawn in any frame (the fan was seen once: kept)
+    assert "teacup" not in ledger.inventory_sentence(2) and "no second teacup" not in ledger.duplicate_guard()
+    assert "茶杯" not in ledger.expected_counts()
+    ledger.record_request(5, "she lifts the teacup to her lips and clearly takes a sip", "")
+    ledger.commit(5)  # verified tea: the cup is in the scene from now on
+    assert "the teacup" in ledger.inventory_sentence(6) and ledger.expected_counts()["茶杯"] == 1
+
+
+def test_anchor_removal_happens_once_and_missing_props_are_not_corrected():
+    orch = _run(counts={"书": [1, 1, 1], "茶杯": [0, 0, 0]}, script=(), max_requests=12)
+    ev = tp.events(orch, EventType.CONTINUITY)
+    assert ev[0].data["anchor_removed"] == ["茶杯"] and not ev[0].data["corrections"]
+    assert not any(e.data.get("corrections") for e in ev)
+    assert all(e.data["anchor_removed"] == [] for e in ev[1:])

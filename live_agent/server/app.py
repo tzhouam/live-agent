@@ -101,7 +101,7 @@ PANEL_FIELDS = ("action", "transcript", "chain_ids", "chain_id", "step", "retry_
                 "confidence", "rationale", "mode", "correction", "queued", "earliest_correctable", "reason", "text",
                 "original", "cleaned", "erasure", "erasure_complete", "pending_targets", "deleted", "dropped",
                 "decision", "chains", "recalled", "issues", "error", "where", "lead_s", "total_s", "onset_source",
-                "audibility", "revision", "speaker", "uid", "counts", "expected", "wrong", "target", "gave_up")
+                "audibility", "revision", "speaker", "uid", "counts", "expected", "wrong", "target", "gave_up", "anchor_removed")
 
 
 def panel_event(ev, t0: float) -> dict | None:
