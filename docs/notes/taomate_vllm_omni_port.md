@@ -97,5 +97,6 @@ permuted; fixed). With the fix the persona is stable across a 13-request session
   offers no graph mode today); VAE decode overlap on a side stream.
 - Parity against the release runtime's audio is not measured (different kernels; the
   release itself is not video-reproducible run to run).
-- The live-agent generator still uses the native TaoMate worker; a WebSocket-backed
-  generator that consumes the fMP4 chunks is a separate step.
+- Done 2026-09-27 (D-028): the live demo runs on this port through `VllmOmniH3Generator`
+  (`scripts/run_live.sh omni`) with the just-in-time prompt hold
+  (`taomate_h3_hold_for_prompt`, vllm-omni commits 6747a4042, 78a90e04e, 68d8106a7).

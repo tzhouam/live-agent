@@ -5,6 +5,7 @@
 #   scripts/run_live.sh hybrid      # real Qwen3-8B responder + Qwen3-ASR (1 GPU), placeholder video
 #   scripts/run_live.sh packed      # TaoMate-H3 (colocated teacher) + all helper models on 4 GPUs
 #   scripts/run_live.sh full        # TaoMate-H3 (6 GPUs) + Qwen3-8B / Qwen3-VL-8B / Qwen3-ASR (1 GPU)
+#   scripts/run_live.sh omni        # TaoMate-H3 on vLLM-Omni USP4 (4 GPUs) + the helper models (1 GPU)
 #
 # Options (env): PORT (default 8200), HOST (default 127.0.0.1), HOURS (GPU reservation, default 2h),
 #                DIRECTOR (closed_loop | open_loop), ALLOW_UNCALIBRATED (1 = accept `documented` actions; default 1
@@ -26,6 +27,7 @@ set -m  # job control: each background child gets its own process group (cleanup
 RUN_ID=$(date +%Y%m%dT%H%M%S)-$$  # per-invocation logs: a run never parses (or releases) another run's GPUs
 SERVER_LOG=.cache/logs/run_live_server.$RUN_ID.out
 HELPER_LOG=.cache/logs/serve_models.$RUN_ID.out
+OMNI_LOG=.cache/logs/vllm_omni.$RUN_ID.out
 reserved_ids() {  # GPU ids that *our* gpu run calls reported reserving (from their own output)
   grep -ho "Reserved [0-9]* GPU(s): \[[0-9 ]*\]" "$@" 2>/dev/null | sed 's/.*\[\(.*\)\]/\1/' | tr ' ' '\n' | grep -E '^[0-9]+$' || true
 }
@@ -46,7 +48,7 @@ cleanup() {
   for p in "${pids[@]:-}"; do [ -n "$p" ] && { kill -9 -- "-$p" 2>/dev/null || kill -9 "$p" 2>/dev/null; } || true; done
   # canhazgpu can keep a reservation after its supervisor is interrupted: release exactly ours. A card can be
   # lost (idle release) and re-reserved by another job of the same user: release only cards still noted live-agent
-  ids=$(reserved_ids "$SERVER_LOG" "$HELPER_LOG" | sort -u | still_ours | paste -sd, -)
+  ids=$(reserved_ids "$SERVER_LOG" "$HELPER_LOG" "$OMNI_LOG" | sort -u | still_ours | paste -sd, -)
   if [ "$mode" != "demo" ] && [ -n "$ids" ] && command -v gpu >/dev/null; then
     gpu release --gpu-ids "$ids" >/dev/null 2>&1 && echo "[run_live] released GPUs $ids"
   fi
@@ -109,7 +111,45 @@ case "$mode" in
     echo "[run_live] server log: $SERVER_LOG"
     pids+=($!)
     ;;
-  *) echo "usage: $0 demo|hybrid|packed|full"; exit 2 ;;
+  omni)
+    # TaoMate-H3 served by vLLM-Omni (pure Ulysses SP on 4 GPUs, D-026/D-027) with the just-in-time prompt
+    # hold (configs/vllm_omni/taomate_h3_usp4_jit.yaml, D-028); the web server itself needs no GPU
+    command -v gpu >/dev/null || { echo "canhazgpu ('gpu') not found"; exit 1; }
+    OMNI_DIR=${OMNI_DIR:-/data/zhoutaichang/worldmodel/vllm-omni-taomate}
+    OMNI_PORT=${OMNI_PORT:-8191}
+    OMNI_MODEL=${OMNI_MODEL:-/data/models/hub/models--MiniMaxAI--MiniMax-H3/snapshots/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA}
+    [ -x "$OMNI_DIR/.venv/bin/vllm" ] || { echo "vLLM-Omni venv not found: $OMNI_DIR/.venv"; exit 1; }
+    for p in 8101 8102 8103 "$OMNI_PORT"; do port_free $p || { echo "port $p already in use (models running?)"; exit 1; }; done
+    : > "$HELPER_LOG"; : > "$OMNI_LOG"; : > "$SERVER_LOG"
+    echo "[run_live] omni: helper models on 1 GPU (log $HELPER_LOG), vLLM-Omni TaoMate-H3 on 4 GPUs (log $OMNI_LOG) ..."
+    hsel=(--gpus 1); [ -n "${HELPER_GPU:-}" ] && hsel=(--gpu-ids "$HELPER_GPU")
+    gpu run "${hsel[@]}" --timeout "$HOURS" --note "live-agent helper models (run_live.sh)" -- \
+      scripts/serve_models.sh > "$HELPER_LOG" 2>&1 &
+    pids+=($!)
+    osel=(--gpus 4); [ -n "${GPU_IDS:-}" ] && osel=(--gpu-ids "$GPU_IDS")
+    repo=$PWD
+    gpu run "${osel[@]}" --timeout "$HOURS" --note "live-agent vLLM-Omni TaoMate-H3 USP4 (run_live.sh)" -- \
+      env -C "$OMNI_DIR" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/vllm serve "$OMNI_MODEL" --omni \
+        --trust-remote-code --deploy-config "$repo/configs/vllm_omni/taomate_h3_usp4_jit.yaml" \
+        --lora-path "$repo/.cache/models/TaoMate-H3" --host 127.0.0.1 --port "$OMNI_PORT" > "$OMNI_LOG" 2>&1 &
+    pids+=($!)
+    t0=$SECONDS
+    until grep -q ALL_READY "$HELPER_LOG" 2>/dev/null && curl -sf "http://127.0.0.1:$OMNI_PORT/health" >/dev/null 2>&1; do
+      for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null || { echo "a model server exited during start-up:"; tail -5 "$HELPER_LOG" "$OMNI_LOG"; exit 1; }; done
+      if grep -q "reservation lost\|releasing GPU reservation" "$HELPER_LOG" "$OMNI_LOG"; then
+        echo "a GPU reservation was lost during start-up:"; tail -3 "$HELPER_LOG" "$OMNI_LOG"; exit 1
+      fi
+      [ $((SECONDS - t0)) -gt "${READY_TIMEOUT:-1800}" ] && { echo "model servers not ready in time:"; tail -5 "$HELPER_LOG" "$OMNI_LOG"; exit 1; }
+      sleep 5
+    done
+    echo "[run_live] model servers ready ($((SECONDS - t0)) s); starting the web server ..."
+    python3 -m live_agent.server.app --generator vllm_omni_h3 --omni-url "ws://127.0.0.1:$OMNI_PORT/v1/realtime/video" \
+      --omni-model "$OMNI_MODEL" --director-mode "$DIRECTOR" --host "$HOST" --port "$PORT" "${extra[@]}" \
+      > "$SERVER_LOG" 2>&1 &
+    pids+=($!)
+    echo "[run_live] server log: $SERVER_LOG"
+    ;;
+  *) echo "usage: $0 demo|hybrid|packed|full|omni"; exit 2 ;;
 esac
 
 for _ in $(seq 1 "${READY_TIMEOUT:-900}"); do  # seconds; raise it when gpu run may queue for GPUs
@@ -118,7 +158,7 @@ for _ in $(seq 1 "${READY_TIMEOUT:-900}"); do  # seconds; raise it when gpu run 
     break
   fi
   for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null || { echo "[run_live] a process exited during start-up"; exit 1; }; done
-  if [ "$mode" != "demo" ] && grep -q "reservation lost" "$SERVER_LOG" "$HELPER_LOG" 2>/dev/null; then
+  if [ "$mode" != "demo" ] && grep -q "reservation lost" "$SERVER_LOG" "$HELPER_LOG" "$OMNI_LOG" 2>/dev/null; then
     echo "[run_live] a GPU reservation was lost during start-up"; exit 1
   fi
   sleep 1

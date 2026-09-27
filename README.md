@@ -17,7 +17,15 @@ scripts/run_live.sh hybrid
 
 # Full stack: TaoMate-H3 on 6 GPUs + Qwen3-8B / Qwen3-VL-8B / Qwen3-ASR on 1 GPU (via canhazgpu)
 scripts/run_live.sh full
+
+# TaoMate-H3 served by vLLM-Omni (pure Ulysses SP on 4 GPUs, D-026..D-028) + the helper models on 1 GPU
+GPU_IDS=0,1,2,3 HELPER_GPU=4 PORT=8203 HOURS=8h scripts/run_live.sh omni
 ```
+
+`omni` needs the vLLM-Omni worktree `/data/zhoutaichang/worldmodel/vllm-omni-taomate` (branch
+`feat/taomate-h3-realtime`, with its `.venv`; override with `OMNI_DIR`). It serves on `OMNI_PORT` (8191) with
+`configs/vllm_omni/taomate_h3_usp4_jit.yaml`, whose `taomate_h3_hold_for_prompt` makes each 5 s request wait
+for the director's just-in-time prompt. Start-up takes about 6 min (4 x 87 GiB load plus one warm-up request).
 
 The web demo page shows:
 - **Stage:** the persona video (portrait) and its spoken line.

@@ -464,6 +464,10 @@ def make_generator(args: argparse.Namespace):
         from live_agent.generator.taomate_h3 import TaoMateH3Generator
 
         return TaoMateH3Generator.from_args(args)
+    if args.generator == "vllm_omni_h3":  # TaoMate-H3 served by vLLM-Omni (USP4) over its realtime WebSocket
+        from live_agent.generator.vllm_omni_h3 import VllmOmniH3Generator
+
+        return VllmOmniH3Generator.from_args(args)
     raise ValueError(args.generator)
 
 
@@ -481,7 +485,7 @@ def main() -> None:
 
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="configs/persona_hanfu")
-    p.add_argument("--generator", default="mock", choices=["mock", "taomate_h3"])
+    p.add_argument("--generator", default="mock", choices=["mock", "taomate_h3", "vllm_omni_h3"])
     p.add_argument("--llm-url", default="http://127.0.0.1:8101/v1")
     p.add_argument("--llm-model", default="qwen3-8b")
     p.add_argument("--vlm-url", default="http://127.0.0.1:8102/v1")
@@ -499,7 +503,7 @@ def main() -> None:
                    help="allow capabilities that were never executed (development only)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8200)
-    # TaoMate-H3 generator options are parsed by the adapter (see taomate_h3.py).
+    # Generator options (--taomate-*, --omni-*) are parsed by the adapters (taomate_h3.py, vllm_omni_h3.py).
     args, rest = p.parse_known_args()
     args.extra = rest
     # JPEG/PCM frames do not compress: per-message deflate only burned event-loop time (stall watchdog)

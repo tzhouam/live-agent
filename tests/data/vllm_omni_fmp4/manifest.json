@@ -1,0 +1,45 @@
+{
+ "fps": 24,
+ "sample_rate": 32000,
+ "tone_hz": 440,
+ "amplitude": 0.3,
+ "grey": "(frame*9)%200+20",
+ "chunks": [
+  {
+   "file": "chunk0.m4s",
+   "frame_start": 0,
+   "num_frames": 34,
+   "num_audio_samples": 45333,
+   "bytes": 37206
+  },
+  {
+   "file": "chunk1.m4s",
+   "frame_start": 34,
+   "num_frames": 34,
+   "num_audio_samples": 45333,
+   "bytes": 37643
+  },
+  {
+   "file": "chunk2.m4s",
+   "frame_start": 68,
+   "num_frames": 34,
+   "num_audio_samples": 45334,
+   "bytes": 38341
+  },
+  {
+   "file": "chunk3.m4s",
+   "frame_start": 102,
+   "num_frames": 17,
+   "num_audio_samples": 22666,
+   "bytes": 18489
+  },
+  {
+   "file": "chunk4.m4s",
+   "frame_start": 119,
+   "num_frames": 34,
+   "num_audio_samples": 45334,
+   "bytes": 38819
+  }
+ ],
+ "trailer_bytes": 8866
+}
