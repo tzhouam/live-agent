@@ -156,6 +156,7 @@ class Orchestrator:
         self._switch_target: int | None = None  # first request locked with the reply (line or action)
         self._switch_plan = 0
         self._lesson_task: asyncio.Task | None = None
+        self.image_maker = None  # board_images.ImageMaker (board figures), set by the app when configured
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -890,6 +891,25 @@ class Orchestrator:
         self._aux.add(self._lesson_task)
         self._lesson_task.add_done_callback(lambda t: (self._aux.discard(t), self._maybe_finish()))
 
+    def _make_figures(self) -> None:
+        """Generate the images boards asked for, in the background (a board shows its figure on requests locked
+        after the image exists; without an image model the figure is simply left out)."""
+        d = self.director
+        boards, d.pending_figures = d.pending_figures, []
+        if self.image_maker is None:
+            return
+        for board in boards:
+            self._spawn(self._make_figure(board), "figure")
+
+    async def _make_figure(self, board) -> None:
+        t0 = now()
+        try:
+            board.figure_url = await self.image_maker.make(board.figure_prompt)
+            self.log.emit(EventType.LESSON, now(), stage="figure", board=board.key, title=board.title,
+                          seconds=round(now() - t0, 2))
+        except Exception as e:  # noqa: BLE001 - the board works without its picture
+            self.log.emit(EventType.LESSON, now(), stage="figure_failed", board=board.key, error=str(e)[:160])
+
     def _stop_lesson(self) -> None:
         if self._lesson_task is not None and not self._lesson_task.done():
             self._lesson_task.cancel()
@@ -928,6 +948,7 @@ class Orchestrator:
                                   error=str(e)[:160])
             if lines:
                 d.add_lesson_lines(lines)
+                self._make_figures()
                 self.log.emit(EventType.LESSON, now(), stage="section", section=i,
                               title=outline.sections[i]["title"], lines=len(lines),
                               points=len(lines[0].board.items))
@@ -1007,6 +1028,7 @@ class Orchestrator:
                 decision = {**decision, "steps": []}
             self.director.apply(utt, decision, memory_ids=memory_ids, recall_id=recall_id)
             self._decisions += 1  # only applied decisions end the post-interruption wait
+            self._make_figures()
             kind = (decision or {}).get("kind")
             if kind == "lesson" and str((decision or {}).get("topic") or "").strip():
                 self._start_lesson(str(decision["topic"]).strip())

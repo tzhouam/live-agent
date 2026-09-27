@@ -25,11 +25,16 @@ LLM_URL=${LLM_URL:-http://127.0.0.1:8101/v1}; LLM_MODEL=${LLM_MODEL:-qwen3-8b}
 LLM_API_KEY_FILE=${LLM_API_KEY_FILE:-.cache/llm_api_key}
 if [ -z "${LLM_API_KEY:-}" ] && [ -s "$LLM_API_KEY_FILE" ]; then LLM_API_KEY=$(tr -d '[:space:]' < "$LLM_API_KEY_FILE"); fi
 export LLM_API_KEY=${LLM_API_KEY:-}
+# no local LLM when the responder is hosted (frees the helper card, e.g. for the board image model)
+[ "$LLM_URL" != "http://127.0.0.1:8101/v1" ] && export SKIP_LLM=1
+# board images (Qwen-Image on the helper card): default on for the teacher persona
+IMAGES=${IMAGES:-$([ "$PERSONA" = "teacher" ] && echo 1 || echo 0)}; export IMAGE=$IMAGES
 mkdir -p .cache/logs .cache/sessions
 extra=()
 [ -d "configs/persona_$PERSONA" ] || { echo "unknown PERSONA=$PERSONA (no configs/persona_$PERSONA)"; exit 2; }
 extra+=(--config "configs/persona_$PERSONA")
 [ "$mode" != "demo" ] && extra+=(--llm-url "$LLM_URL" --llm-model "$LLM_MODEL")
+[ "$IMAGES" = "1" ] && [ "$mode" != "demo" ] && extra+=(--image-url "http://127.0.0.1:8104")
 [ "$ALLOW_UNCALIBRATED" = "1" ] && extra+=(--dev-allow-uncalibrated)
 [ "${RECORD:-1}" = "1" ] && extra+=(--record)  # traces: event log + presented video per session (/traces)
 pids=()
@@ -129,7 +134,7 @@ case "$mode" in
     OMNI_PORT=${OMNI_PORT:-8191}
     OMNI_MODEL=${OMNI_MODEL:-/data/models/hub/models--MiniMaxAI--MiniMax-H3/snapshots/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA}
     [ -x "$OMNI_DIR/.venv/bin/vllm" ] || { echo "vLLM-Omni venv not found: $OMNI_DIR/.venv"; exit 1; }
-    for p in 8101 8102 8103 "$OMNI_PORT"; do port_free $p || { echo "port $p already in use (models running?)"; exit 1; }; done
+    for p in 8101 8102 8103 8104 "$OMNI_PORT"; do port_free $p || { echo "port $p already in use (models running?)"; exit 1; }; done
     : > "$HELPER_LOG"; : > "$OMNI_LOG"; : > "$SERVER_LOG"
     echo "[run_live] omni: helper models on 1 GPU (log $HELPER_LOG), vLLM-Omni TaoMate-H3 on 4 GPUs (log $OMNI_LOG) ..."
     hsel=(--gpus 1); [ -n "${HELPER_GPU:-}" ] && hsel=(--gpu-ids "$HELPER_GPU")

@@ -19,7 +19,8 @@ OUTLINE = {"title": "光合作用", "sections": [{"title": "什么是光合作�
 
 
 def section(i):
-    return {"board": {"title": f"第{i}节", "items": ["要点甲", "公式 $6CO_2+6H_2O \\to C_6H_{12}O_6+6O_2$"]},
+    return {"board": {"title": f"第{i}节", "items": ["要点甲", "公式 $6CO_2+6H_2O \\to C_6H_{12}O_6+6O_2$"],
+                      "figure": {"prompt": f"第{i}节示意图：一片叶子，箭头标出阳光、水、二氧化碳", "caption": "叶片<示意>"}},
             "lines": [{"text": f"第{i}节第一句讲要点甲。", "item": 0}, {"text": f"第{i}节第二句，还是要点甲。", "item": 0},
                       {"text": f"第{i}节第三句讲公式，二氧化碳加水生成葡萄糖和氧气，这句话很长需要拆开。", "item": 1}]}
 
@@ -98,3 +99,62 @@ def test_a_lesson_plays_with_its_board_and_survives_a_question():
     assert {b["key"] for b in boards.values()} >= {"outline", "s0"}
     lesson_lines = [t for t in said if t.startswith("第1节") or t.startswith("第2节")]
     assert len(lesson_lines) == len(set(lesson_lines))  # no line lost or repeated across the question
+
+
+class FakeImages:
+    def __init__(self):
+        self.prompts = []
+
+    async def make(self, prompt):
+        self.prompts.append(prompt)
+        await asyncio.sleep(0.01)
+        return f"/board/img/{len(self.prompts):016x}.png"
+
+
+def test_a_section_figure_appears_on_the_board_once_generated():
+    planner = LessonPlanner(ScriptedLLM(planner_llm), name="林老师", bio="")
+    outline = asyncio.run(planner.outline("光合作用"))
+    board = asyncio.run(planner.section(outline, 0, []))[0].board
+    assert board.figure_prompt.startswith("第1节示意图") and "figure" not in board.view(0)  # not generated yet
+    board.figure_url = "/board/img/0123456789abcdef.png"
+    fig = board.view(0)["figure"]
+    assert fig["url"].endswith(".png") and fig["caption"] == "叶片&lt;示意&gt;"
+
+
+def test_lesson_figures_are_generated_in_the_background_and_shown_on_later_lines():
+    def llm(messages):
+        if messages[0]["role"] != "system":
+            return planner_llm(messages)
+        return json.dumps({"relation": "new", "kind": "lesson", "topic": "光合作用",
+                           "steps": [{"intent": "", "line": "好，我们来上一节光合作用。"}]}, ensure_ascii=False)
+
+    orch, client = tp.build(max_requests=14)
+    orch.director.llm.fn = llm
+    orch.image_maker = FakeImages()
+    asyncio.run(tp.run(orch, client, [(2.0, "给我上一节光合作用的课")]))
+    assert len(orch.image_maker.prompts) == 2  # one per section, generated once
+    shown = [s.board for s in orch.scripts.values() if s.board and s.board["key"] == "s0"]
+    assert shown and any("figure" in b for b in shown)
+    assert any(e.data.get("stage") == "figure" for e in tp.events(orch, EventType.LESSON))
+
+
+def test_image_maker_calls_the_images_api_and_reuses_files(tmp_path, monkeypatch):
+    import base64
+
+    import httpx
+
+    from live_agent.board_images import ImageMaker
+
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(b"PNGDATA").decode()}]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    maker = ImageMaker("http://127.0.0.1:8104", tmp_path)
+    url = asyncio.run(maker.make("一个直角三角形"))
+    assert url.startswith("/board/img/") and (tmp_path / url.rsplit("/", 1)[1]).read_bytes() == b"PNGDATA"
+    assert calls[0]["num_inference_steps"] == 4 and calls[0]["size"] == "1024x768" and "直角三角形" in calls[0]["prompt"]
+    assert asyncio.run(maker.make("一个直角三角形")) == url and len(calls) == 1  # same prompt: the file is reused
