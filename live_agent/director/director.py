@@ -29,6 +29,7 @@ import json
 import enum
 import re
 from collections import deque
+from typing import Any
 from dataclasses import dataclass, field
 
 from live_agent.capability import CapabilityManifest, Decision
@@ -60,6 +61,10 @@ class Segment:
     min_request: int = 0  # reserved slot: do not lock before this request index
     memory_ids: list[str] | None = None  # memories the responder saw when writing this line (None = unknown)
     recall_id: str | None = None  # memory recall token for that decision (lineage computed by the bridge)
+    board: Any = None  # lesson.Board shown while this line plays (lesson lines, answers with a board)
+    reveal: int | None = None  # board point being explained (points after it are not yet shown)
+    lesson: bool = False  # a lesson line (kept in the lesson backlog across questions)
+    gesture: bool = False  # present the board (first line about a point)
 
 
 @dataclass
@@ -129,6 +134,14 @@ class Director:
         # recent exchanges (user text, applied decision) for follow-ups such as "I did not understand";
         # erased terms are purged from it like from every other prompt-reaching state
         self.dialogue: deque[tuple[str, str]] = deque(maxlen=8)
+        # long-form teaching: lesson lines wait here, not in the answer queue, so a question never discards them;
+        # lines cut before they were shown go back to the front; after a question the lesson resumes
+        self.lesson_backlog: deque[Segment] = deque()
+        self.lesson_title = ""
+        self._lesson_locked: dict[int, Segment] = {}  # request -> lesson line it carries (re-queued if cut)
+        self._lesson_resume = False
+        self.present_intent: str | None = None  # gesture toward the board for a point's first line
+        self._answer_boards = 0
         self.plan_version = 0
         self.queue: deque[Segment] = deque()
         self.held: dict[str, dict[int, list[Segment]]] = {}  # multistep: steps not yet released
@@ -173,7 +186,19 @@ class Director:
             self.dialogue.append(("user", utt.text))
             self.dialogue.append(("assistant", json.dumps(d, ensure_ascii=False)))
         deferred, self.deferred = self.deferred, []
+        if (self.lesson_backlog or self.lesson_title) and d.get("kind") not in ("lesson", "lesson_stop"):
+            self._lesson_resume = True  # a reply during a lesson: the lesson resumes after it, and says so
         self._apply_decision(utt, d)
+        board = d.get("board")
+        if isinstance(board, dict) and board.get("items"):  # an answer with its own board (formula, steps)
+            from live_agent.lesson import MAX_ITEMS, Board
+
+            self._answer_boards += 1
+            b = Board(key=f"a{self._answer_boards}", title=str(board.get("title") or "")[:24],
+                      items=[str(x)[:60] for x in board["items"] if str(x).strip()][:MAX_ITEMS])
+            for seg in self.queue:
+                if id(seg) not in before and seg.board is None:
+                    seg.board = b
         touched = {(d.get("target_chain") or "")} if d.get("relation") in ("revision", "withdrawal") else set()
         instruction = self.latest_chain is not None and d.get("relation") in ("new", "revision", "withdrawal") \
             and d.get("kind") not in ("chat", "memory")
@@ -330,7 +355,14 @@ class Director:
 
     def on_interrupted(self, scripts: list[BlockScript]) -> None:
         """Requests carrying an open chain's step were dropped before being fully presented:
-        that step was never shown, so the chain counts as unexecuted again."""
+        that step was never shown, so the chain counts as unexecuted again. Lesson lines cut this way go back
+        to the front of the lesson backlog (in order) and the lesson resumes after the interruption."""
+        cut_lessons = [self._lesson_locked.pop(sc.request_index) for sc in sorted(scripts, key=lambda x: x.request_index)
+                       if sc.request_index in self._lesson_locked]
+        for seg in reversed(cut_lessons):
+            self.lesson_backlog.appendleft(seg)
+        if cut_lessons:
+            self._lesson_resume = True
         for sc in scripts:
             for cid in sc.chain_ids:
                 c = self.chains.get(cid)
@@ -457,6 +489,8 @@ class Director:
         self.queue = deque(s for s in self.queue if s.chain_id is not None and not s.is_completion_remark)
         self.listening = True
         self.awaiting_decision = True  # old-plan segments stay ineligible until the next decision
+        if self.lesson_backlog or self.lesson_title:
+            self._lesson_resume = True  # a question interrupts a lesson in progress: resume it afterwards
 
     # ------------------------------------------------------------ verdict feedback
     def on_verified(self, chain_id: str, intent: str, request_index: int, t: float, *,
@@ -569,6 +603,7 @@ class Director:
         n = 0
         self.dialogue = deque((r, t) for r, t in self.dialogue if term not in t)  # both turns of an exchange
         self.dialogue = deque(self.dialogue, maxlen=8)
+        self.lesson_backlog = deque(s for s in self.lesson_backlog if term not in s.line)
         before = len(self.queue)
         self.queue = deque(s for s in self.queue if term not in s.line and term not in s.action_text)
         for sq in self.queue:
@@ -603,7 +638,30 @@ class Director:
             if seg.min_request <= request_index:
                 del self.queue[i]
                 return seg
+        if self.lesson_backlog and not self.listening:
+            nxt = self.lesson_backlog[0]
+            if self._lesson_resume:  # back from a question: say so before continuing
+                self._lesson_resume = False
+                return Segment(chain_id=None, plan_version=self.plan_version, line="好，我们接着讲。",
+                               board=nxt.board, reveal=nxt.reveal, lesson=True)
+            seg = self.lesson_backlog.popleft()
+            seg.plan_version = self.plan_version
+            self._lesson_locked[request_index] = seg
+            return seg
         return None
+
+    # ------------------------------------------------------------ lessons
+    def add_lesson_lines(self, lines) -> None:
+        """Append lesson.LessonLine items (a section, or the intro) to the lesson backlog."""
+        for ln in lines:
+            self.lesson_backlog.append(Segment(chain_id=None, plan_version=self.plan_version, line=ln.text,
+                                               board=ln.board, reveal=ln.item, lesson=True, gesture=ln.gesture))
+
+    def stop_lesson(self) -> None:
+        self.lesson_backlog.clear()
+        self._lesson_locked.clear()
+        self._lesson_resume = False
+        self.lesson_title = ""
 
     def next_script(self, request_index: int) -> BlockScript:
         seg = self._pop_segment(request_index)
@@ -651,6 +709,9 @@ class Director:
                 self.events.refusals.append((seg.chain_id, res.reason))
                 line = "这个我现在做不到，不过我们可以聊聊别的。"
                 self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
+        if not action_phrase and seg.gesture and self.present_intent:
+            cap = self.manifest.by_intent(self.present_intent)  # introduce a board point: show the board
+            action_phrase = cap.phrase if cap else ""
         if not action_phrase and line and self.speak_intent:
             # a spoken line with no requested action (an answer, chat): the persona's speaking gesture
             cap = self.manifest.by_intent(self.speak_intent)
@@ -681,6 +742,7 @@ class Director:
                              chain_ids=[seg.chain_id] if seg.chain_id else [],
                              capability_ids=cap_ids,
                              scene_state=self.ledger.inventory_sentence(request_index),
+                             board=seg.board.view(seg.reveal) if seg.board is not None else None,
                              scene_guard=self.ledger.duplicate_guard(),
                              provenance={"intent": seg.intent, "step": seg.step, "retry_of": seg.retry_of,
                                          "revision": seg.revision, "memory_ids": seg.memory_ids,

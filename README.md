@@ -21,7 +21,8 @@ scripts/run_live.sh full
 # TaoMate-H3 served by vLLM-Omni (pure Ulysses SP on 4 GPUs, D-026..D-028) + the helper models on 1 GPU
 GPU_IDS=0,1,2,3 HELPER_GPU=4 PORT=8203 HOURS=8h scripts/run_live.sh omni
 
-# Same, with the classroom teacher persona (students ask, the teacher answers; D-032)
+# Same, with the classroom teacher persona: students ask, the teacher answers or gives a whole lesson with a board beside
+# the video ("给我上一节…的课"; D-032, D-034); LLM_URL/LLM_MODEL select a hosted responder (D-033)
 PERSONA=teacher GPU_IDS=0,1,2,3 HELPER_GPU=4 PORT=8203 HOURS=8h scripts/run_live.sh omni
 ```
 
@@ -51,7 +52,7 @@ Options (environment variables): `PORT` (8200), `HOST` (127.0.0.1), `HOURS` (GPU
 capability is calibrated yet: `docs/e1_pilot.md`).
 
 Requirements:
-- **demo:** Python 3.12 with the packages imported by `live_agent` (fastapi, uvicorn, numpy, pillow).
+- **demo:** Python 3.12 with the packages imported by `live_agent` (fastapi, uvicorn, numpy, pillow, av, websockets, latex2mathml for board formulas).
 - **full:** additionally the environments built by `scripts/m0/setup_env.sh` (`.venvs/taomate-h3`) and the serve
   venv (`.venvs/serve`), the TaoMate-H3 LoRA in `.cache/models/TaoMate-H3`, the MiniMax-H3 weights in
   `/data/models`, 7 free Hopper GPUs, and `/usr/bin/ffmpeg` with libx264.

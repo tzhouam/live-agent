@@ -86,6 +86,7 @@ class OrchestratorConfig:
     # A comment (typed or spoken) does not cut the video: already generated content keeps playing and the
     # player switches to the reply at the moment the reply's first chunk is ready (erasure still cuts at once)
     soft_switch: bool = True
+    lesson_lookahead: int = 6  # generate the next lesson section once fewer lines than this are waiting (~30 s)
     switch_decision_wait_s: float = 10.0  # while old video plays, wait this long for the reply decision
     continuity_cooldown: int = 3  # requests between two corrections of the same prop
     continuity_max_fixes: int = 2  # corrections per prop without effect before giving up on it (logged)
@@ -154,6 +155,7 @@ class Orchestrator:
         self._switch_pending = False  # a comment arrived; old video plays until the reply is ready
         self._switch_target: int | None = None  # first request locked with the reply (line or action)
         self._switch_plan = 0
+        self._lesson_task: asyncio.Task | None = None
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -880,6 +882,58 @@ class Orchestrator:
             self.log.emit(EventType.PLAYBACK_STOP, now(), t_speech_onset=t, dropped=sorted(self.dropped))
         self._maybe_finish()
 
+    # ------------------------------------------------------------------ lessons
+    def _start_lesson(self, topic: str) -> None:
+        self._stop_lesson()
+        self.director.lesson_title = topic
+        self._lesson_task = asyncio.create_task(self._guarded(self._lesson_loop(topic), "lesson", fatal=False))
+        self._aux.add(self._lesson_task)
+        self._lesson_task.add_done_callback(lambda t: (self._aux.discard(t), self._maybe_finish()))
+
+    def _stop_lesson(self) -> None:
+        if self._lesson_task is not None and not self._lesson_task.done():
+            self._lesson_task.cancel()
+        self._lesson_task = None
+        self.director.stop_lesson()
+
+    async def _lesson_loop(self, topic: str) -> None:
+        """Outline first (its intro plays with the outline on the board), then one section at a time, each
+        generated while the previous one plays (a section is ~1 min of speech, ~10-20 s to generate)."""
+        from live_agent.lesson import LessonLine, LessonPlanner
+
+        d = self.director
+        planner = LessonPlanner(d.llm, name=d.persona_name, bio=d.persona_bio)
+        context = "；".join(t for r, t in d.dialogue if r == "user")[-300:]
+        try:
+            outline = await planner.outline(topic, context)
+        except Exception as e:  # noqa: BLE001
+            self.log.emit(EventType.LESSON, now(), stage="outline_failed", topic=topic, error=str(e)[:160])
+            d.add_lesson_lines([LessonLine("抱歉，这节课我还没准备好，你可以先问我问题。", None, None)])
+            return
+        d.lesson_title = outline.title
+        d.add_lesson_lines(planner.intro_lines(outline))
+        self.log.emit(EventType.LESSON, now(), stage="outline", topic=topic, title=outline.title,
+                      sections=[s["title"] for s in outline.sections])
+        covered: list[str] = []
+        for i in range(len(outline.sections)):
+            while len(d.lesson_backlog) >= self.cfg.lesson_lookahead and not self._stop.is_set():
+                await asyncio.sleep(0.5)
+            lines = None
+            for attempt in range(2):
+                try:
+                    lines = await planner.section(outline, i, covered)
+                    break
+                except Exception as e:  # noqa: BLE001 - retry once, then skip the section
+                    self.log.emit(EventType.LESSON, now(), stage="section_failed", section=i, attempt=attempt,
+                                  error=str(e)[:160])
+            if lines:
+                d.add_lesson_lines(lines)
+                self.log.emit(EventType.LESSON, now(), stage="section", section=i,
+                              title=outline.sections[i]["title"], lines=len(lines),
+                              points=len(lines[0].board.items))
+            covered.append(outline.sections[i]["title"])
+        self.log.emit(EventType.LESSON, now(), stage="planned", title=outline.title)
+
     async def _switch_to(self, target: int) -> None:
         """The reply's first chunk is ready: drop what was generated before it and not yet fully shown, stop
         the player (it cuts at the current frame) and let the reply play next."""
@@ -953,6 +1007,11 @@ class Orchestrator:
                 decision = {**decision, "steps": []}
             self.director.apply(utt, decision, memory_ids=memory_ids, recall_id=recall_id)
             self._decisions += 1  # only applied decisions end the post-interruption wait
+            kind = (decision or {}).get("kind")
+            if kind == "lesson" and str((decision or {}).get("topic") or "").strip():
+                self._start_lesson(str(decision["topic"]).strip())
+            elif kind == "lesson_stop":
+                self._stop_lesson()
         self._drain_director_events(now())  # before the erasure, so its redaction covers these events
         if term and self.memory is not None and hasattr(self.memory, "forget"):
             complete = await self._erase(term)

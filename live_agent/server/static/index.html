@@ -34,6 +34,22 @@
   .overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#d8d0bf;
              font-size:15px; text-align:center; padding:16px; pointer-events:none; }
   .caption { min-height:24px; font-size:16px; margin-top:8px; }
+  /* board beside the video: the page renders what the video model cannot write (points, formulas) */
+  .stagerow { display:flex; gap:12px; align-items:stretch; min-width:0; }
+  .stagerow .screen { flex:0 1 auto; }
+  .board { display:none; flex:1 1 0; min-width:0; max-height:68vh; overflow:auto; border-radius:10px;
+           background:#1e3a2c; color:#f1eee4; padding:18px 22px; font-size:19px; line-height:1.65;
+           box-shadow: inset 0 0 0 7px #6e4b2b, inset 0 0 40px rgba(0,0,0,.35);
+           font-family: "Kaiti SC", "STKaiti", "KaiTi", "Noto Serif CJK SC", serif; }
+  .board.on { display:block; }
+  .board h3 { margin:0 0 12px; font-size:24px; font-weight:600; padding-bottom:8px;
+              border-bottom:1px dashed rgba(241,238,228,.35); }
+  .board ol { margin:0; padding-left:1.5em; }
+  .board li { margin:10px 0; transition: opacity .5s, color .3s; }
+  .board li.hidden { opacity:0; }
+  .board li.now { color:#ffe08a; }
+  .board math { font-size:1.08em; }
+  @media (max-width: 860px) { .stagerow { flex-direction:column; } .board { max-height:none; } }
   .caption small { color:var(--muted); font-size:12px; margin-right:6px; }
   .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   button, select, input[type=text] { font:inherit; min-height:40px; border-radius:8px; border:1px solid var(--line);
@@ -81,9 +97,12 @@
 <main>
   <section class="stage">
     <div class="card">
-      <div class="screen" id="screenWrap">
-        <canvas id="screen" width="480" height="864" aria-label="数字人画面"></canvas>
-        <div class="overlay" id="overlay">点击「连接」开始会话</div>
+      <div class="stagerow">
+        <div class="screen" id="screenWrap">
+          <canvas id="screen" width="480" height="864" aria-label="数字人画面"></canvas>
+          <div class="overlay" id="overlay">点击「连接」开始会话</div>
+        </div>
+        <section class="board" id="board" aria-label="板书" aria-live="polite"><h3 id="boardTitle"></h3><ol id="boardItems"></ol></section>
       </div>
       <div class="caption" id="caption" aria-live="polite"></div>
     </div>
@@ -352,6 +371,14 @@ function onEvent(m) {
       if ((d.issues || []).length) feed(t, "warn", "审核", d.issues.join(", "));
       break;
     case "error": feed(t, "bad", "错误", `${d.where || ""} ${d.error || ""}`); break;
+    case "lesson": {
+      const s = {outline: `课程大纲：${d.title || ""}（${(d.sections || []).length} 节）`,
+                 section: `第 ${(d.section ?? 0) + 1} 节已备好：${d.title || ""}（${d.lines} 句，${d.points} 条板书）`,
+                 section_failed: `第 ${(d.section ?? 0) + 1} 节生成失败${d.attempt ? "，已跳过" : "，重试中"}`,
+                 outline_failed: "课程大纲生成失败", planned: `整节课已备好：${d.title || ""}`}[d.stage];
+      if (s) feed(t, d.stage.endsWith("failed") ? "bad" : "", "备课", s);
+      break;
+    }
     case "continuity":
       if ((d.anchor_removed || []).length) feed(t, "", `场景锚定 #${k}`, `首个镜头未出现：${d.anchor_removed.join("、")}（不再在提示中描述）`);
       if (d.wrong && Object.keys(d.wrong).length) {
@@ -361,6 +388,20 @@ function onEvent(m) {
       }
       break;
   }
+}
+
+// ---------------------------------------------------------------- board (server-rendered, escaped HTML + MathML)
+function showBoard(b) {
+  const el = $("board"); el.classList.add("on");
+  if (el.dataset.key !== b.key) {
+    el.dataset.key = b.key;
+    $("boardTitle").innerHTML = b.title;
+    $("boardItems").innerHTML = b.items.map(x => `<li>${x}</li>`).join("");
+  }
+  [...$("boardItems").children].forEach((li, i) => {
+    li.classList.toggle("hidden", b.reveal !== null && b.reveal !== undefined && i > b.reveal);
+    li.classList.toggle("now", i === b.reveal);
+  });
 }
 
 // ---------------------------------------------------------------- H.264 (WebCodecs)
@@ -426,6 +467,7 @@ function render() {
         q.startedSent = true; $("overlay").style.display = "none";
         send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.start)});
         if (q.meta.transcript) $("caption").innerHTML = `<small>台词</small>${esc(q.meta.transcript)}`;
+        if (q.meta.board) showBoard(q.meta.board);  // the board point being spoken, as this chunk starts
       }
       if (q.startedSent && t < q.end && q.frames.length) {
         const idx = Math.min(q.frames.length - 1, Math.floor((t - q.start) / (q.end - q.start) * q.frames.length));

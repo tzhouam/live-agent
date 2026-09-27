@@ -73,6 +73,7 @@ class BlockScript:
     capability_ids: list[str] = field(default_factory=list)
     scene_state: str = ""  # props in their current places + pose (ledger), restated every request
     scene_guard: str = ""  # negative generated from the prop inventory (no duplicates, nothing new)
+    board: dict | None = None  # board view shown on the page while this request plays (lessons, answers)
 
 
 # --------------------------------------------------------------------------- instructions
@@ -147,6 +148,7 @@ class EventType(str, enum.Enum):
     SPEECH_ONSET = "speech_onset"
     AUDIT = "audit"  # pre-generation script audit (proposal §15)
     NARRATION_GUARD = "narration_guard"  # completion wording removed from an unverified line
+    LESSON = "lesson"  # lesson planning progress (outline / section generated / failed / finished)
     CONTINUITY = "continuity"  # prop counts on presented frames vs the ledger (and the correction queued)
     ERROR = "error"
     OBSERVATION_END = "observation_end"

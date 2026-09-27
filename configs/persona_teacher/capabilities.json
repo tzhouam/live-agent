@@ -277,6 +277,22 @@
    "side_effects": [],
    "check_question": "人物是否用手指点着下巴做思考状？",
    "degrade_to": "这个动作我现在做不好，我们先继续上课吧。"
+  },
+  {
+   "cap_id": "cap-16-present_board",
+   "intent": "present_board",
+   "phrase": "she turns slightly toward her left and gestures with an open palm toward the side of the frame, as if presenting the board beside her, then looks back at the lens",
+   "aliases": [
+    "看这里",
+    "看板书"
+   ],
+   "status": "documented",
+   "p_success": null,
+   "p_ci": null,
+   "tvc_median_s": null,
+   "side_effects": [],
+   "check_question": "人物是否侧身用手掌向画面一侧做出展示的手势？",
+   "degrade_to": ""
   }
  ]
 }

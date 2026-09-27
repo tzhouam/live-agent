@@ -96,12 +96,13 @@ def to_pcm16(audio: np.ndarray | None, n_samples: int) -> bytes:
 
 
 PANEL_EVENTS = {"lock", "verdict", "repair", "completion_claim", "refusal", "capacity_skip", "narration_guard",
-                "playback_stop", "speech_onset", "utterance_end", "audit", "error", "request_done", "continuity"}
+                "playback_stop", "speech_onset", "utterance_end", "audit", "error", "request_done", "continuity", "lesson"}
 PANEL_FIELDS = ("action", "transcript", "chain_ids", "chain_id", "step", "retry_of", "corrections", "kind", "label",
                 "confidence", "rationale", "mode", "correction", "queued", "earliest_correctable", "reason", "text",
                 "original", "cleaned", "erasure", "erasure_complete", "pending_targets", "deleted", "dropped",
                 "decision", "chains", "recalled", "issues", "error", "where", "lead_s", "total_s", "onset_source",
-                "audibility", "revision", "speaker", "uid", "counts", "expected", "wrong", "target", "gave_up", "anchor_removed")
+                "audibility", "revision", "speaker", "uid", "counts", "expected", "wrong", "target", "gave_up", "anchor_removed", "stage",
+                "title", "sections", "section", "lines", "points")
 
 
 def panel_event(ev, t0: float) -> dict | None:
@@ -187,6 +188,9 @@ class WSTransport:
                 "codec": "h264" if segment is not None else "jpeg"}
             if segment is not None:
                 header["sizes"] = sizes
+            board = getattr(script, "board", None)
+            if board is not None and chunk.chunk_index == 0:
+                header["board"] = board  # shown when this chunk starts playing: aligned with the line
             await self.ws.send_text(json.dumps(header))
             if segment is not None:
                 await self.ws.send_bytes(segment)
@@ -365,6 +369,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                 speak_intent=intents.get("speak"),
                                 responder_style=canon.get("responder_style", ""),
                                 responder_examples=canon.get("responder_examples"))
+            director.present_intent = intents.get("present")  # gesture toward the page's board
             generator = SessionView(app.state.shared_gen) if shared else make_generator(args)
             sched = LockScheduler(SchedulerConfig(request_s=generator.info.request_seconds,
                                                   lambda_prior_s=args.lambda_prior))
