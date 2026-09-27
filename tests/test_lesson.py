@@ -196,6 +196,8 @@ def test_a_figure_is_a_plot_or_an_illustration_and_prompt_text_on_a_picture_is_r
     b2 = Board("s1", "光合作用", [])
     assert set_figure(b2, {"prompt": "一片叶子，标注「水」"}) and b2.figure_prompt and b2.figure_plot is None
     assert not set_figure(Board("s2", "", []), {"caption": "only"})
+    b3 = Board("s3", "勾股定理", [])
+    assert set_figure(b3, {"plot": {"polygons": [{"points": [[0, 0], [3, 0], [0, 4]]}]}})  # geometry-only plot (seen live)
     prompt = "一元二次方程的抛物线示意图：开口向上，顶点标注「顶点」"
     assert missing_labels(["顶点"], ["一元二次方程的抛物线", "顶点"], prompt) == ["一元二次方程的抛物线"]  # seen live
 

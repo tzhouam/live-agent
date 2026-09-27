@@ -35,7 +35,8 @@ SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这�
  "summary": [这一节的小结句]}}
 板书要求：3-{max_items} 条要点，每条不超过 {item_chars} 个字，简洁像真正的板书；公式用 LaTeX 写在 $...$ 里（如 $x^2+y^2=r^2$）。
 对齐要求：每句讲稿都放在它正在讲的那条要点下面；讲完一条再讲下一条；只属于整节的小结放在 summary 里。
-配图：只有当图确实能帮助理解时才给 figure，否则写 null。两种：
+配图：每一节尽量配一张图（这一节确实用不上图时才写 null）；讲稿里只要说到「看这个图」「这个正方形」「这条曲线」等画面，就必须给出对应的 figure，
+并且图里画的就是讲稿说的东西。两种：
 - 函数图像、坐标系里的点：{{"plot": {{"functions": ["x**2-2*x-3"], "x": [-3, 5], "points": [{{"x": -1, "y": 0, "label": "x₁"}}], "title": 图标题}}, "caption": 图注}}
   （functions 用 Python 写法：x**2、2*x、sqrt(x)、sin(x)；图会被精确画出）
 - 几何图形（三角形、正方形、多边形，按比例精确画在方格上）：{{"plot": {{"polygons": [{{"points": [[0,0],[4,0],[0,3]], "label": "直角三角形", "sides": ["4", "5", "3"]}}], "grid": true}}, "caption": 图注}}
@@ -93,7 +94,8 @@ def set_figure(board: Board, fig) -> bool:
     """Attach a figure request (an exact plot spec or an illustration prompt) to ``board``; True if one was set."""
     if not isinstance(fig, dict):
         return False
-    if isinstance(fig.get("plot"), dict) and (fig["plot"].get("functions") or fig["plot"].get("points")):
+    plot = fig.get("plot")
+    if isinstance(plot, dict) and (plot.get("functions") or plot.get("points") or plot.get("polygons")):
         board.figure_plot = fig["plot"]
     elif str(fig.get("prompt") or "").strip():
         board.figure_prompt = str(fig["prompt"]).strip()[:400]
