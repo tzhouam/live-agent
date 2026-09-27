@@ -24,7 +24,7 @@
   {
    "cap_id": "cap-01-turn_page",
    "intent": "turn_page",
-   "phrase": "she turns one page of the open book lying flat on the desk with her right hand",
+   "phrase": "she turns one page of the book {book} with her right hand",
    "aliases": [
     "翻页",
     "翻一页",
@@ -113,7 +113,7 @@
   {
    "cap_id": "cap-06-put_down_book",
    "intent": "put_down_book",
-   "phrase": "she closes the book and places it on the desk",
+   "phrase": "she lays the book back down, open and flat on the desk in front of her",
    "aliases": [
     "放下书",
     "合上书",
@@ -124,7 +124,12 @@
    "p_success": null,
    "p_ci": null,
    "tvc_median_s": null,
-   "side_effects": [],
+   "side_effects": [
+    {
+     "prop": "book",
+     "state": "home"
+    }
+   ],
    "check_question": "人物是否合上书并放在桌上？",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
@@ -141,7 +146,13 @@
    "p_success": null,
    "p_ci": null,
    "tvc_median_s": null,
-   "side_effects": [],
+   "side_effects": [
+    {
+     "prop": "book",
+     "state": "held open in both of her hands",
+     "carrier": "S1"
+    }
+   ],
    "check_question": "人物是否把书拿起来翻开？",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
@@ -210,7 +221,11 @@
    "p_success": null,
    "p_ci": null,
    "tvc_median_s": null,
-   "side_effects": [],
+   "side_effects": [
+    {
+     "pose": "standing beside the desk"
+    }
+   ],
    "check_question": "人物是否站了起来？",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
@@ -268,7 +283,7 @@
   {
    "cap_id": "cap-15-idle_read",
    "intent": "idle_read",
-   "phrase": "she reads the one open book lying flat on the desk, her hands resting on the desk beside it, with small natural movements",
+   "phrase": "she reads the book {book}, with small natural movements",
    "aliases": [
     "读书",
     "看书",
@@ -312,7 +327,11 @@
    "p_success": null,
    "p_ci": null,
    "tvc_median_s": null,
-   "side_effects": [],
+   "side_effects": [
+    {
+     "pose": "seated at the desk"
+    }
+   ],
    "check_question": "人物是否坐下？",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
@@ -347,14 +366,19 @@
    "p_success": null,
    "p_ci": null,
    "tvc_median_s": null,
-   "side_effects": [],
+   "side_effects": [
+    {
+     "prop": "paper",
+     "state": "at the right side of the desk bearing one large ink character, beside a brush resting on an inkstone"
+    }
+   ],
    "check_question": "人物是否拿起毛笔在纸上写字？",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-20-show_writing",
    "intent": "show_writing",
-   "phrase": "she lifts the sheet of rice paper and shows the written character to the lens",
+   "phrase": "she lifts the sheet of rice paper, shows the written character to the lens, then lays it back on the desk",
    "aliases": [
     "展示",
     "给我看看",
@@ -381,14 +405,20 @@
    "p_success": null,
    "p_ci": null,
    "tvc_median_s": null,
-   "side_effects": [],
+   "side_effects": [
+    {
+     "prop": "fan",
+     "state": "held in her right hand",
+     "carrier": "S1"
+    }
+   ],
    "check_question": "人物是否拿起团扇？",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-22-fan_self",
    "intent": "fan_self",
-   "phrase": "she gently fans herself with the round silk fan",
+   "phrase": "she takes the round silk fan (it is {fan}) and gently fans herself with it",
    "aliases": [
     "扇扇子",
     "摇扇",
@@ -399,14 +429,20 @@
    "p_success": null,
    "p_ci": null,
    "tvc_median_s": null,
-   "side_effects": [],
+   "side_effects": [
+    {
+     "prop": "fan",
+     "state": "held in her right hand",
+     "carrier": "S1"
+    }
+   ],
    "check_question": "人物是否用团扇轻轻扇风？",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   },
   {
    "cap_id": "cap-23-put_down_fan",
    "intent": "put_down_fan",
-   "phrase": "she places the round silk fan back on the desk",
+   "phrase": "she places the round silk fan back at the far right corner of the desk",
    "aliases": [
     "放下扇子",
     "放下扇",
@@ -416,7 +452,12 @@
    "p_success": null,
    "p_ci": null,
    "tvc_median_s": null,
-   "side_effects": [],
+   "side_effects": [
+    {
+     "prop": "fan",
+     "state": "home"
+    }
+   ],
    "check_question": "人物是否把团扇放回桌上？",
    "degrade_to": "这个动作我现在做不好，我们先接着聊吧。"
   }

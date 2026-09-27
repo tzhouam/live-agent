@@ -66,7 +66,10 @@ def compile_prompt(script: BlockScript, *, first_request: bool = False) -> str:
     if first_request:
         parts.append(_sentence(f"{subject[0].upper()}{subject[1:]} is in {scene}"))
     else:
-        parts.append(_sentence(f"{same}{subject} stays in the same setting; {scene} remain unchanged"))
+        # canon copied verbatim ("The same person, a young woman ...", never "The same a young woman")
+        parts.append(_sentence(f"{same}person, {subject}, stays in the same setting; {scene} remain unchanged"))
+    if script.scene_state:  # props in their current places, same words every request
+        parts.append(_sentence(_clean(script.scene_state, field="scene_state", max_len=900)))
     parts.append(_sentence(f"{camera}, all remaining constant"))
     if line:
         parts.append(_sentence(voice))  # describing the voice on a silent request makes H3 vocalise
@@ -84,6 +87,8 @@ def compile_prompt(script: BlockScript, *, first_request: bool = False) -> str:
         parts.append(_sentence(action) + " " + SILENT)
     else:
         parts.append("S1 continues quietly with small natural movements. " + SILENT)
+    if script.scene_guard:
+        parts.append(_sentence(_clean(script.scene_guard, field="scene_guard", max_len=400)))
     parts.append(_sentence(c.negative))
 
     description = " ".join(parts)

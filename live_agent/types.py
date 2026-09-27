@@ -71,6 +71,8 @@ class BlockScript:
     chain_ids: list[str] = field(default_factory=list)  # intent chains this request serves
     provenance: dict[str, Any] = field(default_factory=dict)
     capability_ids: list[str] = field(default_factory=list)
+    scene_state: str = ""  # props in their current places + pose (ledger), restated every request
+    scene_guard: str = ""  # negative generated from the prop inventory (no duplicates, nothing new)
 
 
 # --------------------------------------------------------------------------- instructions
@@ -145,6 +147,7 @@ class EventType(str, enum.Enum):
     SPEECH_ONSET = "speech_onset"
     AUDIT = "audit"  # pre-generation script audit (proposal §15)
     NARRATION_GUARD = "narration_guard"  # completion wording removed from an unverified line
+    CONTINUITY = "continuity"  # prop counts on presented frames vs the ledger (and the correction queued)
     ERROR = "error"
     OBSERVATION_END = "observation_end"
 

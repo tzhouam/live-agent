@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 
+import json
 import random
 import re
 from collections.abc import Callable, Sequence
@@ -74,6 +75,34 @@ class VLMJudge:
         else:
             label = VerdictLabel.COMPLIED if ans == "yes" else VerdictLabel.NOT_COMPLIED
         return Verdict(q.qid, request_index, label, conf, reason, t_evidence, now())
+
+    async def count_props(self, chunks: Sequence[Chunk], labels: list[str]) -> dict[str, list[int]]:
+        """Per-frame counts of each prop (scene continuity); raises on judge failure (caller abstains)."""
+        return await _count_props(self.vlm, chunks, labels)
+
+
+COUNT_PROMPT = """下面是直播画面中按时间顺序抽取的 {k} 帧。请分别数出每一帧里下列每种物品各有几个：{items}。
+按画面里实际能看到的数量计数（被手拿着的也算）。只输出 JSON：每种物品对应一个长度为 {k} 的整数列表，例如 {example}"""
+
+
+async def _count_props(vlm: ChatLLM, chunks: Sequence[Chunk], labels: list[str], k: int = 3) -> dict:
+    frames = sample_frames(chunks, k)  # first, middle, last presented frame
+    if not frames or not labels:
+        return {}
+    example = json.dumps({lab: [1] * len(frames) for lab in labels[:2]}, ensure_ascii=False)
+    content = [{"type": "text", "text": COUNT_PROMPT.format(k=len(frames), items="、".join(labels), example=example)}]
+    urls = await asyncio.to_thread(lambda: [frame_to_data_url(f) for f in frames])
+    content += [{"type": "image_url", "image_url": {"url": u}} for u in urls]
+    d = parse_json(await vlm.chat([{"role": "user", "content": content}], max_tokens=256, temperature=0.0,
+                                  json_mode=True))
+    out = {}
+    for lab in labels:
+        v = d.get(lab)
+        if isinstance(v, int):
+            v = [v]
+        if isinstance(v, list):
+            out[lab] = [int(x) for x in v if isinstance(x, (int, float))][:len(frames)]
+    return out
 
 
 def char_error_rate(ref: str, hyp: str) -> float:

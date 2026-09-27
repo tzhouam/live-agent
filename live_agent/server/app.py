@@ -96,12 +96,12 @@ def to_pcm16(audio: np.ndarray | None, n_samples: int) -> bytes:
 
 
 PANEL_EVENTS = {"lock", "verdict", "repair", "completion_claim", "refusal", "capacity_skip", "narration_guard",
-                "playback_stop", "speech_onset", "utterance_end", "audit", "error", "request_done"}
+                "playback_stop", "speech_onset", "utterance_end", "audit", "error", "request_done", "continuity"}
 PANEL_FIELDS = ("action", "transcript", "chain_ids", "chain_id", "step", "retry_of", "corrections", "kind", "label",
                 "confidence", "rationale", "mode", "correction", "queued", "earliest_correctable", "reason", "text",
                 "original", "cleaned", "erasure", "erasure_complete", "pending_targets", "deleted", "dropped",
                 "decision", "chains", "recalled", "issues", "error", "where", "lead_s", "total_s", "onset_source",
-                "audibility", "revision", "speaker", "uid")
+                "audibility", "revision", "speaker", "uid", "counts", "expected", "wrong", "target", "gave_up")
 
 
 def panel_event(ev, t0: float) -> dict | None:

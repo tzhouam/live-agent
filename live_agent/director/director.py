@@ -456,7 +456,7 @@ class Director:
         chain = self.chains.get(chain_id)
         if not chain or chain.status != ChainStatus.OPEN or not self._matches(chain, revision, step):
             return False
-        self.ledger.apply_verified_action(intent)
+        self.ledger.commit(request_index)  # the verified action's state changes become canon state
         done_step = self._expected_step(chain)
         self.step_base_t[chain_id] = t  # the next step's deadline counts from this verification
         chain.step_index += 1
@@ -498,6 +498,14 @@ class Director:
         if c is not None and c.status == ChainStatus.OPEN and (revision is None or revision == len(c.revisions)):
             c.status = ChainStatus.FAILED
             self._drop_chain_segments(chain_id)
+            self._revert_unverified(c)
+
+    def _revert_unverified(self, chain) -> None:
+        """A failed chain's unverified actions leave the scene as it was: describing an unconfirmed pick-up
+        as done would make the model conjure the object (a second book) rather than keep it in place.
+        Verified steps were committed already and stay."""
+        for k in chain.requests:
+            self.ledger.revert(k)
 
     def schedule_correction(self, request_index: int, sentence: str) -> None:
         self.pending_corrections.setdefault(request_index, []).append(sentence)
@@ -598,6 +606,7 @@ class Director:
                           line=seg.line)  # chain closed meanwhile: keep the words, drop the binding
 
         action_phrase, cap_ids, checks = "", [], []
+        effects: list[dict] = []  # state changes of this request's action (ledger: pending until verified)
         line = seg.line
         if not self.closed:
             if seg.action_text:
@@ -605,11 +614,14 @@ class Director:
             elif seg.intent:  # idle / listen filler: same phrase as A2
                 cap = self.manifest.by_intent(seg.intent)
                 action_phrase = cap.phrase if cap else ""
+                effects = list(cap.side_effects) if cap and seg.chain_id else []
         elif seg.intent:
             res = self.manifest.decide(seg.intent)
             if res.decision == Decision.EMIT and res.capability:
                 action_phrase = res.capability.phrase
                 cap_ids.append(res.capability.cap_id)
+                if seg.chain_id:
+                    effects = list(res.capability.side_effects)
                 if seg.chain_id and res.capability.check_question:
                     checks.append(CheckQuestion(qid=new_id("q"), text=res.capability.check_question,
                                                 kind="action"))
@@ -624,6 +636,7 @@ class Director:
                 self.events.refusals.append((seg.chain_id, res.reason))
                 line = "这个我现在做不到，不过我们可以聊聊别的。"
                 self._fail_chain(seg.chain_id, ChainStatus.REFUSED)
+        action_phrase = self.ledger.fill(action_phrase, request_index)  # {prop} -> where it is now
         if follow_through and action_phrase:
             action_phrase = (f"she smoothly finishes the previous movement ({follow_through.rstrip('.')}) and puts "
                              f"everything back in place, then {action_phrase.removeprefix('she ')}")[:290]
@@ -648,6 +661,8 @@ class Director:
                              corrections=corrections, checks=checks,
                              chain_ids=[seg.chain_id] if seg.chain_id else [],
                              capability_ids=cap_ids,
+                             scene_state=self.ledger.inventory_sentence(request_index),
+                             scene_guard=self.ledger.duplicate_guard(),
                              provenance={"intent": seg.intent, "step": seg.step, "retry_of": seg.retry_of,
                                          "revision": seg.revision, "memory_ids": seg.memory_ids,
                                          "recall_id": seg.recall_id,
@@ -655,12 +670,17 @@ class Director:
         if seg.chain_id and seg.chain_id in self.chains:
             self.chains[seg.chain_id].requests.append(request_index)
         self.ledger.record_request(request_index, action_phrase, line)
+        if effects:
+            self.ledger.expect(request_index, effects)  # later requests start from the action's end state
+            if not self.closed:
+                self.ledger.commit(request_index)  # A1 has no verification: assume the action happened
         return script
 
     def _fail_chain(self, chain_id: str | None, status: ChainStatus) -> None:
         if chain_id and chain_id in self.chains and self.chains[chain_id].status == ChainStatus.OPEN:
             self.chains[chain_id].status = status
             self._drop_chain_segments(chain_id)
+            self._revert_unverified(self.chains[chain_id])
 
 
 def _split_line(line: str, n: int = CHARS_PER_REQUEST) -> list[str]:

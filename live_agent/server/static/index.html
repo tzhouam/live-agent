@@ -347,6 +347,13 @@ function onEvent(m) {
       if ((d.issues || []).length) feed(t, "warn", "审核", d.issues.join(", "));
       break;
     case "error": feed(t, "bad", "错误", `${d.where || ""} ${d.error || ""}`); break;
+    case "continuity":
+      if (d.wrong && Object.keys(d.wrong).length) {
+        feed(t, (d.corrections || []).length ? "warn" : "", `场景连续性 #${k}`,
+             Object.entries(d.wrong).map(([n, c]) => `${n}×${c.join("/")}`).join("，") +
+             ((d.corrections || []).length ? ` · 修正→#${d.target}` : ""));
+      }
+      break;
   }
 }
 

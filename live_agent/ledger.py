@@ -22,9 +22,22 @@ from live_agent.types import CanonProfile
 
 @dataclass
 class PropState:
+    """One physical object of the scene. ``home`` (canon) is where it belongs; ``location`` is where it is now."""
+
     name: str
-    location: str  # e.g. "on the desk"
+    location: str  # e.g. "open and lying flat on the desk in front of her"
     carrier: str | None = None  # "S1" when held
+    noun: str = ""  # prompt noun, e.g. "round silk fan" (defaults to name)
+    label: str = ""  # judge noun (中文), e.g. "团扇"; empty = never counted
+    home: str = ""  # canon place; an effect "home" returns the prop here
+    count: int = 1  # how many exist (the continuity check expects exactly this many)
+
+    def __post_init__(self) -> None:
+        self.noun = self.noun or self.name
+        self.home = self.home or self.location
+
+
+HOME = "home"
 
 
 BRIDGE_MAX_CHARS = 200  # = the prompt compiler's correction limit (h3_compiler._clean max_len)
@@ -50,6 +63,11 @@ class StateLedger:
         self.generated_not_presented: list[int] = []  # requests generated but never shown
         self.bridge_request: int | None = None  # request carrying the bridge (divergence kept until shown)
         self.partially_shown: set[int] = set()
+        self.room: str = ""  # scene without its props (props are rendered from their current state)
+        # side effects of locked actions not yet verified: request index -> effects. Later requests are
+        # compiled against committed + pending state (the action is already in the video); a failed or
+        # dropped action is reverted, a verified one committed.
+        self.pending: dict[int, list[dict]] = {}
 
     # ---------------------------------------------------------------- canon
     @property
@@ -65,9 +83,17 @@ class StateLedger:
             speech_language=d.get("speech_language", "Mandarin"),
             negative=d.get("negative", CanonProfile.__dataclass_fields__["negative"].default),
         )
-        props = [PropState("book", "open on the desk"), PropState("teacup", "on the desk"),
-                 PropState("teapot", "on the desk")]
-        return cls(canon, props)
+        if d.get("props"):  # structured inventory: rendered from state in every prompt, checked on frames
+            props = [PropState(p["name"], p["home"], noun=p.get("noun", ""), label=p.get("label", ""),
+                               home=p["home"], count=int(p.get("count", 1))) for p in d["props"]]
+        else:  # legacy personas: free-text scene only, nothing rendered or counted
+            props = [PropState("book", "open on the desk"), PropState("teacup", "on the desk"),
+                     PropState("teapot", "on the desk")]
+        ledger = cls(canon, props)
+        ledger.room = d.get("room", "") if d.get("props") else ""
+        if d.get("pose"):
+            ledger.pose = d["pose"]
+        return ledger
 
     # ---------------------------------------------------------------- updates
     def record_request(self, request_index: int, action: str, transcript: str) -> None:
@@ -112,18 +138,95 @@ class StateLedger:
         if self.bridge_request is not None and request_index == self.bridge_request:
             self.bridge_request = None  # the bridge itself was cut: bridge again next time
 
-    def apply_verified_action(self, intent: str) -> None:
-        """Update prop/pose state after an action was *verified* on presented frames."""
-        if intent == "stand_up":
-            self.pose = "standing beside the desk"
-        elif intent in ("put_down_book",):
-            self.props.setdefault("book", PropState("book", "on the desk")).location = "closed on the desk"
-            self.props["book"].carrier = None
-        elif intent == "pick_up_book":
-            self.props.setdefault("book", PropState("book", "")).carrier = "S1"
-            self.props["book"].location = "held open in her hands"
-        elif intent == "drink_tea":
-            self.props.setdefault("teacup", PropState("teacup", "on the desk")).location = "on the desk"
+    # ---------------------------------------------------------------- scene state
+    def _apply(self, props: dict[str, tuple[str, str | None]], pose: str, effects: list[dict]) -> str:
+        for e in effects:
+            if "pose" in e:
+                pose = e["pose"]
+            name = e.get("prop")
+            if name in props:
+                where = e.get("state", HOME)
+                if where == HOME:
+                    props[name] = (self.props[name].home, None)
+                else:
+                    props[name] = (where, e.get("carrier"))
+        return pose
+
+    def state_for(self, request_index: int) -> tuple[dict[str, tuple[str, str | None]], str]:
+        """(prop -> (location, carrier), pose) at the start of ``request_index``: committed state plus the
+        pending effects of earlier locked actions."""
+        props = {n: (p.location, p.carrier) for n, p in self.props.items()}
+        pose = self.pose
+        for k in sorted(self.pending):
+            if k < request_index:
+                pose = self._apply(props, pose, self.pending[k])
+        return props, pose
+
+    def expect(self, request_index: int, effects: list[dict]) -> None:
+        """A request with a state-changing action was locked (its effects hold for later requests)."""
+        effects = [e for e in effects or [] if isinstance(e, dict)]
+        if effects:
+            self.pending[request_index] = effects
+
+    def commit(self, request_index: int) -> None:
+        """The action of ``request_index`` was verified on presented frames: its effects become canon state."""
+        effects = self.pending.pop(request_index, None)
+        if not effects:
+            return
+        props = {n: (p.location, p.carrier) for n, p in self.props.items()}
+        self.pose = self._apply(props, self.pose, effects)
+        for n, (loc, carrier) in props.items():
+            self.props[n].location, self.props[n].carrier = loc, carrier
+
+    def revert(self, request_index: int) -> None:
+        """The action failed or was never shown: later requests must not assume its effects."""
+        self.pending.pop(request_index, None)
+
+    def apply_verified_action(self, intent: str) -> None:  # legacy hook (effects now come from the manifest)
+        return None
+
+    def fill(self, phrase: str, request_index: int) -> str:
+        """Replace ``{prop}`` placeholders of a capability phrase with the prop's current place."""
+        if "{" not in phrase:
+            return phrase
+        props, _ = self.state_for(request_index)
+        for name, (loc, _c) in props.items():
+            phrase = phrase.replace("{" + name + "}", loc)
+        return phrase
+
+    def inventory_sentence(self, request_index: int) -> str:
+        """Every prop, each once, in its current place: identical wording while nothing moves, so the
+        scene reads the same in every request (the model copies what the text keeps constant)."""
+        if not self.room:
+            return ""
+        props, pose = self.state_for(request_index)
+        items = [f"the {self.props[n].noun} {loc}" for n, (loc, _c) in props.items()]
+        return (f"S1 is {pose}. Exactly these objects are in the scene, one of each, each in its place: "
+                + "; ".join(items))
+
+    def duplicate_guard(self) -> str:
+        """Negative sentence generated from the inventory: nothing doubles, nothing new appears."""
+        if not self.room:
+            return ""
+        nouns = [p.noun for p in self.props.values()][:6]
+        return (f"Each object appears exactly once: no second {', no second '.join(nouns)}, "
+                "and no new objects appear on the desk or in her hands")
+
+    def expected_counts(self) -> dict[str, int]:
+        """Judge noun -> expected count for the props the continuity check counts."""
+        return {p.label: p.count for p in self.props.values() if p.label}
+
+    def continuity_fix(self, label: str, found: int, request_index: int) -> str | None:
+        """One correction sentence (<= 200 chars) for a prop the frames show the wrong number of times."""
+        prop = next((p for p in self.props.values() if p.label == label), None)
+        if prop is None:
+            return None
+        loc = self.state_for(request_index)[0][prop.name][0]
+        if found > prop.count:
+            s = f"There is only one {prop.noun}, {loc}; the extra {prop.noun} is gone"
+        else:
+            s = f"The {prop.noun} is clearly visible {loc}"
+        return s[:BRIDGE_MAX_CHARS]
 
     def record_verdict(self, request_index: int, qid: str, label: str) -> None:
         for r in self.history:
@@ -176,6 +279,7 @@ class StateLedger:
         return {
             "canon": asdict(self._canon),
             "pose": self.pose,
+            "pending": {str(k): v for k, v in self.pending.items()},
             "props": {k: asdict(v) for k, v in self.props.items()},
             "history": [asdict(h) for h in self.history[-20:]],
             "generated_not_presented": list(self.generated_not_presented),

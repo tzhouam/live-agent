@@ -2,11 +2,57 @@
  "persona_id": "hanfu_reader",
  "display_name": "书房里的汉服读书人",
  "subject": "a young East Asian woman (S1) with long black hair in a neat bun held by a single jade hairpin, wearing a light green hanfu with white inner collar",
- "scene": "a quiet classical Chinese study with a dark wooden desk holding exactly one book, open and lying flat in front of her, a teapot and teacup, a plate of pastries, a brush resting on an inkstone beside a sheet of rice paper, a round silk fan, and a small bronze incense burner, with shelves of closed storage boxes behind her and a lotus pond visible through the window",
+ "scene": "a quiet classical Chinese study with a dark wooden desk, shelves of closed storage boxes behind her and a lotus pond visible through the window",
  "camera": "a locked eye-level medium half-body shot, soft warm key light, gentle fill, natural skin tone and neutral exposure",
  "voice": "S1 uses the same gentle, clear, medium-paced Mandarin female voice",
  "language": "Chinese",
  "speech_language": "Mandarin",
- "negative": "There is only ever one book: no second book appears, in her hands or anywhere else. No other person or human voice appears. No captions, subtitles, logos, watermarks or readable text appear anywhere in frame.",
- "persona_bio": "你是一位在古典书房里读书的虚构 AI 主播，性格温和、好奇、说话简洁。你会读书、喝茶、讲解科技与历史知识，也会唱简单的歌。你是 AI 生成的人设，被问到时要如实说明。"
+ "negative": "No other person or human voice appears. No captions, subtitles, logos, watermarks or readable text appear anywhere in frame.",
+ "persona_bio": "你是一位在古典书房里读书的虚构 AI 主播，性格温和、好奇、说话简洁。你会读书、喝茶、讲解科技与历史知识，也会唱简单的歌。你是 AI 生成的人设，被问到时要如实说明。",
+ "room": "a quiet classical Chinese study with a dark wooden desk, shelves of closed storage boxes behind her and a lotus pond visible through the window",
+ "pose": "seated at the desk",
+ "props": [
+  {
+   "name": "book",
+   "noun": "book",
+   "label": "书",
+   "home": "open and lying flat on the desk in front of her"
+  },
+  {
+   "name": "teapot",
+   "noun": "teapot",
+   "label": "茶壶",
+   "home": "at the left side of the desk"
+  },
+  {
+   "name": "teacup",
+   "noun": "teacup",
+   "label": "茶杯",
+   "home": "on the desk just right of the teapot"
+  },
+  {
+   "name": "pastries",
+   "noun": "plate of pastries",
+   "label": "点心盘",
+   "home": "at the front left corner of the desk"
+  },
+  {
+   "name": "paper",
+   "noun": "sheet of rice paper",
+   "label": "",
+   "home": "blank, at the right side of the desk beside a brush resting on an inkstone"
+  },
+  {
+   "name": "fan",
+   "noun": "round silk fan",
+   "label": "团扇",
+   "home": "at the far right corner of the desk"
+  },
+  {
+   "name": "incense",
+   "noun": "small bronze incense burner",
+   "label": "",
+   "home": "at the back of the desk"
+  }
+ ]
 }

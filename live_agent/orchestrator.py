@@ -80,6 +80,11 @@ class OrchestratorConfig:
     # (short fade) before it reaches the viewer. The raw audio is kept in the generated-stream record.
     mute_silent_requests: bool = True
     mute_fade_s: float = 0.03
+    # Scene continuity (ledger props): count the props on presented frames every N-th request and queue a
+    # correction for the next unlocked request when every sampled frame shows the wrong number
+    continuity_every: int = 2
+    continuity_cooldown: int = 3  # requests between two corrections of the same prop
+    continuity_max_fixes: int = 2  # corrections per prop without effect before giving up on it (logged)
     blocklist: tuple[str, ...] = ()  # operator term blocklist for the script audit (no moderation model)
     seed: int = 0
 
@@ -138,6 +143,9 @@ class Orchestrator:
         self.chunk_end: dict[tuple[int, int], float] = {}
         self.last_paint: dict[tuple[int, int], float] = {}
         self._fully_presented: set[int] = set()
+        self._continuity_fixed: dict[str, int] = {}  # prop label -> request that carried its last correction
+        self._home_pose = director.ledger.pose  # the pose the desk props are framed in
+        self._continuity_tries: dict[str, int] = {}  # prop label -> corrections issued since it was last right
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -638,8 +646,58 @@ class Orchestrator:
     async def _run_checks(self, k: int, t_evidence: float) -> None:
         try:
             await self._run_checks_inner(k, t_evidence)
+            if k % max(1, self.cfg.continuity_every) == 0:
+                await self._continuity_check(k)
         finally:
             self._evict(k)
+
+    async def _continuity_check(self, k: int) -> None:
+        """Do the presented frames show every prop exactly as often as the ledger says? A prop counted
+        wrong in *every* sampled frame (not a miscount or a brief occlusion) gets a correction sentence in
+        the next unlocked request; duplicates always, missing props only in the home pose (standing up can
+        take the desk out of frame)."""
+        ledger = self.director.ledger
+        expected = ledger.expected_counts()
+        count = getattr(self.judge, "count_props", None)
+        if not expected or count is None or k in self.dropped or self.director.mode == DirectorMode.OPEN_LOOP:
+            return
+        chunks, shown, total = self._presented_media(k)
+        if not chunks or (total and shown / total < 0.5):
+            return
+        try:
+            counts = await asyncio.wait_for(count(chunks, list(expected)), timeout=self.cfg.qc_timeout_s)
+        except Exception as e:  # noqa: BLE001 - abstain: a failed count is not evidence
+            self.log.emit(EventType.CONTINUITY, now(), request_index=k, error=str(e)[:120])
+            return
+        if k in self.dropped:
+            return
+        target = self.next_lock + (1 if self._locking == self.next_lock else 0)
+        home_pose = ledger.pose == self._home_pose
+        wrong, fixes = {}, []
+        gave_up = []
+        for label, want in expected.items():
+            seen = [n for n in (counts or {}).get(label, []) if isinstance(n, int)]
+            if not seen or any(n == want for n in seen):
+                self._continuity_tries.pop(label, None)  # right again: a later drift gets fresh corrections
+                continue  # at least one frame agrees: no consistent evidence of drift
+            found = min(seen) if min(seen) > want else max(seen)
+            if found < want and not home_pose:
+                continue
+            wrong[label] = seen
+            last = self._continuity_fixed.get(label, -10**9)
+            if target - last < self.cfg.continuity_cooldown:
+                continue
+            if self._continuity_tries.get(label, 0) >= self.cfg.continuity_max_fixes:
+                gave_up.append(label)  # the model does not render it this way: stop repeating the sentence
+                continue
+            fix = ledger.continuity_fix(label, found, target)
+            if fix:
+                self.director.schedule_correction(target, fix)
+                self._continuity_fixed[label] = target
+                self._continuity_tries[label] = self._continuity_tries.get(label, 0) + 1
+                fixes.append(fix)
+        self.log.emit(EventType.CONTINUITY, now(), request_index=k, counts=counts, expected=expected,
+                      wrong=wrong, corrections=fixes, target=target if fixes else None, gave_up=gave_up)
 
     async def _run_checks_inner(self, k: int, t_evidence: float) -> None:
         script = self.scripts.get(k)
@@ -696,6 +754,7 @@ class Orchestrator:
                 if all(v.label == VerdictLabel.COMPLIED for v in action_verdicts):
                     self.director.on_verified(chain_id, intent, k, t_evidence, revision=revision, step=step)
                 elif any(v.label == VerdictLabel.NOT_COMPLIED for v in action_verdicts):
+                    self.director.ledger.revert(k)  # the action did not happen: its state change neither
                     await self._repair(chain_id, intent, script, action_verdicts, t_evidence)
             self._drain_director_events(now())
         # 2) Speech checks: logged evidence only; they never gate or expire the chain.
@@ -800,6 +859,7 @@ class Orchestrator:
                 self._claims.pop(k, None)  # a claim that is never heard is not a claim
                 self.director.ledger.mark_generated_not_presented(
                     k, partially_shown=bool(self.presented.get(k)) or bool(in_flight and in_flight[0] == k))
+                self.director.ledger.revert(k)  # its action was never (fully) shown: no state change
         self.director.on_interrupted(cut)
         self._decisions_at_interrupt = self._decisions
         await self.transport.stop_playback()
