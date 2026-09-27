@@ -65,6 +65,7 @@ class Segment:
     reveal: int | None = None  # board point being explained (points after it are not yet shown)
     lesson: bool = False  # a lesson line (kept in the lesson backlog across questions)
     gesture: bool = False  # present the board (first line about a point)
+    progress: tuple[int, int] | None = None  # (line, lines) within the board point: shown on the board
 
 
 @dataclass
@@ -663,7 +664,8 @@ class Director:
                     and all(b is not ln.board for b in self.pending_figures):
                 self.pending_figures.append(ln.board)
             self.lesson_backlog.append(Segment(chain_id=None, plan_version=self.plan_version, line=ln.text,
-                                               board=ln.board, reveal=ln.item, lesson=True, gesture=ln.gesture))
+                                               board=ln.board, reveal=ln.item, lesson=True, gesture=ln.gesture,
+                                               progress=getattr(ln, "progress", None)))
 
     def stop_lesson(self) -> None:
         self.lesson_backlog.clear()
@@ -750,7 +752,7 @@ class Director:
                              chain_ids=[seg.chain_id] if seg.chain_id else [],
                              capability_ids=cap_ids,
                              scene_state=self.ledger.inventory_sentence(request_index),
-                             board=seg.board.view(seg.reveal) if seg.board is not None else None,
+                             board=seg.board.view(seg.reveal, seg.progress) if seg.board is not None else None,
                              scene_guard=self.ledger.duplicate_guard(),
                              provenance={"intent": seg.intent, "step": seg.step, "retry_of": seg.retry_of,
                                          "revision": seg.revision, "memory_ids": seg.memory_ids,

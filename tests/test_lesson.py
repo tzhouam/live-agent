@@ -218,3 +218,33 @@ def test_a_lesson_plot_is_drawn_and_shown(tmp_path):
     asyncio.run(tp.run(orch, client, [(2.0, "给我上一节二次函数的课")]))
     figs = [s.board["figure"] for s in orch.scripts.values() if s.board and "figure" in s.board]
     assert figs and figs[0]["url"].startswith("/board/img/p") and list(tmp_path.glob("p*.png"))
+
+
+def test_nested_points_keep_every_sentence_on_its_point_with_progress_and_a_neutral_summary():
+    nested = {"board": {"title": "二次函数"},
+              "points": [{"text": "一般式 $y=ax^2+bx+c$", "lines": ["首先看一般式。", "它有三项。"]},
+                         {"text": "$a\\neq0$", "lines": ["注意 a 不能为零。"]}],
+              "summary": ["这一节就讲到这里。"]}
+
+    def llm(messages):
+        return json.dumps(OUTLINE if "课程大纲" in messages[-1]["content"] else nested, ensure_ascii=False)
+
+    planner = LessonPlanner(ScriptedLLM(llm), name="林老师", bio="")
+    outline = asyncio.run(planner.outline("二次函数"))
+    lines = asyncio.run(planner.section(outline, 0, []))
+    assert [(ln.item, ln.progress, ln.gesture) for ln in lines] == [
+        (0, (1, 2), True), (0, (2, 2), False), (1, (1, 1), True), (None, None, False)]
+    assert lines[0].board.items[1] == "$a\\neq0$"
+    assert lines[1].board.view(0, lines[1].progress)["progress"] == [2, 2]
+    assert "progress" not in lines[3].board.view(None, None)  # the summary highlights no point
+
+
+def test_geometry_is_drawn_to_scale(tmp_path):
+    from live_agent.board_plot import render_plot
+
+    spec = {"polygons": [{"points": [[0, 0], [4, 0], [0, 3]], "sides": ["4", "5", "3"]},
+                         {"points": [[0, 0], [0, -4], [4, -4], [4, 0]], "label": "16"}], "grid": True}
+    name = render_plot(spec, tmp_path)
+    assert (tmp_path / name).stat().st_size > 10_000
+    with pytest.raises(ValueError):
+        render_plot({"polygons": [{"points": [[0, 0]]}]}, tmp_path)  # a one-point polygon is nothing to draw

@@ -55,6 +55,8 @@
   .board li { margin:10px 0; transition: opacity .5s, color .3s; }
   .board li.hidden { opacity:0; }
   .board li.now { color:#ffe08a; }
+  .board .dots { font-size:.55em; letter-spacing:.18em; margin-left:.5em; white-space:nowrap; color:#ffe08a; opacity:.9; }
+  .board ol { overflow:hidden; min-height:0; }
   .board math { font-size:1.08em; }
   @media (max-width: 860px) { .stagerow { flex-direction:column; } }
   .caption small { color:var(--muted); font-size:12px; margin-right:6px; }
@@ -408,7 +410,16 @@ function layoutStage() {  // video + 3:4 board side by side at one height (stack
   else if (innerWidth <= 860) { H = Math.min(0.6 * innerHeight, W / va); board.style.width = W + "px"; board.style.height = (W * 3 / 4) + "px"; }
   else { H = Math.min(0.72 * innerHeight, (W - gap) / (va + 4 / 3)); board.style.width = (H * 4 / 3) + "px"; board.style.height = H + "px"; }
   cv.style.height = H + "px"; cv.style.maxHeight = "none";
-  if (on) board.style.fontSize = Math.max(12, parseFloat(board.style.height) / 22) + "px";
+  if (on) { board.dataset.base = Math.max(12, parseFloat(board.style.height) / 22); fitBoard(); }
+}
+
+function fitBoard() {  // shrink the text until every shown point fits: the point being spoken is never clipped
+  const el = $("board"), ol = $("boardItems");
+  let fs = parseFloat(el.dataset.base || "19");
+  el.style.fontSize = fs + "px";
+  while (fs > 11 && (ol.scrollHeight > ol.clientHeight + 1 || el.scrollHeight > el.clientHeight + 1)) {
+    fs -= 1; el.style.fontSize = fs + "px";
+  }
 }
 addEventListener("resize", layoutStage);
 addEventListener("load", layoutStage);
@@ -424,10 +435,20 @@ function showBoard(b) {
   const fig = b.figure;
   el.classList.toggle("hasfig", !!fig);
   if (fig && $("boardImg").getAttribute("src") !== fig.url) { $("boardImg").src = fig.url; $("boardCap").innerHTML = fig.caption || ""; }
-  [...$("boardItems").children].forEach((li, i) => {
+  const lis = [...$("boardItems").children];
+  lis.forEach((li, i) => {
     li.classList.toggle("hidden", b.reveal !== null && b.reveal !== undefined && i > b.reveal);
     li.classList.toggle("now", i === b.reveal);
+    li.querySelector(".dots")?.remove();
   });
+  const cur = (b.reveal !== null && b.reveal !== undefined) ? lis[b.reveal] : null;
+  if (cur && b.progress) {  // how far into this point the teacher is: one dot per sentence about it
+    const [k, n] = b.progress, d = document.createElement("span");
+    d.className = "dots"; d.textContent = "●".repeat(k) + "○".repeat(Math.max(0, n - k));
+    d.setAttribute("aria-label", `第 ${k}/${n} 句`); cur.appendChild(d);
+  }
+  fitBoard();
+  if (cur) cur.scrollIntoView({block: "nearest"});
 }
 
 // ---------------------------------------------------------------- H.264 (WebCodecs)

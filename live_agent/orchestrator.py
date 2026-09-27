@@ -386,6 +386,8 @@ class Orchestrator:
                           chain_ids=script.chain_ids, corrections=script.corrections,
                           capability_ids=script.capability_ids, prompt=prompt,
                           step=script.provenance.get("step"), revision=script.provenance.get("revision"),
+                          board=({"key": script.board["key"], "reveal": script.board.get("reveal"),
+                                  "progress": script.board.get("progress")} if script.board else None),
                           retry_of=script.provenance.get("retry_of"),
                           checks=[{"qid": q.qid, "text": q.text, "kind": q.kind} for q in script.checks])
             if script.transcript and self.memory:

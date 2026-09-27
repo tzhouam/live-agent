@@ -30,20 +30,25 @@ SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这�
 现在讲第 {i}/{n} 节「{section}」，目标：{goal}。
 前面已经讲过：{covered}
 请写这一节的板书和讲稿，只输出 JSON：
-{{"board": {{"title": 小节标题, "items": [板书要点], "figure": 配图（见下）或 null}}, "lines": [{{"text": 老师说的一句话, "item": 这句话在讲第几条板书要点（从 0 开始）}}]}}
+{{"board": {{"title": 小节标题, "figure": 配图（见下）或 null}},
+ "points": [{{"text": 一条板书要点, "lines": [讲这条要点时老师说的话，按顺序]}}],
+ "summary": [这一节的小结句]}}
 板书要求：3-{max_items} 条要点，每条不超过 {item_chars} 个字，简洁像真正的板书；公式用 LaTeX 写在 $...$ 里（如 $x^2+y^2=r^2$）。
+对齐要求：每句讲稿都放在它正在讲的那条要点下面；讲完一条再讲下一条；只属于整节的小结放在 summary 里。
 配图：只有当图确实能帮助理解时才给 figure，否则写 null。两种：
-- 函数图像、坐标系里的点和图形：{{"plot": {{"functions": ["x**2-2*x-3"], "x": [-3, 5], "points": [{{"x": -1, "y": 0, "label": "x₁"}}], "title": 图标题}}, "caption": 图注}}
+- 函数图像、坐标系里的点：{{"plot": {{"functions": ["x**2-2*x-3"], "x": [-3, 5], "points": [{{"x": -1, "y": 0, "label": "x₁"}}], "title": 图标题}}, "caption": 图注}}
   （functions 用 Python 写法：x**2、2*x、sqrt(x)、sin(x)；图会被精确画出）
+- 几何图形（三角形、正方形、多边形，按比例精确画在方格上）：{{"plot": {{"polygons": [{{"points": [[0,0],[4,0],[0,3]], "label": "直角三角形", "sides": ["4", "5", "3"]}}], "grid": true}}, "caption": 图注}}
+  （points 是顶点坐标，sides 依次标注每条边：第 i 条边从第 i 个顶点到下一个顶点）
 - 插图、结构、流程、实验装置示意：{{"prompt": 配图描述, "caption": 图注}}；prompt 具体写清画什么、怎么摆放，要标注的文字都放在「」里
-  （如：一片绿叶，太阳的箭头标注「阳光」，根部箭头标注「水」）；这类图由图像模型画，画不准精确的数学关系。
+  （如：一片绿叶，太阳的箭头标注「阳光」，根部箭头标注「水」）；这类图由图像模型画，画不准数学关系，几何图形和函数图像一律用 plot。
 caption 不超过 16 个字。
 讲稿要求：
-1. 按板书顺序讲，每条要点讲 2-4 句：先说要点，再解释原因，再举生活中的例子或算一个小例题。
+1. 每条要点讲 2-4 句：先说要点，再解释原因，再举生活中的例子或算一个小例题。
 2. 每句不超过 {chars} 个汉字，口语化；公式和符号全部用中文读出来（如「a 加 b 的和的平方」「x 的平方」），讲稿里不要出现 $、LaTeX、括号、加减乘除号或等号。
 3. 直接从这一节的内容讲起，不要打招呼，不要重复开场白或前面讲过的话。
-4. 最后一句简短小结这一节{outro}。
-5. 总共 10-18 句。"""
+4. summary 写 1-2 句，简短小结这一节{outro}。
+5. 讲稿总共 10-18 句。"""
 
 
 @dataclass
@@ -56,10 +61,13 @@ class Board:
     figure_caption: str = ""
     figure_url: str = ""  # set once the image exists; boards locked after that show it
 
-    def view(self, reveal: int | None) -> dict[str, Any]:
-        """What the page shows: items up to ``reveal`` (all when None), the ``reveal``-th highlighted."""
+    def view(self, reveal: int | None, progress: tuple[int, int] | None = None) -> dict[str, Any]:
+        """What the page shows: items up to ``reveal`` (all when None), the ``reveal``-th highlighted, with the
+        spoken line's position within that point (``progress``)."""
         v = {"key": self.key, "title": html.escape(self.title), "items": [render_item(x) for x in self.items],
              "reveal": reveal}
+        if progress is not None and reveal is not None:
+            v["progress"] = list(progress)
         if self.figure_url:
             v["figure"] = {"url": self.figure_url, "caption": html.escape(self.figure_caption)}
         return v
@@ -69,8 +77,9 @@ class Board:
 class LessonLine:
     text: str
     board: Board | None  # None: a plain line (keeps whatever the board shows)
-    item: int | None  # board point this line explains (None: whole board, e.g. an intro line)
+    item: int | None  # board point this line explains (None: whole board, e.g. an intro line or a summary)
     gesture: bool = False  # first line of a point: present the board
+    progress: tuple[int, int] | None = None  # (this line, lines about the point), 1-based: shown on the board
 
 
 @dataclass
@@ -188,22 +197,29 @@ class LessonPlanner:
             max_tokens=1500, temperature=0.4, json_mode=True)
         d = parse_json(raw)
         b = d.get("board") or {}
-        items = [str(x)[:ITEM_CHARS] for x in (b.get("items") or []) if str(x).strip()][:MAX_ITEMS]
-        board = Board(key=f"s{i}", title=str(b.get("title") or sec["title"])[:24], items=items)
+        # nested format: every sentence sits under the point it explains (alignment by structure, not by index)
+        groups: list[tuple[str, list[str]]] = []
+        for pt in d.get("points") or []:
+            if isinstance(pt, dict) and str(pt.get("text") or "").strip():
+                groups.append((str(pt["text"])[:ITEM_CHARS], [str(x) for x in pt.get("lines") or []]))
+        if not groups:  # older flat format: {"board": {"items": [...]}, "lines": [{"text", "item"}]}
+            items = [str(x)[:ITEM_CHARS] for x in (b.get("items") or []) if str(x).strip()]
+            by = {j: [] for j in range(len(items))}
+            for ln in d.get("lines") or []:
+                if isinstance(ln, dict) and isinstance(ln.get("item"), int) and ln["item"] in by:
+                    by[ln["item"]].append(str(ln.get("text", "")))
+            groups = [(items[j], by[j]) for j in range(len(items))]
+        groups = groups[:MAX_ITEMS]
+        board = Board(key=f"s{i}", title=str(b.get("title") or sec["title"])[:24], items=[g[0] for g in groups])
         set_figure(board, b.get("figure"))
         lines: list[LessonLine] = []
-        seen: set[int] = set()
-        for ln in d.get("lines") or []:
-            if not isinstance(ln, dict):
-                continue
-            item = ln.get("item")
-            item = item if isinstance(item, int) and 0 <= item < len(items) else None
-            for piece in spoken(str(ln.get("text", "")), self.chars):
-                first = item is not None and item not in seen
-                if item is not None:
-                    seen.add(item)
-                lines.append(LessonLine(piece, board, item, gesture=first))
-        if not lines:
+        for j, (_, said) in enumerate(groups):
+            pieces = [p for x in said for p in spoken(x, self.chars)]
+            for n, piece in enumerate(pieces):
+                lines.append(LessonLine(piece, board, j, gesture=(n == 0), progress=(n + 1, len(pieces))))
+        for x in d.get("summary") or []:  # the whole section: every point shown, none highlighted
+            lines += [LessonLine(p, board, None) for p in spoken(str(x), self.chars)]
+        if not any(ln.item is not None for ln in lines):
             raise ValueError(f"lesson section {i} without lines")
         return lines
 

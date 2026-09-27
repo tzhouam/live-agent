@@ -4,7 +4,10 @@ An image model draws illustrations well but not mathematics (a parabola asked to
 downward, with garbled x₁/x₂ labels [measured locally]), so graphs the lesson needs to be *right* are rendered from
 data. Expressions are parsed with an allow-list (numbers, x, + - * / **, a few functions); nothing is executed.
 
-Spec: {"functions": ["x**2-2*x-3"], "x": [-3, 5], "y": [-5, 6] (optional), "points": [{"x": -1, "y": 0, "label": "x₁"}]}
+Spec: {"functions": ["x**2-2*x-3"], "x": [-3, 5], "y": [-5, 6] (optional), "points": [{"x": -1, "y": 0, "label": "x₁"}],
+       "polygons": [{"points": [[0, 0], [4, 0], [0, 3]], "label": "三角形", "sides": ["4", "5", "3"]}], "grid": true}
+Polygons (triangles, the squares on their sides, ...) are drawn to scale with equal axes; ``sides`` labels each
+edge (from point i to i+1) at its midpoint.
 """
 
 from __future__ import annotations
@@ -64,8 +67,11 @@ def render_plot(spec: dict, out_dir: str | Path) -> str:
         return name
     funcs = [(str(f), parse_function(f)) for f in (spec.get("functions") or [])][:4]
     points = [p for p in (spec.get("points") or []) if isinstance(p, dict)][:8]
-    if not funcs and not points:
+    polys = [p for p in (spec.get("polygons") or []) if isinstance(p, dict) and len(p.get("points") or []) >= 2][:8]
+    if not funcs and not points and not polys:
         raise ValueError("empty plot")
+    if polys and not funcs:
+        return _render_shapes(spec, polys, points, path, name)
     x0, x1 = (spec.get("x") or [-5, 5])[:2]
     xs = np.linspace(float(x0), float(x1), 600)
     fig, ax = plt.subplots(figsize=(8, 6), dpi=128)
@@ -102,6 +108,56 @@ def render_plot(spec: dict, out_dir: str | Path) -> str:
         ax.set_title(str(spec["title"])[:30], fontsize=20)
     fig.tight_layout()
     Path(out_dir).mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp.png")
+    fig.savefig(tmp, facecolor="white")
+    plt.close(fig)
+    tmp.replace(path)
+    return name
+
+
+def _render_shapes(spec: dict, polys: list[dict], points: list[dict], path: Path, name: str) -> str:
+    """Geometry to scale: filled polygons with edge and area labels, equal axes, optional grid."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=128)
+    fills = ["#cfe3f7", "#f7d9cf", "#d6efd8", "#efe2c4", "#e4d5f2", "#f5f0c8"]
+    allxy = []
+    for i, poly in enumerate(polys):
+        xy = np.array([[float(a), float(b)] for a, b in poly["points"]])
+        allxy.append(xy)
+        ax.fill(xy[:, 0], xy[:, 1], facecolor=fills[i % len(fills)], edgecolor="#222", lw=2, alpha=0.95)
+        if poly.get("label"):
+            c = xy.mean(axis=0)
+            ax.text(c[0], c[1], str(poly["label"]), ha="center", va="center", fontsize=20)
+        for j, side in enumerate(poly.get("sides") or []):
+            if side and j < len(xy):
+                a, b = xy[j], xy[(j + 1) % len(xy)]
+                mid, d = (a + b) / 2, b - a
+                nrm = np.array([d[1], -d[0]]) / (np.hypot(*d) or 1)  # outward-ish offset from the edge
+                ax.text(*(mid + 0.35 * nrm), str(side), ha="center", va="center", fontsize=18, color="#1f3f8a")
+    for p in points:
+        ax.plot(float(p["x"]), float(p["y"]), "o", color="#222", ms=6)
+        if p.get("label"):
+            ax.annotate(str(p["label"]), (float(p["x"]), float(p["y"])), textcoords="offset points",
+                        xytext=(6, 6), fontsize=18)
+    xy = np.concatenate(allxy)
+    lo, hi = xy.min(axis=0) - 1, xy.max(axis=0) + 1
+    ax.set_xlim(lo[0], hi[0])
+    ax.set_ylim(lo[1], hi[1])
+    ax.set_aspect("equal")  # to scale: a right angle looks right, a 3-4-5 triangle has a 5-long hypotenuse
+    if spec.get("grid", True):
+        ax.set_xticks(np.arange(np.floor(lo[0]), np.ceil(hi[0]) + 1))
+        ax.set_yticks(np.arange(np.floor(lo[1]), np.ceil(hi[1]) + 1))
+        ax.grid(alpha=0.35)
+        ax.tick_params(labelbottom=False, labelleft=False, length=0)
+    else:
+        ax.axis("off")
+    for side in ("right", "top", "left", "bottom"):
+        ax.spines[side].set_visible(False)
+    if spec.get("title"):
+        ax.set_title(str(spec["title"])[:30], fontsize=20)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp.png")
     fig.savefig(tmp, facecolor="white")
     plt.close(fig)
