@@ -47,6 +47,18 @@ def grade_name(g: int) -> str:
     return ("初" if g <= 9 else "高") + "一二三"[(g - 7) % 3]
 
 
+_CITE = re.compile(r"[（(]\s*s\d+(?:[、,，\s]*s?\d+)*(?:第\S{1,6}页)?\s*[）)]")
+
+
+def clean(text: Any) -> str:
+    """Prompt text without the data's source tags ("（s2、s7）"): those are for audit, not for the teacher to say."""
+    return _CITE.sub("", str(text)).strip()
+
+
+def _bigrams(s: str) -> set[str]:
+    return {s[i:i + 2] for i in range(len(s) - 1)} or {s}
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[\s·、，,（）()《》“”\"']", "", str(s)).lower()
 
@@ -62,6 +74,8 @@ class Match:
     prerequisites: list[str] = field(default_factory=list)
     basis: str = ""  # textbook / standard / estimate
     score: float = 0.0
+    grades: tuple | None = None  # a standard's stage range when no single grade is known
+    sim: float = 0.0  # lexical similarity to the asked topic (1 = same wording)
 
 
 class Curriculum:
@@ -87,39 +101,52 @@ class Curriculum:
 
     # ------------------------------------------------------------ where does a topic sit
     def lookup(self, topic: str, grade: int | None = None, limit: int = 3) -> list[Match]:
-        """Curriculum entries for ``topic`` (textbook topics first, then the standard's requirements), nearest to
-        the student's grade first."""
+        """Curriculum entries for ``topic``: textbook topics by character-pair similarity (so "函数的单调性" finds
+        the senior-high function unit rather than grade 8's "函数"), then the standard's requirements that name it;
+        nearest to the student's grade first."""
         q = _norm(topic)
         if len(q) < 2:
             return []
+        qb = _bigrams(q)
         found: list[Match] = []
         for subj in self.subjects:
             name = subj.get("subject", "")
             prereq = {(_norm(k)): v for k, v in (subj.get("prerequisites") or {}).items()}
+            covered: list[tuple[int, int]] = []
             for g, entry in (subj.get("grade_topics") or {}).items():
+                g_int = parse_grade(int(g)) if str(g).isdigit() else parse_grade(g)
                 for t in (entry or {}).get("topics") or []:
                     nt = _norm(t)
-                    if q in nt or (len(nt) >= 2 and nt in q):
-                        g_int = parse_grade(int(g)) if str(g).isdigit() else parse_grade(g)
-                        stage, domain, reqs = self._requirements(subj, g_int, q)
-                        found.append(Match(name, g_int, t, stage, domain, reqs,
-                                           prereq.get(q) or prereq.get(nt) or [], (entry or {}).get("basis", ""),
-                                           score=2.0 + (1.0 if q == nt else len(q) / max(len(nt), 1))))
+                    sim = 1.0 if nt == q else len(qb & _bigrams(nt)) / max(len(qb), 1)
+                    if q in nt and len(q) >= 2:
+                        sim = max(sim, 0.9)
+                    elif nt and nt in q:
+                        sim = max(sim, 0.6)  # the unit named inside the question ("圆" in "圆的面积")
+                    if sim < 0.5:
+                        continue
+                    stage, domain, reqs = self._requirements(subj, g_int, q)
+                    found.append(Match(name, g_int, t, stage, domain, reqs, prereq.get(nt) or prereq.get(q) or [],
+                                       (entry or {}).get("basis", ""), score=1.0 + sim, sim=sim))
+                    covered.append((g_int or 0, g_int or 0))
             for st in subj.get("stages") or []:
+                gs = st.get("grades") or []
+                lo, hi = (gs[0], gs[-1]) if gs else (None, None)
+                if lo is not None and any(lo <= a <= hi for a, _ in covered):
+                    continue  # a textbook topic in this stage already says it (with its exact grade)
                 for dom in st.get("domains") or []:
-                    hits = [r for r in dom.get("requirements") or [] if q in _norm(r)]
+                    hits = [r for r in dom.get("requirements") or []
+                            if q in _norm(r) or len(qb & _bigrams(_norm(r))) / max(len(qb), 1) >= 0.6]
                     if hits:
-                        gs = st.get("grades") or [None]
-                        found.append(Match(name, gs[0], topic, st.get("name", ""), dom.get("name", ""), hits[:3],
-                                           prereq.get(q, []), "standard", score=1.0))
-        if grade is not None:
-            for m in found:
-                if m.grade is not None:
-                    m.score -= 0.15 * abs(m.grade - grade)
+                        found.append(Match(name, None, topic, st.get("name", ""), dom.get("name", ""), hits[:3],
+                                           prereq.get(q, []), "standard", score=1.6, grades=(lo, hi), sim=0.6))
+        for m in found:
+            g0 = m.grade if m.grade is not None else (m.grades[0] if m.grades else None)
+            if grade is not None and g0 is not None:
+                m.score -= 0.1 * abs(g0 - grade)
         found.sort(key=lambda m: -m.score)
         out, seen = [], set()
         for m in found:
-            key = (m.subject, m.grade, m.topic)
+            key = (m.subject, m.grade, m.topic, m.stage)
             if key not in seen:
                 seen.add(key)
                 out.append(m)
@@ -155,19 +182,20 @@ class Curriculum:
                            ("avoid", "避免")):
             v = p.get(key)
             if v:
-                parts.append(f"{label}：{'；'.join(v) if isinstance(v, list) else v}")
+                parts.append(f"{label}：{'；'.join(clean(x) for x in v) if isinstance(v, list) else clean(v)}")
         if p.get("vocabulary"):
-            parts.append(f"用词：{p['vocabulary']}")
+            parts.append(f"用词：{clean(p['vocabulary'])}")
         if p.get("encouragement"):
-            parts.append(f"表扬与纠错：{p['encouragement']}")
+            parts.append(f"表扬与纠错：{clean(p['encouragement'])}")
         return "\n".join(parts)
 
     def exercise_style(self, grade: int | None) -> str:
-        return str(self.profile(grade).get("exercise_style") or "")
+        return clean(self.profile(grade).get("exercise_style") or "")
 
     def topic_context(self, topic: str, grade: int | None) -> str:
-        """Where the topic sits in the curriculum, for the planner; flags a topic above the student's grade."""
-        ms = self.lookup(topic, grade)
+        """Where the topic may sit in the curriculum, for the planner (candidates from lexical matching: the model
+        uses the relevant ones); flags a topic above the student's grade only on a strong match."""
+        ms = self.lookup(topic, grade, limit=4)
         if not ms:
             return ""
         lines = []
@@ -175,20 +203,24 @@ class Curriculum:
             s = f"「{m.topic}」：{m.subject}"
             if m.grade:
                 s += f"，{grade_name(m.grade)}" + ("（教材）" if m.basis == "textbook" else "（估计）" if m.basis == "estimate" else "")
+            elif m.grades and m.grades[0]:
+                s += f"，课标{grade_name(m.grades[0])}至{grade_name(m.grades[1])}"
             if m.stage or m.domain:
                 s += f"，{m.stage}{('·' + m.domain) if m.domain else ''}"
             if m.requirements:
-                s += f"；课标要求：{'；'.join(m.requirements)}"
+                s += f"；课标要求：{'；'.join(clean(r) for r in m.requirements)}"
             if m.prerequisites:
                 s += f"；前置知识：{'、'.join(m.prerequisites)}"
             lines.append(s)
-        top = ms[0]
-        if grade is not None and top.grade is not None and top.grade > grade:
+        top = next((m for m in ms if m.grade is not None and m.sim >= 0.9), None)
+        if top is None:
+            pass
+        elif grade is not None and top.grade is not None and top.grade > grade:
             lines.append(f"注意：这个内容一般在{grade_name(top.grade)}学，学生现在{grade_name(grade)}，"
                          f"要从学生已有的知识讲起，降低难度，必要时先补前置知识。")
         elif grade is not None and top.grade is not None and top.grade < grade - 2:
             lines.append(f"注意：这是{grade_name(top.grade)}的内容，学生已经{grade_name(grade)}，以复习和提高为主。")
-        return "课程标准参考：\n" + "\n".join(lines)
+        return "课程标准参考（按关键词找到的可能相关条目，只采用和本课真正相关的）：\n" + "\n".join(lines)
 
     def summary(self) -> dict[str, Any]:
         return {"subjects": [{"subject": s.get("subject"), "grades": s.get("grades"),

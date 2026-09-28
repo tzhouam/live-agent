@@ -32,7 +32,7 @@ def check_subject(d: dict, name: str) -> tuple[list[str], list[str]]:
         if not gs or any(not isinstance(g, int) or not 1 <= g <= 12 for g in gs):
             errors.append(f"{name}: stage {st.get('name')} has grades {gs}")
         for dom in st.get("domains") or []:
-            if dom.get("source") and dom["source"] not in ids:
+            if dom.get("source") and any(x.strip() not in ids for x in str(dom["source"]).split(",")):
                 errors.append(f"{name}: stage {st.get('name')} / {dom.get('name')} cites unknown source {dom['source']}")
     gt = d.get("grade_topics") or {}
     missing = [g for g in range(lo, hi + 1) if str(g) not in gt]
@@ -41,7 +41,7 @@ def check_subject(d: dict, name: str) -> tuple[list[str], list[str]]:
     for g, e in gt.items():
         if not str(g).isdigit() or not 1 <= int(g) <= 12:
             errors.append(f"{name}: grade_topics key {g!r}")
-        if (e or {}).get("source") and e["source"] not in ids:
+        if (e or {}).get("source") and any(x.strip() not in ids for x in str(e["source"]).split(",")):
             errors.append(f"{name}: grade {g} cites unknown source {e['source']}")
         if not (e or {}).get("topics"):
             warnings.append(f"{name}: grade {g} has no topics")
