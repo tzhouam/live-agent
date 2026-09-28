@@ -286,34 +286,14 @@ CUDA graphs would save only 0.15-0.2 s and are not pursued; the LoRA delta is ab
 device time per forward (0.2-0.3 s per request), so the merged FP8 student set is worth more than
 first estimated.
 
-Status (session ffe817, 2026-09-28 12:50): **real time on two GPUs for short prompts only**
-(real-time factor 1.00 with a constant short prompt, 1.02 with a short prompt change every
-request, 1.02-1.06 with persona-length prompts: 5.05 s per request with 64-token text buckets,
-fused LoRA hooks, AdaLN cache off and text-encoder graphs, measured locally). Done this round:
-text-encoder CUDA graphs (prompt re-encode 0.15-0.27 s -> 0.048 s), 64-token text buckets
-(-0.26 s at persona length), host preparation of the next phase overlapped with the decode
-(prepare 0.01-0.04 -> 0.001-0.02 s per phase). Dropped after measurement: student CUDA graphs
-(the 34-frame forwards are device-bound; 0.15-0.2 s at most), attention kernel (already FA3),
-LoRA merged into FP8 (twin's check: unbiased but re-rolls the FP8 noise; held pending the hook
-cost). Measured and dropped: `taomate_h3_decode_overlap` (video decode on a second stream queued
-before the commit forward): phase totals within 0.015 s of the serial order, period 5.11 vs
-5.08 s; the commit forward runs the same rows as a student forward (about 0.23 s of device
-work), so the device is saturated end to end and nothing overlaps. Left: the twin's
-`step_async_output` (host transport gap, 0.24 s per request; first version broke step
-execution, fix 7bf16aeb3 under GPU validation) and the LoRA delta's device time (0.2-0.3 s,
-a merged FP8 student weight set, twin's item). Those two cover the 0.1 s per request that
-persona-length prompts with a change every request still lack (5.05 s per 4.958 s).
-
-### `step_async_output` validated on two GPUs (2026-09-28 14:00)
-
-Measured locally (GPUs 0,1, ten 32-token requests, timings on): 4.78 s between consecutive
-requests' first chunks (range 4.61-4.84 s; 4.98 s without the knob), **real-time factor 0.96**;
-the prompt-update session ran 4.75-4.90 s per request with the content changing per update; no
-warnings, and the executor's result pump ran in step mode. The phase totals fell by 0.05-0.1 s
-each while the inter-phase gap stayed at 0.05 s, so the removed 42 MB shared-memory copy had also
-been slowing the following phase's host side. The two-GPU deploy config turns the knob on
-(worktree 2f561c16b, recipe 19ce24fcf). Persona-length prompts are not re-measured with it yet
-(real-time factor 1.02 before it; the sibling session owns those runs and was asked to include
-the knob); expected about 0.98 (estimate). Remaining lever with a measured basis: the LoRA
-delta's device time, about 0.25 s per request, recoverable only by a merged FP8 student weight
-set (unbiased but not exact; owner decision).
+Status (session ffe817, 2026-09-28 14:25): **real time on two GPUs for the persona workload**
+(measured locally, 30 requests, 332-340-token prompts with a new prompt every request, all
+levers on incl. the twin's `step_async_output`): 4.87 s per 4.958 s request (max 4.99),
+real-time factor 0.98, 1.0 s gained over 30 requests; a 100-request confirmation is running.
+Short prompts: 4.78 s (factor 0.96, twin's measurement). Contributions this round at persona
+length: text-encoder graphs (re-encode 0.15-0.27 -> 0.048 s), 64-token text buckets (-0.26 s),
+fused LoRA hooks + AdaLN cache off (with the buckets), host preparation overlapped with the
+decode (noise-level), `step_async_output` (-0.18 s: inter-phase gap and the following phase's
+host side). Measured and dropped: student CUDA graphs (device-bound forwards), decode on a
+second stream (no gain). Margin is 2%; the remaining device-time lever if more margin is wanted
+is the LoRA delta (0.2-0.3 s per request, a merged FP8 student weight set, twin's item).
