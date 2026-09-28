@@ -64,3 +64,24 @@ def test_no_nudge_outside_a_lesson_or_when_focused():
     _run_checks(orch2, 3)
     assert not any(e.data.get("nudge") for e in tp.events(orch2, EventType.ATTENTION))
     assert [e.data["stable"] for e in tp.events(orch2, EventType.ATTENTION)] == ["focused"] * 3
+
+
+def test_nudges_are_capped_per_episode_and_reset_when_the_student_returns():
+    orch = _orch(["absent"] * 4 + ["focused"] * 3 + ["absent"] * 3)
+    orch.director.lesson_title = "光合作用"
+    orch.cfg.attention_cooldown_s = 0.0  # isolate the per-episode cap from the cooldown
+    _run_checks(orch, 7)
+    orch.director.queue.clear()  # the first nudge was spoken (nothing locks requests in this test)
+    _run_checks(orch, 3)
+    nudges = [e.data["nudge"] for e in tp.events(orch, EventType.ATTENTION) if e.data.get("nudge")]
+    assert nudges == [NUDGES["absent"][0]] * 2  # once per absence, again after the student came back and left
+
+
+def test_the_hypotenuse_label_moves_to_the_longest_side():
+    import numpy as np
+
+    from live_agent.board_plot import fix_hypotenuse
+    xy = np.array([[0, 0], [4, 0], [0, 3]], float)  # legs 4 and 3, hypotenuse from (4,0) to (0,3) = side 1
+    assert fix_hypotenuse(xy, ["直角边a", "直角边b", "斜边c"]) == ["直角边a", "斜边c", "直角边b"]
+    assert fix_hypotenuse(xy, ["a", "斜边c", "b"]) == ["a", "斜边c", "b"]
+    assert fix_hypotenuse(np.array([[0, 0], [4, 0], [1, 3]], float), ["a", "b", "斜边"]) == ["a", "b", "斜边"]

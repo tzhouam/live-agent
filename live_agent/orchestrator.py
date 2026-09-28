@@ -162,6 +162,7 @@ class Orchestrator:
         self.attention = None  # attention.AttentionMonitor, set by the app when a VLM is available
         self._last_nudge = -1e9
         self._nudge_i = 0
+        self._episode: tuple[str | None, int] = (None, 0)  # (stable state, nudges given in this episode)
         self.image_maker = None  # board_images.ImageMaker (illustrations), set by the app when configured
         self.figure_dir = None  # where exact plots are drawn (board_plot); set by the app
         self._rng = random.Random(self.cfg.seed)
@@ -915,13 +916,18 @@ class Orchestrator:
             return
         nudge = None
         d = self.director
+        if self._episode[0] != r["stable"]:
+            self._episode = (r["stable"], 0)  # a new episode: the student came back, or drifted off again
+        cap = {"absent": 1, "distracted": 3}.get(r["stable"], 0)  # asking an empty room again helps nobody
         if (r["stable"] in NUDGES and r["run"] >= self.cfg.attention_nudge_after and d.lesson_title
+                and self._episode[1] < cap
                 and now() - self._last_nudge >= self.cfg.attention_cooldown_s
                 and not d.queue and not d.awaiting_decision):
             lines = NUDGES[r["stable"]]
             nudge = lines[self._nudge_i % len(lines)]
             self._nudge_i += 1
             self._last_nudge = now()
+            self._episode = (r["stable"], self._episode[1] + 1)
             d.nudge(nudge)  # spoken next, with a gesture toward the board; the lesson continues after it
         self.log.emit(EventType.ATTENTION, now(), state=r["state"], stable=r["stable"],
                       confidence=round(r["confidence"], 2), reason=r["reason"], nudge=nudge)

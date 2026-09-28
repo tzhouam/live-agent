@@ -115,6 +115,24 @@ def render_plot(spec: dict, out_dir: str | Path) -> str:
     return name
 
 
+def fix_hypotenuse(xy: np.ndarray, sides: list) -> list:
+    """For a right triangle, put a label naming the hypotenuse (斜边 / hypotenuse) on the longest side: the model
+    lists side labels in the wrong order now and then (seen live: 斜边c drawn on a leg)."""
+    if len(xy) != 3 or len(sides) != 3:
+        return sides
+    edges = [xy[(j + 1) % 3] - xy[j] for j in range(3)]
+    dots = [abs(float(np.dot(edges[j], edges[(j + 1) % 3]))) for j in range(3)]
+    if min(dots) > 1e-6 * max(1.0, max(float(np.dot(e, e)) for e in edges)):
+        return sides  # no right angle
+    longest = int(np.argmax([np.hypot(*e) for e in edges]))
+    hyp = next((j for j, s in enumerate(sides) if s and ("斜" in str(s) or "hypot" in str(s).lower())), None)
+    if hyp is None or hyp == longest:
+        return sides
+    out = list(sides)
+    out[hyp], out[longest] = out[longest], out[hyp]
+    return out
+
+
 def _render_shapes(spec: dict, polys: list[dict], points: list[dict], path: Path, name: str) -> str:
     """Geometry to scale: filled polygons with edge and area labels, equal axes, optional grid."""
     import matplotlib.pyplot as plt
@@ -129,7 +147,7 @@ def _render_shapes(spec: dict, polys: list[dict], points: list[dict], path: Path
         if poly.get("label"):
             c = xy.mean(axis=0)
             ax.text(c[0], c[1], str(poly["label"]), ha="center", va="center", fontsize=20)
-        for j, side in enumerate(poly.get("sides") or []):
+        for j, side in enumerate(fix_hypotenuse(xy, list(poly.get("sides") or []))):
             if side and j < len(xy):
                 a, b = xy[j], xy[(j + 1) % len(xy)]
                 mid, d = (a + b) / 2, b - a
