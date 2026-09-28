@@ -55,6 +55,13 @@ def clean(text: Any) -> str:
     return _CITE.sub("", str(text)).strip()
 
 
+def _prefix(a: str, b: str) -> str:
+    n = 0
+    while n < min(len(a), len(b)) and a[n] == b[n]:
+        n += 1
+    return a[:n]
+
+
 def _bigrams(s: str) -> set[str]:
     return {s[i:i + 2] for i in range(len(s) - 1)} or {s}
 
@@ -108,6 +115,8 @@ class Curriculum:
         if len(q) < 2:
             return []
         qb = _bigrams(q)
+        latin = bool(re.fullmatch(r"[a-z0-9 .'-]+", q))
+        qwords = [w for w in re.findall(r"[a-z]{3,}", str(topic).lower()) if len(w) >= 4] or [q]
         found: list[Match] = []
         for subj in self.subjects:
             name = subj.get("subject", "")
@@ -117,7 +126,12 @@ class Curriculum:
                 g_int = parse_grade(int(g)) if str(g).isdigit() else parse_grade(g)
                 for t in (entry or {}).get("topics") or []:
                     nt = _norm(t)
-                    sim = 1.0 if nt == q else len(qb & _bigrams(nt)) / max(len(qb), 1)
+                    if latin:  # letter pairs are meaningless for English words: whole words only
+                        words = set(re.findall(r"[a-z]{3,}", str(t).lower()))
+                        sim = 1.0 if nt == q else 0.9 if q in nt else 0.6 if any(len(_prefix(w, x)) >= min(5, len(x))
+                                                                                  for w in words for x in qwords) else 0.0
+                    else:
+                        sim = 1.0 if nt == q else len(qb & _bigrams(nt)) / max(len(qb), 1)
                     if q in nt and len(q) >= 2:
                         sim = max(sim, 0.9)
                     elif nt and nt in q:
@@ -135,7 +149,7 @@ class Curriculum:
                     continue  # a textbook topic in this stage already says it (with its exact grade)
                 for dom in st.get("domains") or []:
                     hits = [r for r in dom.get("requirements") or []
-                            if q in _norm(r) or len(qb & _bigrams(_norm(r))) / max(len(qb), 1) >= 0.6]
+                            if q in _norm(r) or (not latin and len(qb & _bigrams(_norm(r))) / max(len(qb), 1) >= 0.6)]
                     if hits:
                         found.append(Match(name, None, topic, st.get("name", ""), dom.get("name", ""), hits[:3],
                                            prereq.get(q, []), "standard", score=1.6, grades=(lo, hi), sim=0.6))
@@ -204,7 +218,7 @@ class Curriculum:
             if m.grade:
                 s += f"，{grade_name(m.grade)}" + ("（教材）" if m.basis == "textbook" else "（估计）" if m.basis == "estimate" else "")
             elif m.grades and m.grades[0]:
-                s += f"，课标{grade_name(m.grades[0])}至{grade_name(m.grades[1])}"
+                s += f"，课标{grade_name(m.grades[0])}" + (f"至{grade_name(m.grades[1])}" if m.grades[1] != m.grades[0] else "")
             if m.stage or m.domain:
                 s += f"，{m.stage}{('·' + m.domain) if m.domain else ''}"
             if m.requirements:
