@@ -221,6 +221,21 @@ short prompts had left. Next lever under test: the LoRA hooks' launch overhead (
 hooked linears, 3-4 launches each, per forward); if a no-LoRA timing run shows 0.06 s or more
 per phase, the student gets a second FP8 weight set with the LoRA merged in.
 
+FP8 merge check (measured locally on CPU, 22 target linears across blocks 0/12/25/37/49 and the
+token refiner, scratchpad `fp8_merge_check.py`): the LoRA delta is 0.2-1.2% of the base weight
+norm (median entry ratio 0.2-0.8%), below the e4m3 relative step (about 6-12%), so on an
+identical quantization grid the delta would be erased entrywise (peer session's caution). The
+merged tensor's amax differs from the base amax by about that ratio, which shifts the grid and
+dithers the rounding: the projection of Q(W+D)-Q(W) onto D is 1.01-1.05 |D| on every target
+(delta preserved in expectation) with orthogonal requantization noise of about 2.6 |D|. Total
+relative error against the BF16 student is 0.0265 either way (Q(W)+D or Q(W+D)). A merged FP8
+student weight set is therefore unbiased but not exact; it is only worth its 8 GB per rank if
+the LoRA hooks' launch cost (two launches per target after the addmm fusion, 208 targets) is
+measurable, which the queued no-LoRA timing run decides. Lever ownership agreed with the
+sibling session live-agent-13 (same worktree): it owns the prompt re-encode, text buckets,
+device timing, persona runs and student graphs; this session owns the LoRA/FP8 path and the
+frame transport.
+
 Status: **real time on two GPUs for short prompts only** (real-time factor 1.00 with a
 constant 3-60 word prompt, 1.03 with a short prompt change every request, 1.06 with
 persona-length prompts), code and CPU tests done (35 tests), recipe
