@@ -252,3 +252,83 @@ def test_the_section_after_an_exercise_is_written_after_the_answer_and_addresses
         await asyncio.wait_for(task, 5)
     asyncio.run(go())
     assert len(asked) == 2 and "学生刚才的练习做错了：完全平方公式" in asked[1]
+
+
+# ---------------------------------------------------------------- Codex review adaptive1 (regressions)
+def test_negations_questions_and_hedges_are_not_rule_graded():  # finding 7
+    ex = Exercise.from_dict(CHOICE, key="x1")
+    for said in ["我不选B", "B是什么意思？", "不会是B吧", "是A还是B"]:
+        assert quick_grade(ex, said) is None, said
+
+
+def test_malformed_grader_output_is_rejected_not_trusted():  # finding 8
+    ex = Exercise.from_dict(CHOICE, key="x1")
+    bad = ScriptedLLM(lambda m: json.dumps({"is_answer": "true", "correct": "false"}))
+    try:
+        asyncio.run(grade(bad, ex, "差不多是平方和吧"))
+        raise AssertionError("string booleans must not become a grade")
+    except ValueError:
+        pass
+    ok = ScriptedLLM(lambda m: json.dumps({"is_answer": True, "correct": False, "feedback": "B也不对，再想想。"},
+                                          ensure_ascii=False))
+    r = asyncio.run(grade(ok, ex, "差不多是平方和吧"))
+    assert "正确答案是 B。" in r["feedback"] and "B也不对，再想想。" in r["feedback"]  # a string, not characters
+
+
+def test_mastered_needs_exercises_and_old_exam_losses_expire(tmp_path):  # finding 13
+    p = profile(tmp_path)
+    p.record_exercise("勾股定理", True)
+    p.concepts["新概念"] = type(p.concepts["勾股定理"])(name="新概念", mastery=0.95)
+    assert p.level("新概念") == "partial"  # a high number without graded exercises is not "mastered"
+    assert p.mastery("平方差公式") == 0.62 and p.prior("平方差公式") is None  # the later midterm no longer lists it
+    assert p.view()["concepts"][0]["source"] in ("exercise", "exam", None)
+
+
+def test_erasure_clears_grade_exams_and_a_pending_exercise(tmp_path):  # findings 2, 3
+    p = profile(tmp_path)
+    assert p.purge("初二") >= 1 and p.grade == ""
+    assert p.purge("物理") >= 1 and all(e.subject != "物理" for e in p.exams)
+    orch, _ = tp.build()
+    orch.student = profile(tmp_path)
+    d = orch.director
+    d.exercise = Exercise.from_dict(CHOICE, key="x1")
+    d.remind_exercise()
+    orch._lesson_mistakes = ["完全平方公式（漏了 2ab）", "整式乘法（符号错）"]
+    epoch = orch._profile_epoch
+    assert orch._erase_learning(["完全平方公式"]) >= 1
+    assert d.exercise is None and not d.queue  # the open exercise and its reminder are gone
+    assert "完全平方公式" not in orch.student.concepts and orch._lesson_mistakes == ["整式乘法（符号错）"]
+    assert orch._profile_epoch == epoch + 1  # grading already in flight will not write back
+    assert "完全平方公式" not in StudentProfile.load("demo", tmp_path, SEEDS).concepts  # saved
+
+
+def test_one_exercise_at_a_time_and_mistakes_do_not_cross_lessons(tmp_path):  # findings 4, 12
+    orch, _ = tp.build()
+    d = orch.director
+    d.llm.fn = lambda m: json.dumps({"relation": "chat", "kind": "exercise", "topic": "勾股定理",
+                                     "steps": [{"intent": "", "line": "好，我给你出一道题。"}]}, ensure_ascii=False) \
+        if m[0]["role"] == "system" else json.dumps({"is_answer": False})
+    d.exercise = Exercise.from_dict(CHOICE, key="x1")
+    asyncio.run(orch.on_user_utterance(Utterance(uid="u4", speaker="user", text="再出一道题", t_end=now())))
+    assert not orch._aux and d.exercise.key == "x1"  # no second exercise generated; the open one is recalled
+    assert any(s.line.startswith("我们回到刚才这道练习") for s in d.queue)
+    orch._lesson_mistakes = ["完全平方公式（漏了 2ab）"]
+    orch._stop_lesson()
+    assert orch._lesson_mistakes == []
+
+
+def test_an_answer_drops_the_pending_reminder_and_a_cut_first_line_reopens_later(tmp_path):  # findings 5, 9
+    orch, _ = tp.build()
+    orch.student = profile(tmp_path)
+    lesson = _lesson_director()
+    d = orch.director
+    d.lesson_backlog, d.lesson_title = lesson.lesson_backlog, lesson.lesson_title
+    scripts = [d.next_script(k) for k in range(4)]  # ... up to "我们来做一道练习。"
+    assert d.exercise is not None
+    d.on_interrupted([scripts[3]])  # cut before it was shown: the student never saw the question
+    assert d.exercise is None and d.lesson_backlog[0].line == "我们来做一道练习。"
+    for k in range(4, 7):
+        d.next_script(k)
+    d.remind_exercise()  # after a side question: queued, not yet spoken
+    asyncio.run(orch.on_user_utterance(Utterance(uid="u5", speaker="user", text="B", t_end=now())))
+    assert not any(s.line.startswith("我们回到刚才") for s in d.queue)

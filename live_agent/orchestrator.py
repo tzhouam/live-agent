@@ -169,6 +169,7 @@ class Orchestrator:
         self._lesson_mistakes: list[str] = []  # this lesson's wrong answers, addressed by the next section
         self._exercises = 0
         self._shown_exercise = None  # the exercise the page was last told about
+        self._profile_epoch = 0  # bumped by erasure: work started before it must not write to the profile
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -942,6 +943,7 @@ class Orchestrator:
     # ------------------------------------------------------------------ lessons
     def _start_lesson(self, topic: str) -> None:
         self._stop_lesson()
+        self._lesson_mistakes = []
         self.director.lesson_title = topic
         self._lesson_task = asyncio.create_task(self._guarded(self._lesson_loop(topic), "lesson", fatal=False))
         self._aux.add(self._lesson_task)
@@ -1026,6 +1028,7 @@ class Orchestrator:
 
         d = self.director
         ex = d.exercise
+        profile_epoch = self._profile_epoch
         try:
             r = await grade(d.llm, ex, utt.text)
         except Exception as e:  # noqa: BLE001 - grading failed: the responder answers as usual
@@ -1036,9 +1039,10 @@ class Orchestrator:
         decision = {"relation": "chat", "target_chain": None, "kind": "chat", "memory_note": None,
                     "forget_term": None, "steps": [{"intent": "", "line": x} for x in r.get("feedback") or []],
                     "exercise_result": {"correct": r["correct"], "concept": ex.concept}}
-        if epoch != self._input_epoch or d.exercise is not ex:
+        if epoch != self._input_epoch or d.exercise is not ex or profile_epoch != self._profile_epoch:
+            # a newer utterance (or an erasure) came first: nothing is applied or recorded
             self.log.emit(EventType.CAPACITY_SKIP, now(), uid=utt.uid, reason="superseded_before_decision")
-            return decision
+            return {"relation": "chat", "kind": "superseded", "steps": [], "superseded": True}
         before = {id(x) for x in d.queue}
         d.apply(utt, decision)
         d.close_exercise(before)
@@ -1048,7 +1052,7 @@ class Orchestrator:
             change = self.student.record_exercise(ex.concept, r["correct"], question=ex.question, answer=utt.text,
                                                   misconception=r.get("misconception") or "", subject=ex.subject)
             self.student.save()
-        if not r["correct"] and ex.source == "lesson":
+        if not r["correct"] and (ex.source == "lesson" or d.lesson_title):
             self._lesson_mistakes.append(ex.concept + (f"（{r['misconception']}）" if r.get("misconception") else ""))
         self.log.emit(EventType.LESSON, now(), stage="exercise_graded", concept=ex.concept, correct=r["correct"],
                       skipped=bool(r.get("skipped")), misconception=r.get("misconception"), mastery=change)
@@ -1062,6 +1066,7 @@ class Orchestrator:
 
         d = self.director
         self._exercises += 1
+        profile_epoch, plan = self._profile_epoch, d.plan_version
         profile = self.student.summary() if self.student is not None else "无（新学生，没有档案）"
         try:
             ex = await make_exercise(d.llm, name=d.persona_name, topic=topic, profile=profile,
@@ -1070,6 +1075,13 @@ class Orchestrator:
             self.log.emit(EventType.LESSON, now(), stage="exercise_failed", topic=topic, error=str(e)[:160])
             d.say_verified("抱歉，这道题我没出好，你可以换个问法。")
             return
+        if d.exercise is not None or profile_epoch != self._profile_epoch or any(
+                t in ex.question or t in ex.concept for t in d.erased_terms):
+            self.log.emit(EventType.LESSON, now(), stage="exercise_dropped", concept=ex.concept,
+                          reason="another exercise is open" if d.exercise is not None else "erasure")
+            return
+        if d.plan_version != plan and d.listening:
+            return  # the student is speaking again: this request is stale
         lines = ex.lines(22)
         d.pose_exercise(lines[1:])  # the responder already said it will give one
         self.log.emit(EventType.LESSON, now(), stage="exercise", concept=ex.concept, exercise=ex.question,
@@ -1088,11 +1100,34 @@ class Orchestrator:
             self.log.emit(EventType.LESSON, now(), stage="exercise_open", concept=ex.concept,
                           options=[o[:1] for o in ex.options])
 
-    def _emit_profile(self) -> None:
+    def _erase_learning(self, terms: list[str]) -> int:
+        """Erasure of teaching state: the student profile, a pending exercise that mentions a term (with its queued
+        lines and answer board), this lesson's mistakes; in-flight grading / exercise generation is invalidated."""
+        n = 0
+        self._profile_epoch += 1  # grading / exercise generation in flight must not write back erased data
+        ex = self.director.exercise
+        if ex is not None and any(x in json.dumps(ex.__dict__, ensure_ascii=False, default=str) for x in terms):
+            self.director.close_exercise(set(id(s) for s in self.director.queue))  # its lines go too
+            self.director.queue = type(self.director.queue)(s for s in self.director.queue
+                                                           if s.board is None or s.board.key not in (ex.key, ex.key + "a"))
         if self.student is not None:
-            self.log.emit(EventType.LESSON, now(), stage="profile", profile=self.student.view())
+            n += sum(self.student.purge(x) for x in terms)
+            self.student.save()
+            self._emit_profile()  # the page drops what it showed
+        self._lesson_mistakes = [m for m in self._lesson_mistakes if not any(x in m for x in terms)]
+        return n
+
+    def _emit_profile(self) -> None:
+        """The page gets the profile view directly; the durable log records only that it changed."""
+        if self.student is None:
+            return
+        self.log.emit(EventType.LESSON, now(), stage="profile_changed")
+        send = getattr(self.transport, "send_json", None)
+        if send is not None:
+            self._spawn(send({"type": "profile", "profile": self.student.view()}), "profile")
 
     def _stop_lesson(self) -> None:
+        self._lesson_mistakes = []
         if self._lesson_task is not None and not self._lesson_task.done():
             self._lesson_task.cancel()
         self._lesson_task = None
@@ -1125,7 +1160,8 @@ class Orchestrator:
             while not self._stop.is_set() and (
                     len(d.lesson_backlog) >= self.cfg.lesson_lookahead
                     or (waiting_for is not None and (d.exercise is waiting_for
-                                                     or any(x.exercise is waiting_for for x in d.lesson_backlog)))):
+                                                     or any(x.exercise is waiting_for for x in d.lesson_backlog)))
+                    or (self.student is not None and d.exercise is not None)):
                 await asyncio.sleep(0.5)
             waiting_for = None
             lines = None
@@ -1242,6 +1278,8 @@ class Orchestrator:
                 self._start_lesson(str(decision["topic"]).strip())
             elif kind == "lesson_stop":
                 self._stop_lesson()
+            elif kind == "exercise" and self.director.exercise is not None:
+                self.director.remind_exercise()  # one exercise at a time: the open one first
             elif kind == "exercise":
                 self._spawn(self._give_exercise(str((decision or {}).get("topic") or "").strip()
                                                 or self.director.lesson_title or "刚才讲的内容"), "exercise")
@@ -1299,10 +1337,7 @@ class Orchestrator:
             # "杭州" is its value); report.terms holds them in memory only.
             terms = sorted({term, *(getattr(report, "terms", None) or [])}, key=len, reverse=True)
             purged = sum(self.director.purge(x) for x in terms)
-            if self.student is not None:
-                purged += sum(self.student.purge(x) for x in terms)
-                self.student.save()
-                self._lesson_mistakes = [m for m in self._lesson_mistakes if not any(x in m for x in terms)]
+            purged += self._erase_learning(terms)
             acknowledge("unsent_scripts", True, f"controller items purged: {purged}")
             # The responder is stateless per call; its context is rebuilt from purged state.
             acknowledge("llm_context", True, "stateless responder; memory notes and chains purged")

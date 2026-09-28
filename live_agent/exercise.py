@@ -15,7 +15,9 @@ from live_agent.lesson import Board, LessonLine, spoken
 from live_agent.llm import ChatLLM, parse_json
 
 LETTERS = "ABCD"
-SKIP = re.compile(r"不会|不知道|跳过|不懂|想不出|没思路|算了")
+SKIP = re.compile(r"^(我)?(不会|不知道|跳过|不懂|想不出来?|没思路|算了)(做|写)?(吧|啊|呢)?[。.!！]?$")
+# not a plain answer: a negation, a question or a hedge goes to the LLM ("我不选B", "B是什么意思？", "不会是B吧")
+NOT_PLAIN = re.compile(r"不|没|别|吗|什么|为什么|怎么|哪|[?？]|或者|还是|吧")
 
 EXERCISE_PROMPT = """你是中学老师「{name}」。请给学生出一道关于「{topic}」的练习题。
 学生档案：
@@ -106,8 +108,10 @@ def _norm(s: str) -> str:
 def quick_grade(ex: Exercise, said: str) -> dict | None:
     """Rule grading when it is unambiguous; None when the LLM must judge."""
     text = said.strip()
-    if SKIP.search(text) and len(text) <= 12:
+    if SKIP.match(text):
         return {"is_answer": True, "correct": False, "skipped": True, "misconception": None}
+    if NOT_PLAIN.search(text):
+        return None
     if ex.kind == "choice":
         letters = set(re.findall(r"(?<![A-Za-z])([A-Da-d])(?![A-Za-z])", text))
         if len(letters) == 1 and len(text) <= 16:
@@ -135,11 +139,19 @@ async def grade(llm: ChatLLM, ex: Exercise, said: str, chars: int = 22) -> dict:
         question=ex.question, options=opts, answer=ex.answer_text(), explanation="".join(ex.explanation) or "无",
         said=said[:200], chars=chars)}], max_tokens=400, temperature=0.0, json_mode=True)
     d = parse_json(raw)
-    r = {"is_answer": bool(d.get("is_answer")), "correct": bool(d.get("correct")),
-         "misconception": (str(d["misconception"])[:40] if d.get("misconception") else None)}
-    if r["is_answer"]:
-        said_fb = [p for x in (d.get("feedback") or []) for p in spoken(str(x), chars)][:4]
-        r["feedback"] = feedback_lines(ex, r, chars, said_fb)
+    if not isinstance(d, dict) or not isinstance(d.get("is_answer"), bool):
+        raise ValueError("grader reply without a boolean is_answer")
+    if not d["is_answer"]:
+        return {"is_answer": False, "correct": False, "misconception": None}
+    if not isinstance(d.get("correct"), bool):
+        raise ValueError("grader reply without a boolean correct")
+    mis = d.get("misconception")
+    r = {"is_answer": True, "correct": d["correct"],
+         "misconception": str(mis)[:40] if isinstance(mis, str) and mis.strip() and not d["correct"] else None}
+    fb = d.get("feedback")
+    fb = [fb] if isinstance(fb, str) else fb if isinstance(fb, list) else []
+    said_fb = [p for x in fb if isinstance(x, str) for p in spoken(x, chars)][:4]
+    r["feedback"] = feedback_lines(ex, r, chars, said_fb)
     return r
 
 
@@ -147,7 +159,8 @@ def feedback_lines(ex: Exercise, r: dict, chars: int, llm_lines: list[str] | Non
     """What the teacher says after grading: praise or the correct answer, then the explanation."""
     if llm_lines:
         lines = list(llm_lines)
-        if not r["correct"] and ex.kind == "choice" and not any(ex.answer in x for x in lines):
+        stated = re.compile(rf"(答案|应该)(是|选)\s*{ex.answer}|选\s*{ex.answer}(?![A-Za-z])")
+        if not r["correct"] and ex.kind == "choice" and not any(stated.search(x) for x in lines):
             lines.insert(1 if len(lines) > 1 else 0, f"正确答案是 {ex.answer}。")
         return lines
     expl = [p for x in ex.explanation for p in spoken(x, chars)][:3]

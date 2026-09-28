@@ -380,6 +380,9 @@ class Director:
         # lines posing an exercise that is already closed (answered meanwhile: a soft switch cuts after grading)
         # are not said again
         cut_lessons = [x for x in cut_lessons if x.exercise is None or x.exercise is self.exercise]
+        if any(x.exercise is not None and x.exercise is self.exercise and x.line == "我们来做一道练习。"
+               for x in cut_lessons):
+            self.exercise = None  # the question was never shown: it opens again when it is posed again
         for seg in reversed(cut_lessons):
             self.lesson_backlog.appendleft(seg)
         if cut_lessons:
@@ -719,7 +722,7 @@ class Director:
         self._exercise_idle += 1
         if self._exercise_idle == self.exercise_reminder_after:
             return Segment(chain_id=None, plan_version=self.plan_version, line="想好了吗？说出答案，不会也没关系。",
-                           board=ex.board(), gesture=True)
+                           board=ex.board(), gesture=True, exercise=ex)
         if self._exercise_idle < self.exercise_reveal_after:
             return None
         lines = ["我们一起来看这道题。"] + feedback_lines(ex, {"correct": False, "skipped": True}, CHARS_PER_REQUEST)[1:]
@@ -736,7 +739,7 @@ class Director:
                                                  for x in (*self.lesson_backlog, *self.queue)):
             self.queue.append(Segment(chain_id=None, plan_version=self.plan_version,
                                       line="我们回到刚才这道练习，想好了告诉我。", board=self.exercise.board(),
-                                      gesture=True))
+                                      gesture=True, exercise=self.exercise))  # tagged: dropped once answered
             self._lesson_resume = False
 
     def stop_lesson(self) -> None:

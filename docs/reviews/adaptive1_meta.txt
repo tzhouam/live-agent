@@ -1,0 +1,14 @@
+tag: adaptive1
+date_utc: 2026-09-28T03:35:30Z
+repo_head: 8433281d35af33365b9a5b34beb5d35cbd697c7e
+repo_dirty_files: 13
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.156.0
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/adaptive1_review.md - < docs/reviews/adaptive1_prompt.md
+exit_code: 0
+thread_id: 01a0e610-69dd-7430-91f1-a4cef561a2a7
+rollout: /home/zhoutaichang/.codex/sessions/2026/09/28/rollout-2026-09-28T11-30-30-01a0e610-69dd-7430-91f1-a4cef561a2a7.jsonl
+rollout_models:       5 "model":"gpt-6-sol" 
+inlined_files: live_agent/student.py live_agent/exercise.py live_agent/lesson.py docs/reviews/adaptive1_diff.patch tests/test_student.py
+prompt_sha256: ccdbc3a2f1a7c0dd73774408d01e08bc0cedf05bd3ced617e25efaa406213e41

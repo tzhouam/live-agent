@@ -275,6 +275,7 @@ async function onMessage(ev) {
     else if (m.type === "state") { onState(m); }
     else if (m.type === "transcript") { if (m.text) chat("user", "🎙 " + m.text); }
     else if (m.type === "status") { onStatus(m); }
+    else if (m.type === "profile") { showProfile(m.profile, lastGraded); }
     else if (m.type === "error") { feed(null, "bad", "错误", m.error); chat("sys", "会话错误：" + m.error); }
     else if (m.type === "pong") {
       const rtt = performance.now() - m.t;
@@ -343,12 +344,13 @@ function showProfile(p, flash) {
   if (!p) { el.innerHTML = `<div class="empty">此会话不使用学生档案（测试直播模式不读取个人数据）。</div>`; return; }
   const exams = (p.exams || []).slice(-4).map(e => `<li>${esc(e.date || "")} ${esc(e.subject)}${esc(e.name)} <b>${e.score}</b>/${e.full}` +
     (e.weak && e.weak.length ? ` · 失分：${esc(e.weak.join("、"))}` : "") + "</li>").join("");
-  const cps = (p.concepts || []).map(c => `<div class="cp ${esc(c.level)}${flash === c.name ? " flash" : ""}" title="${esc(LEVEL[c.level] || c.level)}${c.attempts ? `，练习 ${c.correct}/${c.attempts} 对` : ""}">
+  const SRC = {exercise: "据练习", exam: "据考试失分推断"};
+  const cps = (p.concepts || []).map(c => `<div class="cp ${esc(c.level)}${flash === c.name ? " flash" : ""}" title="${esc(LEVEL[c.level] || c.level)}（估计，${SRC[c.source] || "无依据"}）${c.attempts ? `，练习 ${c.correct}/${c.attempts} 对` : ""}">
       <span>${esc(c.name)}</span><span class="bar"><i style="width:${Math.round((c.mastery ?? 0) * 100)}%"></i></span>
-      <span class="v">${c.mastery == null ? "–" : Math.round(c.mastery * 100) + "%"}</span></div>`).join("");
+      <span class="v">${c.mastery == null ? "–" : (c.source === "exam" ? "≈" : "") + Math.round(c.mastery * 100) + "%"}</span></div>`).join("");
   el.innerHTML = `<div class="who">${esc(p.name || "同学")} · ${esc(p.grade || "年级未填")}</div>` +
     (exams ? `<ul class="exams">${exams}</ul>` : `<div class="meta">还没有考试成绩</div>`) +
-    (cps || `<div class="meta">还没有知识点记录：做练习后会出现</div>`);
+    (cps ? `<div class="meta">知识点掌握度（估计值，未校准；悬停看依据）</div>` + cps : `<div class="meta">还没有知识点记录：做练习后会出现</div>`);
 }
 function examLines(p) { return (p.exams || []).map(e => `${e.subject} ${e.name} ${e.score}/${e.full} ${(e.weak || []).join(",")}`.trim()).join("\n"); }
 $("profEdit").onclick = () => {
@@ -487,7 +489,6 @@ function onEvent(m) {
              (d.misconception ? `（${d.misconception}）` : "") +
              (m && m.after != null ? ` · 掌握度 ${m.before == null ? "–" : Math.round(m.before * 100) + "%"} → ${Math.round(m.after * 100)}%` : ""));
       }
-      if (d.stage === "profile" && d.profile) showProfile(d.profile, (d.profile.concepts || []).length ? lastGraded : null);
       if (d.stage === "exercise_graded") lastGraded = d.concept;
       if (d.stage === "exercise_open") showExercise({concept: d.concept, options: d.options || []});
       if (d.stage === "exercise_closed") showExercise(null);

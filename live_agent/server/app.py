@@ -426,8 +426,13 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
                 orch.image_maker = ImageMaker(args.image_url, BOARD_IMAGES)
             orch.figure_dir = BOARD_IMAGES  # exact plots need no model
+            # the page may pick a profile only from the server's allow-list: the demo has one shared access token and no
+            # per-student accounts, so the operator decides which profiles this deployment exposes
+            allowed = [x for x in (args.students or args.student).split(",") if x]
             student_id = str(hello.get("student") or args.student)
-            if mode == "private" and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", student_id):
+            if student_id not in allowed:
+                student_id = args.student
+            if mode == "private" and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", student_id) and student_id in allowed:
                 # personal data: only a private session reads or updates the saved profile
                 from live_agent.student import StudentProfile
 
@@ -633,6 +638,7 @@ def main() -> None:
     p.add_argument("--video-codec", default="auto", choices=["auto", "jpeg"],
                    help="auto: H.264 segments to pages that can decode them (WebCodecs), else JPEG frames")
     p.add_argument("--student", default="demo", help="student profile id for private sessions (the page may pick one)")
+    p.add_argument("--students", default="", help="comma-separated profile ids the page may pick (default: only --student)")
     p.add_argument("--student-store", default=str(BOARD_IMAGES.parent / "students"), help="saved student profiles (personal data)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8200)

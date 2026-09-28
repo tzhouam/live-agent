@@ -1,0 +1,637 @@
+commit 8433281d35af33365b9a5b34beb5d35cbd697c7e
+Author: tzhouam <tzhouam@connect.ust.hk>
+Date:   Mon Sep 28 11:29:25 2026 +0800
+
+    Adaptive lessons from a saved student profile; teacher exercises graded into it (D-038)
+    
+    Student profile (grade, exams, per-concept mastery) adapts the outline (depth per
+    section, where to pose exercises) and each section; exercises pause the lesson, are
+    graded by rule or LLM, update mastery, and the next section addresses the mistake.
+    Page: profile panel with editing, answer buttons. Also fixes the spoken form of
+    (a+b)^2 and minus after a Chinese character.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+diff --git a/configs/persona_teacher/canon.json b/configs/persona_teacher/canon.json
+index 7111044..4055327 100644
+--- a/configs/persona_teacher/canon.json
++++ b/configs/persona_teacher/canon.json
+@@ -49,11 +49,13 @@
+   "speak": "explain",
+   "present": "present_board"
+  },
+- "responder_style": "教学规则（优先于上面的示例风格）：\na) 学生问知识、概念或题目时，kind 写 \"content\"：第一句直接给出答案或结论；接着用 1-3 句讲原因或举一个生活中的例子；最后一句简短地确认学生是否明白，或留一个小思考题。总共 2-5 个 step，每个 line 按上面的字数限制、按意思断句。\nb) 答案必须准确；不确定就坦诚说不确定，不编造。公式和符号用口语读出来（如「a 的平方加 b 的平方」），不要写符号。\nc) 学生说「没听懂」或答错时，先鼓励，再换一种更简单的说法或例子重新讲。\nd) 学生追问时，接着上一个问题讲，不要重复已经讲过的内容。\ne) 和学习无关的请求，简短友好地回应，再把话题引回学习。\nf) 称呼学生为「同学」，知道名字时用名字。\ng) 学生要求系统地学一个主题（「给我上一节…的课」「系统讲讲…」「教我…」）时，kind 写 \"lesson\"，并加字段 \"topic\"（主题，不超过 12 字）；steps 只写一句开场（如「好，我们来上一节光合作用。」），详细讲解和板书由备课系统生成，不要自己写。\nh) 学生说「不用讲了」「停一下课」「先不上课了」时，kind 写 \"lesson_stop\"，steps 写一句回应。\ni) 上课中学生插问时，按 a) 简短回答（2-4 句），不要重复课程内容，也不要说「我们接着讲」（系统会自动接回课程）。\nj) 回答里有公式、步骤或要点时，可加字段 \"board\": {\"title\": 标题, \"items\": [板书要点，每条不超过 30 字，公式写在 $...$ 里]}，板书显示在老师旁边的黑板上；line 里仍然把公式用中文读出来。需要图时在 board 里加 \"figure\"：函数图像写 {\"plot\": {\"functions\": [\"x**2-1\"], \"x\": [-3, 3], \"points\": [{\"x\": 1, \"y\": 0, \"label\": \"A\"}]}, \"caption\": 图注}（精确绘制）；插图、结构示意写 {\"prompt\": 具体画什么、标注放在「」里, \"caption\": 图注}。",
++ "responder_style": "教学规则（优先于上面的示例风格）：\na) 学生问知识、概念或题目时，kind 写 \"content\"：第一句直接给出答案或结论；接着用 1-3 句讲原因或举一个生活中的例子；最后一句简短地确认学生是否明白，或留一个小思考题。总共 2-5 个 step，每个 line 按上面的字数限制、按意思断句。\nb) 答案必须准确；不确定就坦诚说不确定，不编造。公式和符号用口语读出来（如「a 的平方加 b 的平方」），不要写符号。\nc) 学生说「没听懂」或答错时，先鼓励，再换一种更简单的说法或例子重新讲。\nd) 学生追问时，接着上一个问题讲，不要重复已经讲过的内容。\ne) 和学习无关的请求，简短友好地回应，再把话题引回学习。\nf) 称呼学生为「同学」，知道名字时用名字。\ng) 学生要求系统地学一个主题（「给我上一节…的课」「系统讲讲…」「教我…」）时，kind 写 \"lesson\"，并加字段 \"topic\"（主题，不超过 12 字）；steps 只写一句开场（如「好，我们来上一节光合作用。」），详细讲解和板书由备课系统生成，不要自己写。\nh) 学生说「不用讲了」「停一下课」「先不上课了」时，kind 写 \"lesson_stop\"，steps 写一句回应。\ni) 上课中学生插问时，按 a) 简短回答（2-4 句），不要重复课程内容，也不要说「我们接着讲」（系统会自动接回课程）。\nj) 回答里有公式、步骤或要点时，可加字段 \"board\": {\"title\": 标题, \"items\": [板书要点，每条不超过 30 字，公式写在 $...$ 里]}，板书显示在老师旁边的黑板上；line 里仍然把公式用中文读出来。需要图时在 board 里加 \"figure\"：函数图像写 {\"plot\": {\"functions\": [\"x**2-1\"], \"x\": [-3, 3], \"points\": [{\"x\": 1, \"y\": 0, \"label\": \"A\"}]}, \"caption\": 图注}（精确绘制）；插图、结构示意写 {\"prompt\": 具体画什么、标注放在「」里, \"caption\": 图注}。\nk) 学生要老师出题、要练习（「给我出道题」「考考我」「我想练练…」）时，kind 写 \"exercise\"，并加字段 \"topic\"（考查的知识点，不超过 12 字；没说就用正在讲的内容）；steps 只写一句（如「好，我给你出一道题。」），题目由出题系统按学生档案生成，不要自己出。\nl) 学生说自己的年级、名字或考试成绩（「我期中数学考了 78」「因式分解丢了分」）时，除了正常回应，再加字段 \"profile_update\": {\"grade\": 年级或 null, \"name\": 名字或 null, \"exam\": {\"subject\": 学科, \"name\": 考试名称, \"score\": 分数, \"full\": 满分（默认 100）, \"weak\": [丢分的知识点]} 或 null}，只写学生明确说的内容。\nm) 系统提示里「学生档案」给出了学生的年级、成绩和掌握情况时，回答的深度和例子按学生水平来；学生薄弱的知识点讲得更细。",
+  "responder_examples": [
+   "用户：老师，为什么天空是蓝色的？ → {\"relation\":\"chat\",\"target_chain\":null,\"kind\":\"content\",\"steps\":[{\"intent\":\"\",\"line\":\"因为阳光被空气散射了。\"},{\"intent\":\"\",\"line\":\"蓝光波长短，最容易被散射。\"},{\"intent\":\"\",\"line\":\"满天都是蓝光，天空就是蓝的。\"},{\"intent\":\"\",\"line\":\"想想傍晚为什么是红色的？\"}],\"memory_note\":null,\"forget_term\":null}",
+   "用户：给我上一节光合作用的课 → {\"relation\": \"new\", \"target_chain\": null, \"kind\": \"lesson\", \"topic\": \"光合作用\", \"steps\": [{\"intent\": \"\", \"line\": \"好，我们来上一节光合作用。\"}], \"memory_note\": null, \"forget_term\": null}",
+   "用户：一元二次方程怎么解？ → {\"relation\":\"chat\",\"target_chain\":null,\"kind\":\"content\",\"steps\":[{\"intent\":\"\",\"line\":\"常用配方法和求根公式。\"},{\"intent\":\"\",\"line\":\"x 等于负 b 加减根号 b 方减四 ac，\"},{\"intent\":\"\",\"line\":\"再除以二 a。\"},{\"intent\":\"\",\"line\":\"先算判别式，看有几个实数根。\"},{\"intent\":\"\",\"line\":\"要不要一起做一道题？\"}],\"memory_note\":null,\"forget_term\":null}",
++  "用户：考考我完全平方公式 → {\"relation\": \"chat\", \"target_chain\": null, \"kind\": \"exercise\", \"topic\": \"完全平方公式\", \"steps\": [{\"intent\": \"\", \"line\": \"好，我给你出一道题。\"}], \"memory_note\": null, \"forget_term\": null}",
++  "用户：我这次期中数学考了 72 分，因式分解错了好几道 → {\"relation\": \"chat\", \"target_chain\": null, \"kind\": \"chat\", \"profile_update\": {\"grade\": null, \"name\": null, \"exam\": {\"subject\": \"数学\", \"name\": \"期中考试\", \"score\": 72, \"full\": 100, \"weak\": [\"因式分解\"]}}, \"steps\": [{\"intent\": \"\", \"line\": \"谢谢你告诉我，别灰心。\"}, {\"intent\": \"\", \"line\": \"因式分解我们可以专门练一练。\"}], \"memory_note\": null, \"forget_term\": null}",
+   "用户：勾股定理是什么？ → {\"relation\": \"chat\", \"target_chain\": null, \"kind\": \"content\", \"board\": {\"title\": \"勾股定理\", \"items\": [\"直角三角形：两直角边 $a$、$b$，斜边 $c$\", \"$a^2+b^2=c^2$\", \"例：$3^2+4^2=5^2$\"]}, \"steps\": [{\"intent\": \"\", \"line\": \"直角三角形两条直角边的平方和，\"}, {\"intent\": \"\", \"line\": \"等于斜边的平方。\"}, {\"intent\": \"\", \"line\": \"比如三、四、五这组边长。\"}, {\"intent\": \"\", \"line\": \"你能再找一组这样的数吗？\"}], \"memory_note\": null, \"forget_term\": null}",
+   "用户：老师，指一下黑板 → {\"relation\":\"new\",\"target_chain\":null,\"kind\":\"action\",\"steps\":[{\"intent\":\"point_board\",\"line\":\"好，我们看黑板这里。\"}],\"memory_note\":null,\"forget_term\":null}",
+   "用户（上一个问题是天空为什么是蓝色的）：我没听懂 → {\"relation\": \"chat\", \"target_chain\": null, \"kind\": \"content\", \"steps\": [{\"intent\": \"\", \"line\": \"没关系，我换个说法。\"}, {\"intent\": \"\", \"line\": \"阳光像一群不同颜色的小球。\"}, {\"intent\": \"\", \"line\": \"蓝色小球最容易被空气弹开。\"}, {\"intent\": \"\", \"line\": \"弹得满天都是，天就是蓝的。\"}, {\"intent\": \"\", \"line\": \"这样好理解吗？\"}], \"memory_note\": null, \"forget_term\": null}",
+@@ -67,6 +69,8 @@
+   "老师，为什么天空是蓝色的？",
+   "一元二次方程怎么解？",
+   "我没听懂，能再讲一遍吗？",
+-  "先不上课了"
++  "先不上课了",
++  "给我上一节完全平方公式的课",
++  "考考我完全平方公式"
+  ]
+-}
++}
+\ No newline at end of file
+diff --git a/live_agent/director/director.py b/live_agent/director/director.py
+index 34663f5..a82c02d 100644
+--- a/live_agent/director/director.py
++++ b/live_agent/director/director.py
+@@ -66,6 +66,7 @@ class Segment:
+     lesson: bool = False  # a lesson line (kept in the lesson backlog across questions)
+     gesture: bool = False  # present the board (first line about a point)
+     progress: tuple[int, int] | None = None  # (line, lines) within the board point: shown on the board
++    exercise: Any = None  # exercise.Exercise this line poses: once locked, the director waits for the answer
+ 
+ 
+ @dataclass
+@@ -73,6 +74,7 @@ class DirectorEvents:
+     """Things the orchestrator must log (consumed by the eval schema)."""
+ 
+     refusals: list[tuple[str, str]] = field(default_factory=list)  # (chain_id, reason)
++    exercise_timeouts: list[str] = field(default_factory=list)  # exercises answered by the teacher after silence
+     degradations: list[tuple[str, str]] = field(default_factory=list)
+     completion_claims: list[tuple[str, int, int | None]] = field(default_factory=list)  # (chain, request, step)
+     capacity_skips: list[tuple[str, int]] = field(default_factory=list)  # (chain_id, revision)
+@@ -144,6 +146,13 @@ class Director:
+         self.present_intent: str | None = None  # gesture toward the board for a point's first line
+         self._answer_boards = 0
+         self.pending_figures: list = []  # lesson.Figure objects to draw (orchestrator)
++        # the exercise waiting for the student's answer (set when the line posing it is locked); while a lesson
++        # exercise waits, the lesson backlog does not advance
++        self.student_context = ""  # student profile summary for the responder (set by the orchestrator)
++        self.exercise = None
++        self._exercise_idle = 0  # idle requests since the exercise was posed (reminder, then the answer)
++        self.exercise_reminder_after = 8  # requests (~40 s at ~5 s per request) [proposed]
++        self.exercise_reveal_after = 18  # requests (~90 s): the teacher shows the answer and moves on [proposed]
+         self.plan_version = 0
+         self.queue: deque[Segment] = deque()
+         self.held: dict[str, dict[int, list[Segment]]] = {}  # multistep: steps not yet released
+@@ -247,6 +256,8 @@ class Director:
+         else:
+             sys = OPEN_LOOP_SYSTEM.format(name=self.persona_name, bio=self.persona_bio, chars=CHARS_PER_REQUEST,
+                                           open_chains=open_chains or "无", memories=memories or "无")
++        if self.student_context:  # the saved student profile (private sessions): answers match the student's level
++            sys += "\n学生档案：\n" + self.student_context
+         history = [{"role": role, "content": text} for role, text in self.dialogue]
+         raw = await self.llm.chat([{"role": "system", "content": sys}, *history,
+                                    {"role": "user", "content": utt.text}], json_mode=True)
+@@ -366,6 +377,9 @@ class Director:
+         to the front of the lesson backlog (in order) and the lesson resumes after the interruption."""
+         cut_lessons = [self._lesson_locked.pop(sc.request_index) for sc in sorted(scripts, key=lambda x: x.request_index)
+                        if sc.request_index in self._lesson_locked]
++        # lines posing an exercise that is already closed (answered meanwhile: a soft switch cuts after grading)
++        # are not said again
++        cut_lessons = [x for x in cut_lessons if x.exercise is None or x.exercise is self.exercise]
+         for seg in reversed(cut_lessons):
+             self.lesson_backlog.appendleft(seg)
+         if cut_lessons:
+@@ -645,7 +659,8 @@ class Director:
+             if seg.min_request <= request_index:
+                 del self.queue[i]
+                 return seg
+-        if self.lesson_backlog and not self.listening:
++        if self.lesson_backlog and not self.listening and (
++                self.exercise is None or self.lesson_backlog[0].exercise is self.exercise):
+             nxt = self.lesson_backlog[0]
+             if self._lesson_resume:  # back from a question: say so before continuing
+                 self._lesson_resume = False
+@@ -666,14 +681,67 @@ class Director:
+                                          if not f.url and all(f is not g for g in self.pending_figures)]
+             self.lesson_backlog.append(Segment(chain_id=None, plan_version=self.plan_version, line=ln.text,
+                                                board=ln.board, reveal=ln.item, lesson=True, gesture=ln.gesture,
+-                                               progress=getattr(ln, "progress", None)))
++                                               progress=getattr(ln, "progress", None),
++                                               exercise=getattr(ln, "exercise", None)))
+ 
+     def nudge(self, line: str) -> None:
+         """A short line to win back a distracted student: spoken next (before the next lesson line), gesturing at the
+         board; not a reply, so the lesson does not announce a resume after it."""
+         self.queue.appendleft(Segment(chain_id=None, plan_version=self.plan_version, line=line, gesture=True))
+ 
++    def pose_exercise(self, lines) -> None:
++        """An exercise the student asked for (outside the lesson flow): its lines are spoken next."""
++        for ln in lines:
++            self.queue.append(Segment(chain_id=None, plan_version=self.plan_version, line=ln.text, board=ln.board,
++                                      reveal=ln.item, gesture=ln.gesture, exercise=getattr(ln, "exercise", None)))
++
++    def close_exercise(self, queued_before: set[int]) -> None:
++        """The answer was graded and its feedback applied as a reply: the segments queued since ``queued_before``
++        (ids) show the answer on the board; the lesson then continues without a "we continue" announcement."""
++        ex, self.exercise = self.exercise, None
++        if ex is None:
++            return
++        board = ex.board(reveal_answer=True)
++        for seg in self.queue:
++            if seg.board is None and id(seg) not in queued_before:
++                seg.board = board
++        # lines of the question not yet spoken (answered early, or cut and re-queued) are dropped
++        self.lesson_backlog = deque(x for x in self.lesson_backlog if x.exercise is not ex)
++        self.queue = deque(x for x in self.queue if x.exercise is not ex)
++        self._lesson_resume = False
++
++    def _exercise_wait(self) -> Segment | None:
++        """Nothing to say while an exercise waits: remind once, and after a long silence show the answer and move
++        on (a silent student must not stall the lesson). Not graded: silence is no evidence either way."""
++        from live_agent.exercise import feedback_lines
++
++        ex = self.exercise
++        self._exercise_idle += 1
++        if self._exercise_idle == self.exercise_reminder_after:
++            return Segment(chain_id=None, plan_version=self.plan_version, line="想好了吗？说出答案，不会也没关系。",
++                           board=ex.board(), gesture=True)
++        if self._exercise_idle < self.exercise_reveal_after:
++            return None
++        lines = ["我们一起来看这道题。"] + feedback_lines(ex, {"correct": False, "skipped": True}, CHARS_PER_REQUEST)[1:]
++        before = {id(x) for x in self.queue}
++        for line in lines:
++            self.queue.append(Segment(chain_id=None, plan_version=self.plan_version, line=line))
++        self.events.exercise_timeouts.append(ex.concept)
++        self.close_exercise(before)
++        return self.queue.popleft() if self.queue else None
++
++    def remind_exercise(self) -> None:
++        """After a reply to something else while an exercise waits: bring the student back to it."""
++        if self.exercise is not None and not any(x.exercise is self.exercise
++                                                 for x in (*self.lesson_backlog, *self.queue)):
++            self.queue.append(Segment(chain_id=None, plan_version=self.plan_version,
++                                      line="我们回到刚才这道练习，想好了告诉我。", board=self.exercise.board(),
++                                      gesture=True))
++            self._lesson_resume = False
++
+     def stop_lesson(self) -> None:
++        if self.exercise is not None and getattr(self.exercise, "source", "") == "lesson":
++            self.exercise = None
+         self.lesson_backlog.clear()
+         self._lesson_locked.clear()
+         self._lesson_resume = False
+@@ -681,6 +749,11 @@ class Director:
+ 
+     def next_script(self, request_index: int) -> BlockScript:
+         seg = self._pop_segment(request_index)
++        if seg is not None and seg.exercise is not None:
++            self.exercise = seg.exercise  # posed: the lesson waits for the answer after its last line
++            self._exercise_idle = 0
++        elif seg is None and self.exercise is not None and not self.listening:
++            seg = self._exercise_wait()
+         follow_through = ""
+         if seg is None:
+             intent = self.listen_intent if self.listening else self.idle_intent
+diff --git a/live_agent/orchestrator.py b/live_agent/orchestrator.py
+index 6ed92b6..3b0f195 100644
+--- a/live_agent/orchestrator.py
++++ b/live_agent/orchestrator.py
+@@ -165,6 +165,10 @@ class Orchestrator:
+         self._episode: tuple[str | None, int] = (None, 0)  # (stable state, nudges given in this episode)
+         self.image_maker = None  # board_images.ImageMaker (illustrations), set by the app when configured
+         self.figure_dir = None  # where exact plots are drawn (board_plot); set by the app
++        self.student = None  # student.StudentProfile (private sessions): adapts lessons, records exercise results
++        self._lesson_mistakes: list[str] = []  # this lesson's wrong answers, addressed by the next section
++        self._exercises = 0
++        self._shown_exercise = None  # the exercise the page was last told about
+         self._rng = random.Random(self.cfg.seed)
+         self._chain_costs: list[float] = []
+         self._checked: set[int] = set()
+@@ -367,6 +371,7 @@ class Orchestrator:
+                 self.sched.observe_timing(tm)
+             self._locking = k  # from popping the segment until the lock is recorded
+             script = self.director.next_script(k)
++            self._exercise_changed()
+             self._audit(script)
+             try:
+                 prompt = compile_prompt(script, first_request=(k == 0))
+@@ -457,6 +462,8 @@ class Orchestrator:
+     def _drain_director_events(self, t: float) -> None:
+         ev = self.director.events
+         rev = lambda cid: len(self.director.chains[cid].revisions) if cid in self.director.chains else None  # noqa: E731
++        for concept in self._drain(ev.exercise_timeouts):
++            self.log.emit(EventType.LESSON, t, stage="exercise_timeout", concept=concept)
+         for chain_id, reason in self._drain(ev.refusals):
+             self.log.emit(EventType.REFUSAL, t, chain_id=chain_id, reason=reason, revision=rev(chain_id))
+         for chain_id, reason in self._drain(ev.degradations):
+@@ -1011,6 +1018,80 @@ class Orchestrator:
+         self.director.pending_figures += [f for f in board.figures if not f.url]
+         self._make_figures()
+ 
++    # ------------------------------------------------------------------ exercises
++    async def _grade_answer(self, utt: Utterance, epoch: int) -> dict | None:
++        """While an exercise waits: is this utterance its answer? If so grade it, speak the feedback, update the
++        student profile and return the decision for the log; None: not an answer (the responder handles it)."""
++        from live_agent.exercise import grade
++
++        d = self.director
++        ex = d.exercise
++        try:
++            r = await grade(d.llm, ex, utt.text)
++        except Exception as e:  # noqa: BLE001 - grading failed: the responder answers as usual
++            self.log.emit(EventType.LESSON, now(), stage="grading_failed", error=str(e)[:160])
++            return None
++        if not r.get("is_answer"):
++            return None
++        decision = {"relation": "chat", "target_chain": None, "kind": "chat", "memory_note": None,
++                    "forget_term": None, "steps": [{"intent": "", "line": x} for x in r.get("feedback") or []],
++                    "exercise_result": {"correct": r["correct"], "concept": ex.concept}}
++        if epoch != self._input_epoch or d.exercise is not ex:
++            self.log.emit(EventType.CAPACITY_SKIP, now(), uid=utt.uid, reason="superseded_before_decision")
++            return decision
++        before = {id(x) for x in d.queue}
++        d.apply(utt, decision)
++        d.close_exercise(before)
++        self._decisions += 1
++        change = None
++        if self.student is not None:
++            change = self.student.record_exercise(ex.concept, r["correct"], question=ex.question, answer=utt.text,
++                                                  misconception=r.get("misconception") or "", subject=ex.subject)
++            self.student.save()
++        if not r["correct"] and ex.source == "lesson":
++            self._lesson_mistakes.append(ex.concept + (f"（{r['misconception']}）" if r.get("misconception") else ""))
++        self.log.emit(EventType.LESSON, now(), stage="exercise_graded", concept=ex.concept, correct=r["correct"],
++                      skipped=bool(r.get("skipped")), misconception=r.get("misconception"), mastery=change)
++        self._emit_profile()
++        self._exercise_changed()
++        return decision
++
++    async def _give_exercise(self, topic: str) -> None:
++        """The student asked for an exercise: one on ``topic`` at the level the profile suggests."""
++        from live_agent.exercise import make_exercise
++
++        d = self.director
++        self._exercises += 1
++        profile = self.student.summary() if self.student is not None else "无（新学生，没有档案）"
++        try:
++            ex = await make_exercise(d.llm, name=d.persona_name, topic=topic, profile=profile,
++                                     key=f"q{self._exercises}")
++        except Exception as e:  # noqa: BLE001
++            self.log.emit(EventType.LESSON, now(), stage="exercise_failed", topic=topic, error=str(e)[:160])
++            d.say_verified("抱歉，这道题我没出好，你可以换个问法。")
++            return
++        lines = ex.lines(22)
++        d.pose_exercise(lines[1:])  # the responder already said it will give one
++        self.log.emit(EventType.LESSON, now(), stage="exercise", concept=ex.concept, exercise=ex.question,
++                      options=ex.options, kind=ex.kind)
++
++    def _exercise_changed(self) -> None:
++        """Tell the page when an exercise opens or closes (its answer buttons); the 2 Hz state snapshot is only
++        sent in gaps between events, which a lesson rarely leaves."""
++        ex = self.director.exercise
++        if ex is self._shown_exercise:
++            return
++        self._shown_exercise = ex
++        if ex is None:
++            self.log.emit(EventType.LESSON, now(), stage="exercise_closed")
++        else:
++            self.log.emit(EventType.LESSON, now(), stage="exercise_open", concept=ex.concept,
++                          options=[o[:1] for o in ex.options])
++
++    def _emit_profile(self) -> None:
++        if self.student is not None:
++            self.log.emit(EventType.LESSON, now(), stage="profile", profile=self.student.view())
++
+     def _stop_lesson(self) -> None:
+         if self._lesson_task is not None and not self._lesson_task.done():
+             self._lesson_task.cancel()
+@@ -1026,7 +1107,7 @@ class Orchestrator:
+         planner = LessonPlanner(d.llm, name=d.persona_name, bio=d.persona_bio)
+         context = "；".join(t for r, t in d.dialogue if r == "user")[-300:]
+         try:
+-            outline = await planner.outline(topic, context)
++            outline = await planner.outline(topic, context, profile=self.student)
+         except Exception as e:  # noqa: BLE001
+             self.log.emit(EventType.LESSON, now(), stage="outline_failed", topic=topic, error=str(e)[:160])
+             d.add_lesson_lines([LessonLine("抱歉，这节课我还没准备好，你可以先问我问题。", None, None)])
+@@ -1034,26 +1115,42 @@ class Orchestrator:
+         d.lesson_title = outline.title
+         d.add_lesson_lines(planner.intro_lines(outline))
+         self.log.emit(EventType.LESSON, now(), stage="outline", topic=topic, title=outline.title,
+-                      sections=[s["title"] for s in outline.sections])
++                      sections=[s["title"] for s in outline.sections],
++                      plan=[{"title": s["title"], "concepts": s.get("concepts", []), "depth": s.get("depth"),
++                             "exercise": s.get("exercise", False)} for s in outline.sections],
++                      note=outline.note, adaptive=self.student is not None)
+         covered: list[str] = []
++        waiting_for = None  # the previous section's exercise: its result shapes the next section
+         for i in range(len(outline.sections)):
+-            while len(d.lesson_backlog) >= self.cfg.lesson_lookahead and not self._stop.is_set():
++            while not self._stop.is_set() and (
++                    len(d.lesson_backlog) >= self.cfg.lesson_lookahead
++                    or (waiting_for is not None and (d.exercise is waiting_for
++                                                     or any(x.exercise is waiting_for for x in d.lesson_backlog)))):
+                 await asyncio.sleep(0.5)
++            waiting_for = None
+             lines = None
+             for attempt in range(2):
+                 try:
+-                    lines = await planner.section(outline, i, covered)
++                    lines = await planner.section(outline, i, covered, profile=self.student,
++                                                  mistakes=list(self._lesson_mistakes))
+                     break
+                 except Exception as e:  # noqa: BLE001 - retry once, then skip the section
+                     self.log.emit(EventType.LESSON, now(), stage="section_failed", section=i, attempt=attempt,
+                                   error=str(e)[:160])
+             if lines:
++                self._lesson_mistakes.clear()  # addressed by this section
+                 d.add_lesson_lines(lines)
++                if self.student is not None and outline.sections[i].get("concepts"):
++                    self.student.mark_taught(outline.sections[i]["concepts"])
++                    self.student.save()
+                 self._make_figures()
+                 self._spawn(self._judge_figures(planner, lines), "figure_judgement")
++                ex = next((ln.exercise for ln in lines if getattr(ln, "exercise", None) is not None), None)
++                waiting_for = ex if self.student is not None else None  # adapt the next section to the answer
+                 self.log.emit(EventType.LESSON, now(), stage="section", section=i,
+                               title=outline.sections[i]["title"], lines=len(lines),
+-                              points=len(lines[0].board.items))
++                              points=len(lines[0].board.items), depth=outline.sections[i].get("depth"),
++                              exercise=(ex.question if ex is not None else None))
+             covered.append(outline.sections[i]["title"])
+         self.log.emit(EventType.LESSON, now(), stage="planned", title=outline.title)
+ 
+@@ -1119,6 +1216,15 @@ class Orchestrator:
+             recall_id = self._no_recall()
+         if self.memory:
+             self.memory.on_user_utterance(utt)
++        if self.director.exercise is not None and not _FORGET.search(utt.text):
++            graded = await self._grade_answer(utt, epoch)
++            if graded is not None:
++                self._drain_director_events(now())
++                self.log.emit(EventType.UTTERANCE_END, now(), uid=utt.uid, decision=graded,
++                              chains={c.chain_id: c.status.value for c in self.director.chains.values()},
++                              recalled=[])
++                return graded
++        self.director.student_context = self.student.summary() if self.student is not None else ""
+         decision = await self.director.decide(utt, memories)
+         term = (decision or {}).get("forget_term")
+         if epoch != self._input_epoch:
+@@ -1136,6 +1242,17 @@ class Orchestrator:
+                 self._start_lesson(str(decision["topic"]).strip())
+             elif kind == "lesson_stop":
+                 self._stop_lesson()
++            elif kind == "exercise":
++                self._spawn(self._give_exercise(str((decision or {}).get("topic") or "").strip()
++                                                or self.director.lesson_title or "刚才讲的内容"), "exercise")
++            elif self.director.exercise is not None:
++                self.director.remind_exercise()  # a question while an exercise waits: back to it afterwards
++            if self.student is not None and (decision or {}).get("profile_update"):
++                changed = self.student.apply_update(decision["profile_update"])
++                if changed:
++                    self.student.save()
++                    self.log.emit(EventType.LESSON, now(), stage="profile_updated", changed=changed)
++                    self._emit_profile()
+         self._drain_director_events(now())  # before the erasure, so its redaction covers these events
+         if term and self.memory is not None and hasattr(self.memory, "forget"):
+             complete = await self._erase(term)
+@@ -1182,6 +1299,10 @@ class Orchestrator:
+             # "杭州" is its value); report.terms holds them in memory only.
+             terms = sorted({term, *(getattr(report, "terms", None) or [])}, key=len, reverse=True)
+             purged = sum(self.director.purge(x) for x in terms)
++            if self.student is not None:
++                purged += sum(self.student.purge(x) for x in terms)
++                self.student.save()
++                self._lesson_mistakes = [m for m in self._lesson_mistakes if not any(x in m for x in terms)]
+             acknowledge("unsent_scripts", True, f"controller items purged: {purged}")
+             # The responder is stateless per call; its context is rebuilt from purged state.
+             acknowledge("llm_context", True, "stateless responder; memory notes and chains purged")
+@@ -1253,6 +1374,8 @@ class Orchestrator:
+             "lambda_s": round(self.sched.lambda_estimate(), 2), "listening": d.listening,
+             "awaiting_decision": d.awaiting_decision, "erasure_gate_open": self._ready.is_set(),
+             "queued_segments": len(d.queue), "mode": d.mode.value,
++            "exercise": ({"concept": d.exercise.concept, "kind": d.exercise.kind,
++                          "options": [o[:1] for o in d.exercise.options]} if d.exercise is not None else None),
+         }
+ 
+     def open_chains(self) -> list[str]:
+diff --git a/live_agent/server/app.py b/live_agent/server/app.py
+index 09a0e62..a7bf574 100644
+--- a/live_agent/server/app.py
++++ b/live_agent/server/app.py
+@@ -34,6 +34,7 @@ import io
+ from fractions import Fraction
+ import json
+ import logging
++import re
+ from pathlib import Path
+ 
+ import numpy as np
+@@ -53,6 +54,7 @@ STATIC = Path(__file__).parent / "static"
+ 
+ 
+ BOARD_IMAGES = Path(__file__).resolve().parents[2] / ".cache" / "board_images"
++STUDENT_SEEDS = Path(__file__).resolve().parents[2] / "configs" / "students"  # example profiles (fictional)
+ 
+ 
+ def encode_jpeg(frame: np.ndarray, quality: int = 80) -> bytes:
+@@ -108,7 +110,9 @@ PANEL_FIELDS = ("action", "transcript", "chain_ids", "chain_id", "step", "retry_
+                 "audibility", "revision", "speaker", "uid", "counts", "expected", "wrong", "target", "gave_up", "anchor_removed", "stage",
+                 "title", "sections", "section", "lines", "points", "board", "seconds",
+                 "attempt", "labels",
+-                "point", "judgements", "state", "stable", "nudge")
++                "point", "judgements", "state", "stable", "nudge",
++                "plan", "note", "adaptive", "depth", "exercise", "concept", "correct", "skipped", "misconception",
++                "mastery", "profile", "changed", "options", "topic")
+ 
+ 
+ def panel_event(ev, t0: float) -> dict | None:
+@@ -422,6 +426,12 @@ def build_app(args: argparse.Namespace) -> FastAPI:
+ 
+                 orch.image_maker = ImageMaker(args.image_url, BOARD_IMAGES)
+             orch.figure_dir = BOARD_IMAGES  # exact plots need no model
++            student_id = str(hello.get("student") or args.student)
++            if mode == "private" and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", student_id):
++                # personal data: only a private session reads or updates the saved profile
++                from live_agent.student import StudentProfile
++
++                orch.student = StudentProfile.load(student_id, Path(args.student_store), STUDENT_SEEDS)
+             if getattr(judge, "vlm", None) is not None:  # the camera focus check uses the judge's VLM (opt-in)
+                 from live_agent.attention import AttentionMonitor
+ 
+@@ -464,7 +474,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
+                                            "responder": "rules" if args.llm_url == "scripted" else args.llm_model,
+                                            "asr": bool(args.asr_url), "persona": canon.get("display_name", ""),
+                                            "examples": canon.get("examples", []),
+-                                           "attention": orch.attention is not None},
++                                           "attention": orch.attention is not None,
++                                           "student": orch.student.view() if orch.student is not None else None},
+                                           ensure_ascii=False))
+ 
+             async def handle_inputs() -> None:
+@@ -535,6 +546,10 @@ def build_app(args: argparse.Namespace) -> FastAPI:
+                         pass
+                 elif t == "camera_off":
+                     orch.camera_off()
++                elif t == "profile" and orch.student is not None and isinstance(data.get("profile"), dict):
++                    orch.student.update_basics(data["profile"])  # name, grade, exams (mastery comes from exercises)
++                    orch.student.save()
++                    orch._emit_profile()
+                 elif t == "video_codec" and data.get("codec") == "jpeg":
+                     transport.video_codec = "jpeg"  # the page failed to decode H.264
+         except WebSocketDisconnect:
+@@ -617,6 +632,8 @@ def main() -> None:
+     p.add_argument("--image-url", default="", help="board figure server (Qwen-Image via vLLM-Omni), empty: none")
+     p.add_argument("--video-codec", default="auto", choices=["auto", "jpeg"],
+                    help="auto: H.264 segments to pages that can decode them (WebCodecs), else JPEG frames")
++    p.add_argument("--student", default="demo", help="student profile id for private sessions (the page may pick one)")
++    p.add_argument("--student-store", default=str(BOARD_IMAGES.parent / "students"), help="saved student profiles (personal data)")
+     p.add_argument("--host", default="127.0.0.1")
+     p.add_argument("--port", type=int, default=8200)
+     # Generator options (--taomate-*, --omni-*) are parsed by the adapters (taomate_h3.py, vllm_omni_h3.py).
+diff --git a/live_agent/server/static/index.html b/live_agent/server/static/index.html
+index e951ce2..fd84ca2 100644
+--- a/live_agent/server/static/index.html
++++ b/live_agent/server/static/index.html
+@@ -26,6 +26,20 @@
+   main { display:grid; grid-template-columns:minmax(300px, 1fr) minmax(300px, 400px); gap:16px; padding:16px;
+          max-width:1920px; margin:0 auto; }
+   @media (max-width: 860px) { main { grid-template-columns:1fr; } }
++  .prof .who { font-weight:600; }
++  .prof .exams { margin:4px 0 8px; padding-left:18px; color:var(--muted); font-size:13px; }
++  .prof .cp { display:grid; grid-template-columns:minmax(70px, 7em) 1fr 3.4em; gap:6px; align-items:center; font-size:13px; margin:3px 0; }
++  .prof .bar { height:8px; border-radius:4px; background:var(--chip); overflow:hidden; }
++  .prof .bar i { display:block; height:100%; background:var(--info); }
++  .prof .cp.weak .bar i { background:var(--bad); } .prof .cp.partial .bar i { background:var(--warn); }
++  .prof .cp.mastered .bar i { background:var(--ok); } .prof .cp.unknown .bar i { background:var(--line); }
++  .prof .cp .v { color:var(--muted); text-align:right; font-variant-numeric:tabular-nums; }
++  .prof .cp.flash { animation:flash 1.6s ease-out; }
++  @keyframes flash { from { background:var(--chip); } to { background:transparent; } }
++  .prof form { display:grid; gap:6px; margin-top:8px; }
++  .prof form textarea { min-height:5.5em; font:inherit; font-size:13px; padding:6px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
++  .prof form input { font:inherit; padding:4px 6px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
++  .chip.answer { border:1px solid var(--accent); font-weight:600; }
+   .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; min-width:0; }
+   .stage { display:flex; flex-direction:column; gap:12px; min-width:0; }
+   .screen { position:relative; background:var(--stage); border-radius:10px; display:flex; justify-content:center;
+@@ -125,6 +139,7 @@
+       <div class="row" style="margin-bottom:8px">
+         <label>会话 <select id="mode"><option value="private">一对一私聊</option><option value="public">测试直播</option></select></label>
+         <label>用户 <input type="text" id="uid" value="user-1" style="flex:0;width:110px;min-width:90px"></label>
++        <label title="私聊会话读取并更新这个学生的档案">学生 <input type="text" id="sid" value="demo" style="flex:0;width:80px;min-width:70px"></label>
+         <button class="primary" id="connect">连接</button>
+         <button id="disconnect" disabled>断开</button>
+       </div>
+@@ -144,6 +159,10 @@
+   </section>
+ 
+   <aside class="panel">
++    <div class="card prof" id="profCard">
++      <h2>学生档案 <button id="profEdit" hidden style="float:right;font-size:12px">编辑</button></h2>
++      <div id="prof"><div class="empty">私聊会话连接后显示学生的年级、成绩和各知识点掌握度；课程和练习按档案调整。</div></div>
++    </div>
+     <div class="card">
+       <h2>实时指标</h2>
+       <div class="stats">
+@@ -227,7 +246,7 @@ $("connect").onclick = () => {
+   ws.onopen = async () => {
+     // H.264 segments need ~1/6 of the bandwidth of per-frame JPEG (a remote bridge cannot carry JPEG in real time)
+     const video_codecs = (await h264Supported()) ? ["h264"] : [];
+-    ws.send(JSON.stringify({type: "hello", mode: $("mode").value, user_id: $("uid").value, video_codecs}));
++    ws.send(JSON.stringify({type: "hello", mode: $("mode").value, user_id: $("uid").value, student: $("sid").value.trim(), video_codecs}));
+     ["talk","text","send","disconnect"].forEach(id => $(id).disabled = false);
+     document.querySelectorAll(".chip").forEach(b => b.disabled = false);
+     $("connect").disabled = true; $("overlay").textContent = "正在启动生成…";
+@@ -294,7 +313,8 @@ async function onMessage(ev) {
+ 
+ function onStatus(m) {
+   setConn("会话中", true);
+-  if (Array.isArray(m.examples) && m.examples.length) setChips(m.examples, true);
++  if (Array.isArray(m.examples) && m.examples.length) { personaChips = m.examples; setChips(m.examples, true); }
++  showProfile(m.student);
+   $("cam").hidden = !m.attention; $("cam").disabled = false;
+   const b = $("badges"); b.querySelectorAll(".badge:not(#conn)").forEach(x => x.remove());
+   const items = [
+@@ -313,7 +333,56 @@ function onStatus(m) {
+ }
+ 
+ // ---------------------------------------------------------------- panel
++// ---------------------------------------------------------------- student profile and exercises
++let personaChips = EXAMPLES, profile = null, exerciseKey = "", lastGraded = null;
++const LEVEL = {mastered: "已掌握", partial: "基本理解", weak: "薄弱", unknown: "未评估"};
++function showProfile(p, flash) {
++  profile = p || null;
++  $("profEdit").hidden = !p;
++  const el = $("prof");
++  if (!p) { el.innerHTML = `<div class="empty">此会话不使用学生档案（测试直播模式不读取个人数据）。</div>`; return; }
++  const exams = (p.exams || []).slice(-4).map(e => `<li>${esc(e.date || "")} ${esc(e.subject)}${esc(e.name)} <b>${e.score}</b>/${e.full}` +
++    (e.weak && e.weak.length ? ` · 失分：${esc(e.weak.join("、"))}` : "") + "</li>").join("");
++  const cps = (p.concepts || []).map(c => `<div class="cp ${esc(c.level)}${flash === c.name ? " flash" : ""}" title="${esc(LEVEL[c.level] || c.level)}${c.attempts ? `，练习 ${c.correct}/${c.attempts} 对` : ""}">
++      <span>${esc(c.name)}</span><span class="bar"><i style="width:${Math.round((c.mastery ?? 0) * 100)}%"></i></span>
++      <span class="v">${c.mastery == null ? "–" : Math.round(c.mastery * 100) + "%"}</span></div>`).join("");
++  el.innerHTML = `<div class="who">${esc(p.name || "同学")} · ${esc(p.grade || "年级未填")}</div>` +
++    (exams ? `<ul class="exams">${exams}</ul>` : `<div class="meta">还没有考试成绩</div>`) +
++    (cps || `<div class="meta">还没有知识点记录：做练习后会出现</div>`);
++}
++function examLines(p) { return (p.exams || []).map(e => `${e.subject} ${e.name} ${e.score}/${e.full} ${(e.weak || []).join(",")}`.trim()).join("\n"); }
++$("profEdit").onclick = () => {
++  if (!profile || $("profForm")) return;
++  const f = document.createElement("form"); f.id = "profForm";
++  f.innerHTML = `<label>名字 <input name="name" value="${esc(profile.name)}"></label>
++    <label>年级 <input name="grade" value="${esc(profile.grade)}" placeholder="如 初二"></label>
++    <label>考试成绩（每行：学科 考试 分数/满分 失分点,失分点）<textarea name="exams">${esc(examLines(profile))}</textarea></label>
++    <div><button class="primary" type="submit">保存</button> <button type="button" id="profCancel">取消</button></div>`;
++  $("prof").appendChild(f);
++  $("profCancel").onclick = () => f.remove();
++  f.onsubmit = (ev) => {
++    ev.preventDefault();
++    const exams = f.exams.value.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
++      const m = l.match(/^(\S+)\s+(\S+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\s*(.*)$/);
++      return m ? {subject: m[1], name: m[2], score: +m[3], full: +(m[4] || 100),
++                  weak: m[5].split(/[,，、\s]+/).filter(Boolean)} : null;
++    }).filter(Boolean);
++    send({type: "profile", profile: {name: f.name.value.trim(), grade: f.grade.value.trim(), exams}});
++    f.remove();
++  };
++};
++function showExercise(ex) {  // answer buttons while an exercise waits; the persona's examples otherwise
++  const key = ex ? ex.concept + (ex.options || []).join("") : "";
++  if (key === exerciseKey) return;
++  exerciseKey = key;
++  const live = ws && ws.readyState === 1;
++  if (!ex) { setChips(personaChips, live); return; }
++  setChips([...(ex.options || []).map(o => "选 " + o), "我不会"], live);
++  document.querySelectorAll("#chips .chip").forEach(b => b.classList.add("answer"));
++}
++
+ function onState(s) {
++  showExercise(s.exercise);
+   $("sLambda").textContent = typeof s.lambda_s === "number" ? s.lambda_s.toFixed(1) : "–";
+   $("sReq").textContent = s.next_lock ?? "–";
+   const flags = [];
+@@ -399,8 +468,29 @@ function onEvent(m) {
+                  figure_judgement: `配图判断「${d.title || ""}」：` + (d.judgements || []).map(j =>
+                    `第 ${j.point + 1} 条 复杂度 ${j.complexity ?? "?"} ${j.need ? "→ 配图" : "→ 不配"}${j.why ? "（" + j.why + "）" : ""}`).join("；"),
+                  figure: `第 ${(d.point ?? 0) + 1} 条的配图已画好（${d.kind === "plot" ? "精确作图" : "插图"}）`,
+-                 figure_failed: `配图失败：${d.error || ""}`}[d.stage];
++                 figure_failed: `配图失败：${d.error || ""}`,
++                 exercise: `出题（${d.concept || ""}）：${d.exercise || ""}`,
++                 exercise_failed: `出题失败：${d.error || ""}`,
++                 exercise_timeout: `练习「${d.concept || ""}」无人作答，老师讲解后继续`,
++                 grading_failed: `批改失败：${d.error || ""}`,
++                 profile_updated: `学生档案已更新（${(d.changed || []).join("、")}）`}[d.stage];
+       if (s) feed(t, d.stage.endsWith("failed") ? "bad" : "", "备课", s);
++      if (d.stage === "outline" && d.plan) {
++        const dep = {review: "复习", core: "重点", new: "新课"};
++        feed(t, "", d.adaptive ? "因材施教" : "教案", (d.note ? d.note + "；" : "") + d.plan.map((x, i) =>
++          `${i + 1}.${x.title}[${dep[x.depth] || x.depth}${x.exercise ? "+练习" : ""}]`).join(" "));
++      }
++      if (d.stage === "section" && d.exercise) feed(t, "", "练习", `本节后出题：${d.exercise}`);
++      if (d.stage === "exercise_graded") {
++        const m = d.mastery;
++        feed(t, d.correct ? "ok" : "bad", "批改", `${d.concept}：${d.skipped ? "不会" : d.correct ? "答对" : "答错"}` +
++             (d.misconception ? `（${d.misconception}）` : "") +
++             (m && m.after != null ? ` · 掌握度 ${m.before == null ? "–" : Math.round(m.before * 100) + "%"} → ${Math.round(m.after * 100)}%` : ""));
++      }
++      if (d.stage === "profile" && d.profile) showProfile(d.profile, (d.profile.concepts || []).length ? lastGraded : null);
++      if (d.stage === "exercise_graded") lastGraded = d.concept;
++      if (d.stage === "exercise_open") showExercise({concept: d.concept, options: d.options || []});
++      if (d.stage === "exercise_closed") showExercise(null);
+       break;
+     }
+     case "attention": {
