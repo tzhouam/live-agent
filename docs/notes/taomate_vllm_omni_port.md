@@ -266,6 +266,19 @@ chunk's future before emitting it, and drop pending ids on abort. Expected gain 
 request (estimate), enough for real-time factor 1.0 at persona length; risk is in ordering and
 abort handling of shared infrastructure, and it needs GPU validation.
 
+Implemented (worktree ede67f3e9, GPU validation queued): `step_async_output` in `model_config`.
+The worker creates its background packing thread in step execution too and, before replying to a
+stepwise RPC, swaps every media-bearing chunk result for a shallow copy without media carrying an
+`async_output_id`; the original is packed on the thread and delivered as `OUTPUT_READY`, which the
+engine's step streaming already awaits per item. The reply stays synchronous (scheduler bookkeeping
+unchanged); aborted requests drop the placeholder's pending output. Unit-tested (detachment,
+knob); expected gain 0.15-0.18 s per request. The sibling's launch-time split (its measurement,
+12 requests at persona length): 34-frame student forwards are GPU-bound (0.68-0.71 s wall,
+0.41-0.43 s host issue), the 17-frame forwards and the commit forwards are launch-bound; student
+CUDA graphs would save only 0.15-0.2 s and are not pursued; the LoRA delta is about 15-20 ms of
+device time per forward (0.2-0.3 s per request), so the merged FP8 student set is worth more than
+first estimated.
+
 Status: **real time on two GPUs for short prompts only** (real-time factor 1.00 with a
 constant 3-60 word prompt, 1.03 with a short prompt change every request, 1.06 with
 persona-length prompts), code and CPU tests done (35 tests), recipe
