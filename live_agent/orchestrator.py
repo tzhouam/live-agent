@@ -165,6 +165,10 @@ class Orchestrator:
         self._episode: tuple[str | None, int] = (None, 0)  # (stable state, nudges given in this episode)
         self.image_maker = None  # board_images.ImageMaker (illustrations), set by the app when configured
         self.figure_dir = None  # where exact plots are drawn (board_plot); set by the app
+        self.student = None  # student.StudentProfile (private sessions): adapts lessons, records exercise results
+        self._lesson_mistakes: list[str] = []  # this lesson's wrong answers, addressed by the next section
+        self._exercises = 0
+        self._shown_exercise = None  # the exercise the page was last told about
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -367,6 +371,7 @@ class Orchestrator:
                 self.sched.observe_timing(tm)
             self._locking = k  # from popping the segment until the lock is recorded
             script = self.director.next_script(k)
+            self._exercise_changed()
             self._audit(script)
             try:
                 prompt = compile_prompt(script, first_request=(k == 0))
@@ -457,6 +462,8 @@ class Orchestrator:
     def _drain_director_events(self, t: float) -> None:
         ev = self.director.events
         rev = lambda cid: len(self.director.chains[cid].revisions) if cid in self.director.chains else None  # noqa: E731
+        for concept in self._drain(ev.exercise_timeouts):
+            self.log.emit(EventType.LESSON, t, stage="exercise_timeout", concept=concept)
         for chain_id, reason in self._drain(ev.refusals):
             self.log.emit(EventType.REFUSAL, t, chain_id=chain_id, reason=reason, revision=rev(chain_id))
         for chain_id, reason in self._drain(ev.degradations):
@@ -1011,6 +1018,80 @@ class Orchestrator:
         self.director.pending_figures += [f for f in board.figures if not f.url]
         self._make_figures()
 
+    # ------------------------------------------------------------------ exercises
+    async def _grade_answer(self, utt: Utterance, epoch: int) -> dict | None:
+        """While an exercise waits: is this utterance its answer? If so grade it, speak the feedback, update the
+        student profile and return the decision for the log; None: not an answer (the responder handles it)."""
+        from live_agent.exercise import grade
+
+        d = self.director
+        ex = d.exercise
+        try:
+            r = await grade(d.llm, ex, utt.text)
+        except Exception as e:  # noqa: BLE001 - grading failed: the responder answers as usual
+            self.log.emit(EventType.LESSON, now(), stage="grading_failed", error=str(e)[:160])
+            return None
+        if not r.get("is_answer"):
+            return None
+        decision = {"relation": "chat", "target_chain": None, "kind": "chat", "memory_note": None,
+                    "forget_term": None, "steps": [{"intent": "", "line": x} for x in r.get("feedback") or []],
+                    "exercise_result": {"correct": r["correct"], "concept": ex.concept}}
+        if epoch != self._input_epoch or d.exercise is not ex:
+            self.log.emit(EventType.CAPACITY_SKIP, now(), uid=utt.uid, reason="superseded_before_decision")
+            return decision
+        before = {id(x) for x in d.queue}
+        d.apply(utt, decision)
+        d.close_exercise(before)
+        self._decisions += 1
+        change = None
+        if self.student is not None:
+            change = self.student.record_exercise(ex.concept, r["correct"], question=ex.question, answer=utt.text,
+                                                  misconception=r.get("misconception") or "", subject=ex.subject)
+            self.student.save()
+        if not r["correct"] and ex.source == "lesson":
+            self._lesson_mistakes.append(ex.concept + (f"（{r['misconception']}）" if r.get("misconception") else ""))
+        self.log.emit(EventType.LESSON, now(), stage="exercise_graded", concept=ex.concept, correct=r["correct"],
+                      skipped=bool(r.get("skipped")), misconception=r.get("misconception"), mastery=change)
+        self._emit_profile()
+        self._exercise_changed()
+        return decision
+
+    async def _give_exercise(self, topic: str) -> None:
+        """The student asked for an exercise: one on ``topic`` at the level the profile suggests."""
+        from live_agent.exercise import make_exercise
+
+        d = self.director
+        self._exercises += 1
+        profile = self.student.summary() if self.student is not None else "无（新学生，没有档案）"
+        try:
+            ex = await make_exercise(d.llm, name=d.persona_name, topic=topic, profile=profile,
+                                     key=f"q{self._exercises}")
+        except Exception as e:  # noqa: BLE001
+            self.log.emit(EventType.LESSON, now(), stage="exercise_failed", topic=topic, error=str(e)[:160])
+            d.say_verified("抱歉，这道题我没出好，你可以换个问法。")
+            return
+        lines = ex.lines(22)
+        d.pose_exercise(lines[1:])  # the responder already said it will give one
+        self.log.emit(EventType.LESSON, now(), stage="exercise", concept=ex.concept, exercise=ex.question,
+                      options=ex.options, kind=ex.kind)
+
+    def _exercise_changed(self) -> None:
+        """Tell the page when an exercise opens or closes (its answer buttons); the 2 Hz state snapshot is only
+        sent in gaps between events, which a lesson rarely leaves."""
+        ex = self.director.exercise
+        if ex is self._shown_exercise:
+            return
+        self._shown_exercise = ex
+        if ex is None:
+            self.log.emit(EventType.LESSON, now(), stage="exercise_closed")
+        else:
+            self.log.emit(EventType.LESSON, now(), stage="exercise_open", concept=ex.concept,
+                          options=[o[:1] for o in ex.options])
+
+    def _emit_profile(self) -> None:
+        if self.student is not None:
+            self.log.emit(EventType.LESSON, now(), stage="profile", profile=self.student.view())
+
     def _stop_lesson(self) -> None:
         if self._lesson_task is not None and not self._lesson_task.done():
             self._lesson_task.cancel()
@@ -1026,7 +1107,7 @@ class Orchestrator:
         planner = LessonPlanner(d.llm, name=d.persona_name, bio=d.persona_bio)
         context = "；".join(t for r, t in d.dialogue if r == "user")[-300:]
         try:
-            outline = await planner.outline(topic, context)
+            outline = await planner.outline(topic, context, profile=self.student)
         except Exception as e:  # noqa: BLE001
             self.log.emit(EventType.LESSON, now(), stage="outline_failed", topic=topic, error=str(e)[:160])
             d.add_lesson_lines([LessonLine("抱歉，这节课我还没准备好，你可以先问我问题。", None, None)])
@@ -1034,26 +1115,42 @@ class Orchestrator:
         d.lesson_title = outline.title
         d.add_lesson_lines(planner.intro_lines(outline))
         self.log.emit(EventType.LESSON, now(), stage="outline", topic=topic, title=outline.title,
-                      sections=[s["title"] for s in outline.sections])
+                      sections=[s["title"] for s in outline.sections],
+                      plan=[{"title": s["title"], "concepts": s.get("concepts", []), "depth": s.get("depth"),
+                             "exercise": s.get("exercise", False)} for s in outline.sections],
+                      note=outline.note, adaptive=self.student is not None)
         covered: list[str] = []
+        waiting_for = None  # the previous section's exercise: its result shapes the next section
         for i in range(len(outline.sections)):
-            while len(d.lesson_backlog) >= self.cfg.lesson_lookahead and not self._stop.is_set():
+            while not self._stop.is_set() and (
+                    len(d.lesson_backlog) >= self.cfg.lesson_lookahead
+                    or (waiting_for is not None and (d.exercise is waiting_for
+                                                     or any(x.exercise is waiting_for for x in d.lesson_backlog)))):
                 await asyncio.sleep(0.5)
+            waiting_for = None
             lines = None
             for attempt in range(2):
                 try:
-                    lines = await planner.section(outline, i, covered)
+                    lines = await planner.section(outline, i, covered, profile=self.student,
+                                                  mistakes=list(self._lesson_mistakes))
                     break
                 except Exception as e:  # noqa: BLE001 - retry once, then skip the section
                     self.log.emit(EventType.LESSON, now(), stage="section_failed", section=i, attempt=attempt,
                                   error=str(e)[:160])
             if lines:
+                self._lesson_mistakes.clear()  # addressed by this section
                 d.add_lesson_lines(lines)
+                if self.student is not None and outline.sections[i].get("concepts"):
+                    self.student.mark_taught(outline.sections[i]["concepts"])
+                    self.student.save()
                 self._make_figures()
                 self._spawn(self._judge_figures(planner, lines), "figure_judgement")
+                ex = next((ln.exercise for ln in lines if getattr(ln, "exercise", None) is not None), None)
+                waiting_for = ex if self.student is not None else None  # adapt the next section to the answer
                 self.log.emit(EventType.LESSON, now(), stage="section", section=i,
                               title=outline.sections[i]["title"], lines=len(lines),
-                              points=len(lines[0].board.items))
+                              points=len(lines[0].board.items), depth=outline.sections[i].get("depth"),
+                              exercise=(ex.question if ex is not None else None))
             covered.append(outline.sections[i]["title"])
         self.log.emit(EventType.LESSON, now(), stage="planned", title=outline.title)
 
@@ -1119,6 +1216,15 @@ class Orchestrator:
             recall_id = self._no_recall()
         if self.memory:
             self.memory.on_user_utterance(utt)
+        if self.director.exercise is not None and not _FORGET.search(utt.text):
+            graded = await self._grade_answer(utt, epoch)
+            if graded is not None:
+                self._drain_director_events(now())
+                self.log.emit(EventType.UTTERANCE_END, now(), uid=utt.uid, decision=graded,
+                              chains={c.chain_id: c.status.value for c in self.director.chains.values()},
+                              recalled=[])
+                return graded
+        self.director.student_context = self.student.summary() if self.student is not None else ""
         decision = await self.director.decide(utt, memories)
         term = (decision or {}).get("forget_term")
         if epoch != self._input_epoch:
@@ -1136,6 +1242,17 @@ class Orchestrator:
                 self._start_lesson(str(decision["topic"]).strip())
             elif kind == "lesson_stop":
                 self._stop_lesson()
+            elif kind == "exercise":
+                self._spawn(self._give_exercise(str((decision or {}).get("topic") or "").strip()
+                                                or self.director.lesson_title or "刚才讲的内容"), "exercise")
+            elif self.director.exercise is not None:
+                self.director.remind_exercise()  # a question while an exercise waits: back to it afterwards
+            if self.student is not None and (decision or {}).get("profile_update"):
+                changed = self.student.apply_update(decision["profile_update"])
+                if changed:
+                    self.student.save()
+                    self.log.emit(EventType.LESSON, now(), stage="profile_updated", changed=changed)
+                    self._emit_profile()
         self._drain_director_events(now())  # before the erasure, so its redaction covers these events
         if term and self.memory is not None and hasattr(self.memory, "forget"):
             complete = await self._erase(term)
@@ -1182,6 +1299,10 @@ class Orchestrator:
             # "杭州" is its value); report.terms holds them in memory only.
             terms = sorted({term, *(getattr(report, "terms", None) or [])}, key=len, reverse=True)
             purged = sum(self.director.purge(x) for x in terms)
+            if self.student is not None:
+                purged += sum(self.student.purge(x) for x in terms)
+                self.student.save()
+                self._lesson_mistakes = [m for m in self._lesson_mistakes if not any(x in m for x in terms)]
             acknowledge("unsent_scripts", True, f"controller items purged: {purged}")
             # The responder is stateless per call; its context is rebuilt from purged state.
             acknowledge("llm_context", True, "stateless responder; memory notes and chains purged")
@@ -1253,6 +1374,8 @@ class Orchestrator:
             "lambda_s": round(self.sched.lambda_estimate(), 2), "listening": d.listening,
             "awaiting_decision": d.awaiting_decision, "erasure_gate_open": self._ready.is_set(),
             "queued_segments": len(d.queue), "mode": d.mode.value,
+            "exercise": ({"concept": d.exercise.concept, "kind": d.exercise.kind,
+                          "options": [o[:1] for o in d.exercise.options]} if d.exercise is not None else None),
         }
 
     def open_chains(self) -> list[str]:

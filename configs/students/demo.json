@@ -1,0 +1,19 @@
+{
+ "student_id": "demo",
+ "name": "小明",
+ "grade": "初二",
+ "exams": [
+  {"subject": "数学", "name": "月考", "score": 85, "full": 100, "date": "2026-09-10", "weak": ["平方差公式"]},
+  {"subject": "数学", "name": "期中考试", "score": 72, "full": 100, "date": "2026-09-24", "weak": ["因式分解", "完全平方公式"]},
+  {"subject": "物理", "name": "期中考试", "score": 81, "full": 100, "date": "2026-09-25", "weak": ["浮力"]},
+  {"subject": "生物", "name": "期中考试", "score": 92, "full": 100, "date": "2026-09-26", "weak": []}
+ ],
+ "concepts": {
+  "整式乘法": {"subject": "数学", "mastery": 0.86, "attempts": 5, "correct": 5},
+  "平方差公式": {"subject": "数学", "mastery": 0.62, "attempts": 4, "correct": 3},
+  "完全平方公式": {"subject": "数学", "mastery": 0.38, "attempts": 4, "correct": 1, "notes": ["把 (a+b)² 写成 a²+b²，漏了 2ab"]},
+  "勾股定理": {"subject": "数学", "mastery": 0.8, "attempts": 3, "correct": 3},
+  "光合作用": {"subject": "生物", "mastery": 0.9, "attempts": 2, "correct": 2}
+ },
+ "history": []
+}

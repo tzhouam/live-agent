@@ -66,6 +66,7 @@ class Segment:
     lesson: bool = False  # a lesson line (kept in the lesson backlog across questions)
     gesture: bool = False  # present the board (first line about a point)
     progress: tuple[int, int] | None = None  # (line, lines) within the board point: shown on the board
+    exercise: Any = None  # exercise.Exercise this line poses: once locked, the director waits for the answer
 
 
 @dataclass
@@ -73,6 +74,7 @@ class DirectorEvents:
     """Things the orchestrator must log (consumed by the eval schema)."""
 
     refusals: list[tuple[str, str]] = field(default_factory=list)  # (chain_id, reason)
+    exercise_timeouts: list[str] = field(default_factory=list)  # exercises answered by the teacher after silence
     degradations: list[tuple[str, str]] = field(default_factory=list)
     completion_claims: list[tuple[str, int, int | None]] = field(default_factory=list)  # (chain, request, step)
     capacity_skips: list[tuple[str, int]] = field(default_factory=list)  # (chain_id, revision)
@@ -144,6 +146,13 @@ class Director:
         self.present_intent: str | None = None  # gesture toward the board for a point's first line
         self._answer_boards = 0
         self.pending_figures: list = []  # lesson.Figure objects to draw (orchestrator)
+        # the exercise waiting for the student's answer (set when the line posing it is locked); while a lesson
+        # exercise waits, the lesson backlog does not advance
+        self.student_context = ""  # student profile summary for the responder (set by the orchestrator)
+        self.exercise = None
+        self._exercise_idle = 0  # idle requests since the exercise was posed (reminder, then the answer)
+        self.exercise_reminder_after = 8  # requests (~40 s at ~5 s per request) [proposed]
+        self.exercise_reveal_after = 18  # requests (~90 s): the teacher shows the answer and moves on [proposed]
         self.plan_version = 0
         self.queue: deque[Segment] = deque()
         self.held: dict[str, dict[int, list[Segment]]] = {}  # multistep: steps not yet released
@@ -247,6 +256,8 @@ class Director:
         else:
             sys = OPEN_LOOP_SYSTEM.format(name=self.persona_name, bio=self.persona_bio, chars=CHARS_PER_REQUEST,
                                           open_chains=open_chains or "无", memories=memories or "无")
+        if self.student_context:  # the saved student profile (private sessions): answers match the student's level
+            sys += "\n学生档案：\n" + self.student_context
         history = [{"role": role, "content": text} for role, text in self.dialogue]
         raw = await self.llm.chat([{"role": "system", "content": sys}, *history,
                                    {"role": "user", "content": utt.text}], json_mode=True)
@@ -366,6 +377,9 @@ class Director:
         to the front of the lesson backlog (in order) and the lesson resumes after the interruption."""
         cut_lessons = [self._lesson_locked.pop(sc.request_index) for sc in sorted(scripts, key=lambda x: x.request_index)
                        if sc.request_index in self._lesson_locked]
+        # lines posing an exercise that is already closed (answered meanwhile: a soft switch cuts after grading)
+        # are not said again
+        cut_lessons = [x for x in cut_lessons if x.exercise is None or x.exercise is self.exercise]
         for seg in reversed(cut_lessons):
             self.lesson_backlog.appendleft(seg)
         if cut_lessons:
@@ -645,7 +659,8 @@ class Director:
             if seg.min_request <= request_index:
                 del self.queue[i]
                 return seg
-        if self.lesson_backlog and not self.listening:
+        if self.lesson_backlog and not self.listening and (
+                self.exercise is None or self.lesson_backlog[0].exercise is self.exercise):
             nxt = self.lesson_backlog[0]
             if self._lesson_resume:  # back from a question: say so before continuing
                 self._lesson_resume = False
@@ -666,14 +681,67 @@ class Director:
                                          if not f.url and all(f is not g for g in self.pending_figures)]
             self.lesson_backlog.append(Segment(chain_id=None, plan_version=self.plan_version, line=ln.text,
                                                board=ln.board, reveal=ln.item, lesson=True, gesture=ln.gesture,
-                                               progress=getattr(ln, "progress", None)))
+                                               progress=getattr(ln, "progress", None),
+                                               exercise=getattr(ln, "exercise", None)))
 
     def nudge(self, line: str) -> None:
         """A short line to win back a distracted student: spoken next (before the next lesson line), gesturing at the
         board; not a reply, so the lesson does not announce a resume after it."""
         self.queue.appendleft(Segment(chain_id=None, plan_version=self.plan_version, line=line, gesture=True))
 
+    def pose_exercise(self, lines) -> None:
+        """An exercise the student asked for (outside the lesson flow): its lines are spoken next."""
+        for ln in lines:
+            self.queue.append(Segment(chain_id=None, plan_version=self.plan_version, line=ln.text, board=ln.board,
+                                      reveal=ln.item, gesture=ln.gesture, exercise=getattr(ln, "exercise", None)))
+
+    def close_exercise(self, queued_before: set[int]) -> None:
+        """The answer was graded and its feedback applied as a reply: the segments queued since ``queued_before``
+        (ids) show the answer on the board; the lesson then continues without a "we continue" announcement."""
+        ex, self.exercise = self.exercise, None
+        if ex is None:
+            return
+        board = ex.board(reveal_answer=True)
+        for seg in self.queue:
+            if seg.board is None and id(seg) not in queued_before:
+                seg.board = board
+        # lines of the question not yet spoken (answered early, or cut and re-queued) are dropped
+        self.lesson_backlog = deque(x for x in self.lesson_backlog if x.exercise is not ex)
+        self.queue = deque(x for x in self.queue if x.exercise is not ex)
+        self._lesson_resume = False
+
+    def _exercise_wait(self) -> Segment | None:
+        """Nothing to say while an exercise waits: remind once, and after a long silence show the answer and move
+        on (a silent student must not stall the lesson). Not graded: silence is no evidence either way."""
+        from live_agent.exercise import feedback_lines
+
+        ex = self.exercise
+        self._exercise_idle += 1
+        if self._exercise_idle == self.exercise_reminder_after:
+            return Segment(chain_id=None, plan_version=self.plan_version, line="想好了吗？说出答案，不会也没关系。",
+                           board=ex.board(), gesture=True)
+        if self._exercise_idle < self.exercise_reveal_after:
+            return None
+        lines = ["我们一起来看这道题。"] + feedback_lines(ex, {"correct": False, "skipped": True}, CHARS_PER_REQUEST)[1:]
+        before = {id(x) for x in self.queue}
+        for line in lines:
+            self.queue.append(Segment(chain_id=None, plan_version=self.plan_version, line=line))
+        self.events.exercise_timeouts.append(ex.concept)
+        self.close_exercise(before)
+        return self.queue.popleft() if self.queue else None
+
+    def remind_exercise(self) -> None:
+        """After a reply to something else while an exercise waits: bring the student back to it."""
+        if self.exercise is not None and not any(x.exercise is self.exercise
+                                                 for x in (*self.lesson_backlog, *self.queue)):
+            self.queue.append(Segment(chain_id=None, plan_version=self.plan_version,
+                                      line="我们回到刚才这道练习，想好了告诉我。", board=self.exercise.board(),
+                                      gesture=True))
+            self._lesson_resume = False
+
     def stop_lesson(self) -> None:
+        if self.exercise is not None and getattr(self.exercise, "source", "") == "lesson":
+            self.exercise = None
         self.lesson_backlog.clear()
         self._lesson_locked.clear()
         self._lesson_resume = False
@@ -681,6 +749,11 @@ class Director:
 
     def next_script(self, request_index: int) -> BlockScript:
         seg = self._pop_segment(request_index)
+        if seg is not None and seg.exercise is not None:
+            self.exercise = seg.exercise  # posed: the lesson waits for the answer after its last line
+            self._exercise_idle = 0
+        elif seg is None and self.exercise is not None and not self.listening:
+            seg = self._exercise_wait()
         follow_through = ""
         if seg is None:
             intent = self.listen_intent if self.listening else self.idle_intent

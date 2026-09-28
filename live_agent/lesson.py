@@ -19,11 +19,26 @@ from live_agent.llm import ChatLLM, parse_json
 
 MAX_ITEMS = 6
 ITEM_CHARS = 60
+# section depth chosen by the outline from the student's profile: (spoken lines, instruction)
+DEPTHS = {
+    "review": ("4-6", "这一节是复习，学生已经掌握：只讲 1-2 条要点，每条一两句，快速带过，不举新例子。"),
+    "core": ("14-20", "这一节是重点，学生这里薄弱或考试失分：放慢，每条要点先讲直观理解，再举一个具体的例子或算一道例题，指出常见错误。"),
+    "new": ("10-18", "这一节是新内容，正常讲解。"),
+}
 
 OUTLINE_PROMPT = """你是中学老师「{name}」，要给学生上一节关于「{topic}」的课。人设：{bio}
-请设计课程大纲，只输出 JSON：
-{{"title": 课程标题（不超过 16 字）, "sections": [{{"title": 小节标题（不超过 14 字）, "goal": 这一节要讲清楚什么（一句话）}}], "intro": [开场白，2-3 句]}}
-要求：3-5 个小节，由浅入深；开场白先说今天学什么，再说分几部分讲；每句开场白不超过 {chars} 个汉字。
+学生档案（年级、考试成绩、各概念的掌握情况）：
+{profile}
+请按这个学生的情况因材施教，设计课程大纲，只输出 JSON：
+{{"title": 课程标题（不超过 16 字）, "plan_note": 一句话说明你根据档案怎么安排的（给老师自己看，不念出来）,
+ "sections": [{{"title": 小节标题（不超过 14 字）, "goal": 这一节要讲清楚什么（一句话）,
+   "concepts": [这一节讲的概念，档案里已有的概念用完全相同的名字，每个不超过 8 字],
+   "depth": "review"（已掌握，一两句带过）或 "core"（薄弱或考试失分，重点讲、放慢、多举例）或 "new"（新内容，正常讲）,
+   "exercise": true 或 false（讲完这一节出一道练习）}}],
+ "intro": [开场白，2-3 句]}}
+要求：3-5 个小节，由浅入深；讲解深度、用词和例子符合学生的年级；学生已掌握的前置概念只安排简短复习或不讲，薄弱的、考试失分的概念多安排时间；
+整节课 1-3 道练习，放在薄弱概念和重点小节后面；没有档案时按{default_grade}的一般水平讲。
+开场白先说今天学什么，再说分几部分讲，知道学生情况时可以自然地提一句（如「上次考试这里丢了分，今天重点讲」）；每句开场白不超过 {chars} 个汉字。
 学生之前的对话（只作参考）：{context}"""
 
 SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这节课。人设：{bio}
@@ -41,7 +56,8 @@ SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这�
 3. 直接从这一节的内容讲起，不要打招呼，不要重复开场白或前面讲过的话。
    配图由系统按要点另外判断和绘制；讲图形、图像或结构时可以说「看黑板上的图」，但不要描述图里没有的细节。
 4. summary 写 1-2 句，简短小结这一节{outro}。
-5. 讲稿总共 10-18 句。"""
+5. 讲稿总共 {n_lines} 句。
+因材施教：{adapt}{exercise_req}"""
 
 
 FIGURE_JUDGE_PROMPT = """你是教学设计专家。下面是「{title}」这一节的板书要点，以及老师讲每条要点时说的话。
@@ -111,13 +127,15 @@ class LessonLine:
     item: int | None  # board point this line explains (None: whole board, e.g. an intro line or a summary)
     gesture: bool = False  # first line of a point: present the board
     progress: tuple[int, int] | None = None  # (this line, lines about the point), 1-based: shown on the board
+    exercise: Any = None  # exercise.Exercise posed by this line: the lesson waits for the answer after it
 
 
 @dataclass
 class Outline:
     title: str
-    sections: list[dict]
+    sections: list[dict]  # title, goal, concepts, depth (review / core / new), exercise
     intro: list[str]
+    note: str = ""  # how the plan was adapted to the student (for the log and page, not spoken)
 
 
 def set_figure(board: Board, fig, point: int | None = None, why: str = "") -> Figure | None:
@@ -157,10 +175,10 @@ def _math(tex: str) -> str:
         return f"<code>{html.escape(tex)}</code>"
 
 
-_SAY = [(r"\(([^()]*[+＋][^()]*)\)\s*(的)?(平方|²)", r"\1的和的平方"),
-        (r"\(([^()]*[-−－][^()]*)\)\s*(的)?(平方|²)", r"\1的差的平方"),
+_SAY = [(r"\(([^()]*[+＋][^()]*)\)\s*(的)?(平方|²|\^\s*2)", r"\1的和的平方"),
+        (r"\(([^()]*[-−－][^()]*)\)\s*(的)?(平方|²|\^\s*2)", r"\1的差的平方"),
         (r"\^\s*2|²", "的平方"), (r"\^\s*3|³", "的立方"), (r"√\s*", "根号"),
-        (r"\s*[+＋]\s*", "加"), (r"(?<=[0-9a-zA-Z])\s*[-−－]\s*(?=[0-9a-zA-Z])", "减"),
+        (r"\s*[+＋]\s*", "加"), (r"(?<=[0-9a-zA-Z方])\s*[-−－]\s*(?=[0-9a-zA-Z])", "减"),
         (r"\s*[×✕*]\s*", "乘"), (r"\s*[÷]\s*", "除以"), (r"\s*[=＝]\s*", "等于"), (r"[()（）\[\]{}]", "")]
 
 
@@ -208,26 +226,54 @@ class LessonPlanner:
     def __init__(self, llm: ChatLLM, *, name: str, bio: str, chars: int = 22):
         self.llm, self.name, self.bio, self.chars = llm, name, bio, chars
 
-    async def outline(self, topic: str, context: str = "") -> Outline:
+    async def outline(self, topic: str, context: str = "", profile=None) -> Outline:
+        """``profile``: a student.StudentProfile (None: no saved profile, an average student of ``default_grade``)."""
         raw = await self.llm.chat([{"role": "user", "content": OUTLINE_PROMPT.format(
-            name=self.name, topic=topic, bio=self.bio, chars=self.chars, context=context or "无")}],
-            max_tokens=600, temperature=0.4, json_mode=True)
+            name=self.name, topic=topic, bio=self.bio, chars=self.chars, context=context or "无",
+            profile=profile.summary() if profile is not None else "无（新学生，没有档案）",
+            default_grade=(profile.grade if profile is not None and profile.grade else "初中"))}],
+            max_tokens=900, temperature=0.4, json_mode=True)
         d = parse_json(raw)
-        sections = [s for s in d.get("sections") or [] if isinstance(s, dict) and s.get("title")][:6]
+        sections = []
+        for s in d.get("sections") or []:
+            if isinstance(s, dict) and s.get("title"):
+                s["concepts"] = [str(c).strip()[:12] for c in (s.get("concepts") or []) if str(c).strip()][:4]
+                s["depth"] = s.get("depth") if s.get("depth") in DEPTHS else "new"
+                s["exercise"] = bool(s.get("exercise"))
+                sections.append(s)
+        sections = sections[:6]
         if not sections:
             raise ValueError("lesson outline without sections")
         intro = [p for x in d.get("intro") or [] for p in spoken(str(x), self.chars)][:4]
-        return Outline(title=str(d.get("title") or topic)[:24], sections=sections, intro=intro)
+        return Outline(title=str(d.get("title") or topic)[:24], sections=sections, intro=intro,
+                       note=str(d.get("plan_note") or "")[:120])
 
-    async def section(self, outline: Outline, i: int, covered: list[str]) -> list[LessonLine]:
+    async def section(self, outline: Outline, i: int, covered: list[str], profile=None,
+                      mistakes: list[str] | None = None) -> list[LessonLine]:
+        """One section; with a profile its depth, examples and exercise follow the student's understanding of
+        the section's concepts, and ``mistakes`` (this lesson's wrong answers so far) are addressed first."""
+        from live_agent.exercise import EXERCISE_SPEC, Exercise
+
         sec = outline.sections[i]
         last = i == len(outline.sections) - 1
+        depth = sec.get("depth") if sec.get("depth") in DEPTHS else "new"
+        adapt = [DEPTHS[depth][1]]
+        if profile is not None:
+            if profile.grade:
+                adapt.append(f"学生是{profile.grade}，用这个年级听得懂的说法和例子。")
+            adapt.append(f"学生对本节概念的掌握：{profile.concept_notes(sec.get('concepts') or [])}。")
+        if mistakes:
+            adapt.append(f"学生刚才的练习做错了：{'；'.join(mistakes[-2:])}。本节第一条要点先用一两句换个说法把这个错误纠正过来。")
+        want_ex = bool(sec.get("exercise"))
+        ex_req = ("\n6. 讲完出一道练习，考查本节最重要的概念，难度按学生的掌握度定（薄弱出基础题，已掌握出稍有变化的题）；"
+                  "在 JSON 里加字段 \"exercise\"。" + EXERCISE_SPEC.format(chars=self.chars, q_chars=60)) if want_ex else ""
         raw = await self.llm.chat([{"role": "user", "content": SECTION_PROMPT.format(
             name=self.name, bio=self.bio, title=outline.title, i=i + 1, n=len(outline.sections),
             section=sec["title"], goal=sec.get("goal", ""), covered="；".join(covered) or "（这是第一节）",
-            max_items=MAX_ITEMS, item_chars=ITEM_CHARS, chars=self.chars,
+            max_items=MAX_ITEMS, item_chars=ITEM_CHARS, chars=self.chars, n_lines=DEPTHS[depth][0],
+            adapt="".join(adapt), exercise_req=ex_req,
             outro="，并告诉学生这节课就讲到这里、有问题随时问" if last else "，并引出下一节")}],
-            max_tokens=1500, temperature=0.4, json_mode=True)
+            max_tokens=2000 if want_ex else 1500, temperature=0.4, json_mode=True)
         d = parse_json(raw)
         b = d.get("board") or {}
         # nested format: every sentence sits under the point it explains (alignment by structure, not by index)
@@ -254,6 +300,13 @@ class LessonPlanner:
             lines += [LessonLine(p, board, None) for p in spoken(str(x), self.chars)]
         if not any(ln.item is not None for ln in lines):
             raise ValueError(f"lesson section {i} without lines")
+        if want_ex:  # posed after the summary; the lesson waits for the answer (a bad exercise is left out)
+            raw_ex = d.get("exercise")
+            if isinstance(raw_ex, dict) and not raw_ex.get("concept") and sec.get("concepts"):
+                raw_ex["concept"] = sec["concepts"][0]
+            ex = Exercise.from_dict(raw_ex, key=f"x{i}")
+            if ex is not None:
+                lines += ex.lines(self.chars)
         return lines
 
     async def judge_figures(self, lines: list[LessonLine], max_figs: int = 3) -> list[dict]:

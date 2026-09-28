@@ -26,6 +26,20 @@
   main { display:grid; grid-template-columns:minmax(300px, 1fr) minmax(300px, 400px); gap:16px; padding:16px;
          max-width:1920px; margin:0 auto; }
   @media (max-width: 860px) { main { grid-template-columns:1fr; } }
+  .prof .who { font-weight:600; }
+  .prof .exams { margin:4px 0 8px; padding-left:18px; color:var(--muted); font-size:13px; }
+  .prof .cp { display:grid; grid-template-columns:minmax(70px, 7em) 1fr 3.4em; gap:6px; align-items:center; font-size:13px; margin:3px 0; }
+  .prof .bar { height:8px; border-radius:4px; background:var(--chip); overflow:hidden; }
+  .prof .bar i { display:block; height:100%; background:var(--info); }
+  .prof .cp.weak .bar i { background:var(--bad); } .prof .cp.partial .bar i { background:var(--warn); }
+  .prof .cp.mastered .bar i { background:var(--ok); } .prof .cp.unknown .bar i { background:var(--line); }
+  .prof .cp .v { color:var(--muted); text-align:right; font-variant-numeric:tabular-nums; }
+  .prof .cp.flash { animation:flash 1.6s ease-out; }
+  @keyframes flash { from { background:var(--chip); } to { background:transparent; } }
+  .prof form { display:grid; gap:6px; margin-top:8px; }
+  .prof form textarea { min-height:5.5em; font:inherit; font-size:13px; padding:6px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+  .prof form input { font:inherit; padding:4px 6px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+  .chip.answer { border:1px solid var(--accent); font-weight:600; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; min-width:0; }
   .stage { display:flex; flex-direction:column; gap:12px; min-width:0; }
   .screen { position:relative; background:var(--stage); border-radius:10px; display:flex; justify-content:center;
@@ -125,6 +139,7 @@
       <div class="row" style="margin-bottom:8px">
         <label>会话 <select id="mode"><option value="private">一对一私聊</option><option value="public">测试直播</option></select></label>
         <label>用户 <input type="text" id="uid" value="user-1" style="flex:0;width:110px;min-width:90px"></label>
+        <label title="私聊会话读取并更新这个学生的档案">学生 <input type="text" id="sid" value="demo" style="flex:0;width:80px;min-width:70px"></label>
         <button class="primary" id="connect">连接</button>
         <button id="disconnect" disabled>断开</button>
       </div>
@@ -144,6 +159,10 @@
   </section>
 
   <aside class="panel">
+    <div class="card prof" id="profCard">
+      <h2>学生档案 <button id="profEdit" hidden style="float:right;font-size:12px">编辑</button></h2>
+      <div id="prof"><div class="empty">私聊会话连接后显示学生的年级、成绩和各知识点掌握度；课程和练习按档案调整。</div></div>
+    </div>
     <div class="card">
       <h2>实时指标</h2>
       <div class="stats">
@@ -227,7 +246,7 @@ $("connect").onclick = () => {
   ws.onopen = async () => {
     // H.264 segments need ~1/6 of the bandwidth of per-frame JPEG (a remote bridge cannot carry JPEG in real time)
     const video_codecs = (await h264Supported()) ? ["h264"] : [];
-    ws.send(JSON.stringify({type: "hello", mode: $("mode").value, user_id: $("uid").value, video_codecs}));
+    ws.send(JSON.stringify({type: "hello", mode: $("mode").value, user_id: $("uid").value, student: $("sid").value.trim(), video_codecs}));
     ["talk","text","send","disconnect"].forEach(id => $(id).disabled = false);
     document.querySelectorAll(".chip").forEach(b => b.disabled = false);
     $("connect").disabled = true; $("overlay").textContent = "正在启动生成…";
@@ -294,7 +313,8 @@ async function onMessage(ev) {
 
 function onStatus(m) {
   setConn("会话中", true);
-  if (Array.isArray(m.examples) && m.examples.length) setChips(m.examples, true);
+  if (Array.isArray(m.examples) && m.examples.length) { personaChips = m.examples; setChips(m.examples, true); }
+  showProfile(m.student);
   $("cam").hidden = !m.attention; $("cam").disabled = false;
   const b = $("badges"); b.querySelectorAll(".badge:not(#conn)").forEach(x => x.remove());
   const items = [
@@ -313,7 +333,56 @@ function onStatus(m) {
 }
 
 // ---------------------------------------------------------------- panel
+// ---------------------------------------------------------------- student profile and exercises
+let personaChips = EXAMPLES, profile = null, exerciseKey = "", lastGraded = null;
+const LEVEL = {mastered: "已掌握", partial: "基本理解", weak: "薄弱", unknown: "未评估"};
+function showProfile(p, flash) {
+  profile = p || null;
+  $("profEdit").hidden = !p;
+  const el = $("prof");
+  if (!p) { el.innerHTML = `<div class="empty">此会话不使用学生档案（测试直播模式不读取个人数据）。</div>`; return; }
+  const exams = (p.exams || []).slice(-4).map(e => `<li>${esc(e.date || "")} ${esc(e.subject)}${esc(e.name)} <b>${e.score}</b>/${e.full}` +
+    (e.weak && e.weak.length ? ` · 失分：${esc(e.weak.join("、"))}` : "") + "</li>").join("");
+  const cps = (p.concepts || []).map(c => `<div class="cp ${esc(c.level)}${flash === c.name ? " flash" : ""}" title="${esc(LEVEL[c.level] || c.level)}${c.attempts ? `，练习 ${c.correct}/${c.attempts} 对` : ""}">
+      <span>${esc(c.name)}</span><span class="bar"><i style="width:${Math.round((c.mastery ?? 0) * 100)}%"></i></span>
+      <span class="v">${c.mastery == null ? "–" : Math.round(c.mastery * 100) + "%"}</span></div>`).join("");
+  el.innerHTML = `<div class="who">${esc(p.name || "同学")} · ${esc(p.grade || "年级未填")}</div>` +
+    (exams ? `<ul class="exams">${exams}</ul>` : `<div class="meta">还没有考试成绩</div>`) +
+    (cps || `<div class="meta">还没有知识点记录：做练习后会出现</div>`);
+}
+function examLines(p) { return (p.exams || []).map(e => `${e.subject} ${e.name} ${e.score}/${e.full} ${(e.weak || []).join(",")}`.trim()).join("\n"); }
+$("profEdit").onclick = () => {
+  if (!profile || $("profForm")) return;
+  const f = document.createElement("form"); f.id = "profForm";
+  f.innerHTML = `<label>名字 <input name="name" value="${esc(profile.name)}"></label>
+    <label>年级 <input name="grade" value="${esc(profile.grade)}" placeholder="如 初二"></label>
+    <label>考试成绩（每行：学科 考试 分数/满分 失分点,失分点）<textarea name="exams">${esc(examLines(profile))}</textarea></label>
+    <div><button class="primary" type="submit">保存</button> <button type="button" id="profCancel">取消</button></div>`;
+  $("prof").appendChild(f);
+  $("profCancel").onclick = () => f.remove();
+  f.onsubmit = (ev) => {
+    ev.preventDefault();
+    const exams = f.exams.value.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+      const m = l.match(/^(\S+)\s+(\S+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\s*(.*)$/);
+      return m ? {subject: m[1], name: m[2], score: +m[3], full: +(m[4] || 100),
+                  weak: m[5].split(/[,，、\s]+/).filter(Boolean)} : null;
+    }).filter(Boolean);
+    send({type: "profile", profile: {name: f.name.value.trim(), grade: f.grade.value.trim(), exams}});
+    f.remove();
+  };
+};
+function showExercise(ex) {  // answer buttons while an exercise waits; the persona's examples otherwise
+  const key = ex ? ex.concept + (ex.options || []).join("") : "";
+  if (key === exerciseKey) return;
+  exerciseKey = key;
+  const live = ws && ws.readyState === 1;
+  if (!ex) { setChips(personaChips, live); return; }
+  setChips([...(ex.options || []).map(o => "选 " + o), "我不会"], live);
+  document.querySelectorAll("#chips .chip").forEach(b => b.classList.add("answer"));
+}
+
 function onState(s) {
+  showExercise(s.exercise);
   $("sLambda").textContent = typeof s.lambda_s === "number" ? s.lambda_s.toFixed(1) : "–";
   $("sReq").textContent = s.next_lock ?? "–";
   const flags = [];
@@ -399,8 +468,29 @@ function onEvent(m) {
                  figure_judgement: `配图判断「${d.title || ""}」：` + (d.judgements || []).map(j =>
                    `第 ${j.point + 1} 条 复杂度 ${j.complexity ?? "?"} ${j.need ? "→ 配图" : "→ 不配"}${j.why ? "（" + j.why + "）" : ""}`).join("；"),
                  figure: `第 ${(d.point ?? 0) + 1} 条的配图已画好（${d.kind === "plot" ? "精确作图" : "插图"}）`,
-                 figure_failed: `配图失败：${d.error || ""}`}[d.stage];
+                 figure_failed: `配图失败：${d.error || ""}`,
+                 exercise: `出题（${d.concept || ""}）：${d.exercise || ""}`,
+                 exercise_failed: `出题失败：${d.error || ""}`,
+                 exercise_timeout: `练习「${d.concept || ""}」无人作答，老师讲解后继续`,
+                 grading_failed: `批改失败：${d.error || ""}`,
+                 profile_updated: `学生档案已更新（${(d.changed || []).join("、")}）`}[d.stage];
       if (s) feed(t, d.stage.endsWith("failed") ? "bad" : "", "备课", s);
+      if (d.stage === "outline" && d.plan) {
+        const dep = {review: "复习", core: "重点", new: "新课"};
+        feed(t, "", d.adaptive ? "因材施教" : "教案", (d.note ? d.note + "；" : "") + d.plan.map((x, i) =>
+          `${i + 1}.${x.title}[${dep[x.depth] || x.depth}${x.exercise ? "+练习" : ""}]`).join(" "));
+      }
+      if (d.stage === "section" && d.exercise) feed(t, "", "练习", `本节后出题：${d.exercise}`);
+      if (d.stage === "exercise_graded") {
+        const m = d.mastery;
+        feed(t, d.correct ? "ok" : "bad", "批改", `${d.concept}：${d.skipped ? "不会" : d.correct ? "答对" : "答错"}` +
+             (d.misconception ? `（${d.misconception}）` : "") +
+             (m && m.after != null ? ` · 掌握度 ${m.before == null ? "–" : Math.round(m.before * 100) + "%"} → ${Math.round(m.after * 100)}%` : ""));
+      }
+      if (d.stage === "profile" && d.profile) showProfile(d.profile, (d.profile.concepts || []).length ? lastGraded : null);
+      if (d.stage === "exercise_graded") lastGraded = d.concept;
+      if (d.stage === "exercise_open") showExercise({concept: d.concept, options: d.options || []});
+      if (d.stage === "exercise_closed") showExercise(null);
       break;
     }
     case "attention": {

@@ -34,6 +34,7 @@ import io
 from fractions import Fraction
 import json
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -53,6 +54,7 @@ STATIC = Path(__file__).parent / "static"
 
 
 BOARD_IMAGES = Path(__file__).resolve().parents[2] / ".cache" / "board_images"
+STUDENT_SEEDS = Path(__file__).resolve().parents[2] / "configs" / "students"  # example profiles (fictional)
 
 
 def encode_jpeg(frame: np.ndarray, quality: int = 80) -> bytes:
@@ -108,7 +110,9 @@ PANEL_FIELDS = ("action", "transcript", "chain_ids", "chain_id", "step", "retry_
                 "audibility", "revision", "speaker", "uid", "counts", "expected", "wrong", "target", "gave_up", "anchor_removed", "stage",
                 "title", "sections", "section", "lines", "points", "board", "seconds",
                 "attempt", "labels",
-                "point", "judgements", "state", "stable", "nudge")
+                "point", "judgements", "state", "stable", "nudge",
+                "plan", "note", "adaptive", "depth", "exercise", "concept", "correct", "skipped", "misconception",
+                "mastery", "profile", "changed", "options", "topic")
 
 
 def panel_event(ev, t0: float) -> dict | None:
@@ -422,6 +426,12 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
                 orch.image_maker = ImageMaker(args.image_url, BOARD_IMAGES)
             orch.figure_dir = BOARD_IMAGES  # exact plots need no model
+            student_id = str(hello.get("student") or args.student)
+            if mode == "private" and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", student_id):
+                # personal data: only a private session reads or updates the saved profile
+                from live_agent.student import StudentProfile
+
+                orch.student = StudentProfile.load(student_id, Path(args.student_store), STUDENT_SEEDS)
             if getattr(judge, "vlm", None) is not None:  # the camera focus check uses the judge's VLM (opt-in)
                 from live_agent.attention import AttentionMonitor
 
@@ -464,7 +474,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                            "responder": "rules" if args.llm_url == "scripted" else args.llm_model,
                                            "asr": bool(args.asr_url), "persona": canon.get("display_name", ""),
                                            "examples": canon.get("examples", []),
-                                           "attention": orch.attention is not None},
+                                           "attention": orch.attention is not None,
+                                           "student": orch.student.view() if orch.student is not None else None},
                                           ensure_ascii=False))
 
             async def handle_inputs() -> None:
@@ -535,6 +546,10 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                         pass
                 elif t == "camera_off":
                     orch.camera_off()
+                elif t == "profile" and orch.student is not None and isinstance(data.get("profile"), dict):
+                    orch.student.update_basics(data["profile"])  # name, grade, exams (mastery comes from exercises)
+                    orch.student.save()
+                    orch._emit_profile()
                 elif t == "video_codec" and data.get("codec") == "jpeg":
                     transport.video_codec = "jpeg"  # the page failed to decode H.264
         except WebSocketDisconnect:
@@ -617,6 +632,8 @@ def main() -> None:
     p.add_argument("--image-url", default="", help="board figure server (Qwen-Image via vLLM-Omni), empty: none")
     p.add_argument("--video-codec", default="auto", choices=["auto", "jpeg"],
                    help="auto: H.264 segments to pages that can decode them (WebCodecs), else JPEG frames")
+    p.add_argument("--student", default="demo", help="student profile id for private sessions (the page may pick one)")
+    p.add_argument("--student-store", default=str(BOARD_IMAGES.parent / "students"), help="saved student profiles (personal data)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8200)
     # Generator options (--taomate-*, --omni-*) are parsed by the adapters (taomate_h3.py, vllm_omni_h3.py).

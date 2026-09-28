@@ -1,0 +1,254 @@
+"""Adaptive teaching: the saved student profile (grade, exams, per-concept mastery) shapes the lesson plan; the
+teacher's exercises pause the lesson, are graded (rules, then the LLM) and update the profile."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import test_pipeline as tp
+import test_teacher_persona as tt
+from live_agent.exercise import Exercise, grade, quick_grade
+from live_agent.lesson import LessonPlanner
+from live_agent.llm import ScriptedLLM
+from live_agent.student import StudentProfile
+from live_agent.types import EventType, Utterance, now
+
+SEEDS = tt.CFG.parents[0] / "students"
+CHOICE = {"concept": "完全平方公式", "type": "choice", "question": "$(a+b)^2$ 展开等于？",
+          "options": ["A. $a^2+b^2$", "B. $a^2+2ab+b^2$", "C. $a^2+ab+b^2$"], "answer": "B",
+          "explanation": ["两数和的平方，等于平方和再加两倍的乘积。"]}
+OUTLINE = {"title": "完全平方公式", "plan_note": "期中考试这里失分，重点讲；整式乘法已掌握，只复习",
+           "sections": [{"title": "复习整式乘法", "goal": "回顾", "concepts": ["整式乘法"], "depth": "review", "exercise": False},
+                        {"title": "完全平方公式", "goal": "推导和使用", "concepts": ["完全平方公式"], "depth": "core",
+                         "exercise": True}],
+           "intro": ["今天我们学完全平方公式。"]}
+
+
+def section(i):
+    out = {"board": {"title": f"第{i}节"},
+           "points": [{"text": f"要点{i}", "lines": [f"第{i}节讲要点。", f"第{i}节再举个例子。"]}],
+           "summary": [f"第{i}节小结。"]}
+    if i == 2:
+        out["exercise"] = CHOICE
+    return out
+
+
+def planner_llm(messages):
+    text = messages[-1]["content"]
+    if "课程大纲" in text:
+        return json.dumps(OUTLINE, ensure_ascii=False)
+    return json.dumps(section(1 if "第 1/2 节" in text else 2), ensure_ascii=False)
+
+
+def profile(tmp_path):
+    return StudentProfile.load("demo", tmp_path, SEEDS)
+
+
+def test_the_profile_loads_from_its_seed_and_exam_losses_set_a_low_prior(tmp_path):
+    p = profile(tmp_path)
+    assert p.grade == "初二" and p.level("整式乘法") == "mastered" and p.level("完全平方公式") == "weak"
+    assert p.mastery("因式分解") == 0.4  # never practised, but the midterm lost points on it
+    s = p.summary()
+    assert "初二" in s and "期中考试 72/100" in s and "失分点：因式分解" in s
+    assert s.index("完全平方公式") < s.index("整式乘法")  # weakest first
+
+
+def test_exercises_move_mastery_and_the_profile_is_saved_and_erasable(tmp_path):
+    p = profile(tmp_path)
+    before = p.mastery("完全平方公式")
+    up = p.record_exercise("完全平方公式", True, question="q", answer="B")
+    assert up["before"] == before and up["after"] > before
+    down = p.record_exercise("完全平方公式", False, misconception="漏了 2ab")
+    assert down["after"] < up["after"] and p.concepts["完全平方公式"].notes[-1] == "漏了 2ab"
+    p.save()
+    again = StudentProfile.load("demo", tmp_path, SEEDS)  # the saved copy wins over the seed
+    assert again.concepts["完全平方公式"].attempts == p.concepts["完全平方公式"].attempts
+    assert again.purge("完全平方公式") >= 1 and "完全平方公式" not in again.concepts
+    assert all("完全平方公式" not in json.dumps(h, ensure_ascii=False) for h in again.history)
+
+
+def test_what_the_student_says_about_themselves_updates_the_profile(tmp_path):
+    p = profile(tmp_path)
+    changed = p.apply_update({"grade": "初三", "exam": {"subject": "数学", "name": "单元测", "score": 64, "weak": ["配方法"]}})
+    assert changed == ["grade", "exam"] and p.grade == "初三" and p.level("配方法") == "weak"
+    p.update_basics({"exams": [{"subject": "数学", "name": "期末", "score": "88"}, {"bad": 1}]})
+    assert [(e.name, e.score) for e in p.exams] == [("期末", 88.0)]
+
+
+def test_the_outline_and_sections_are_adapted_to_the_profile_and_carry_the_exercise(tmp_path):
+    llm = ScriptedLLM(planner_llm)
+    planner = LessonPlanner(llm, name="林老师", bio="")
+    p = profile(tmp_path)
+    outline = asyncio.run(planner.outline("完全平方公式", profile=p))
+    prompt = llm.calls[0][-1]["content"]
+    assert "期中考试 72/100" in prompt and "完全平方公式：薄弱" in prompt and "因材施教" in prompt
+    assert outline.note.startswith("期中") and [s["depth"] for s in outline.sections] == ["review", "core"]
+    review = asyncio.run(planner.section(outline, 0, [], profile=p))
+    assert "复习" in llm.calls[1][-1]["content"] and "4-6" in llm.calls[1][-1]["content"]
+    assert not any(ln.exercise for ln in review)
+    core = asyncio.run(planner.section(outline, 1, ["复习整式乘法"], profile=p, mistakes=["整式乘法（符号错）"]))
+    sp = llm.calls[2][-1]["content"]
+    assert "重点" in sp and "初二" in sp and "漏了 2ab" in sp and "整式乘法（符号错）" in sp and '"exercise"' in sp
+    posed = [ln for ln in core if ln.exercise is not None]
+    assert posed and posed[0].text == "我们来做一道练习。" and core[-len(posed):] == posed  # after the summary
+    assert posed[0].board.items[0] == CHOICE["question"] and posed[0].exercise.answer == "B"
+    assert all(ln.item is None for ln in posed)  # the options are on the board while the question is read
+
+
+def test_answers_are_graded_by_rule_when_unambiguous():
+    ex = Exercise.from_dict(CHOICE, key="x1")
+    assert quick_grade(ex, "选 B")["correct"] and not quick_grade(ex, "a")["correct"]
+    assert quick_grade(ex, "$a^2+2ab+b^2$")["given"] == "B"  # the option's own text
+    assert quick_grade(ex, "我不会")["skipped"]
+    assert quick_grade(ex, "我觉得是 A 或者 B 吧，因为……") is None  # ambiguous: the LLM decides
+    short = Exercise.from_dict({"concept": "方程", "question": "2x=6，x=?", "answer": "3"}, key="q1")
+    assert short.kind == "short" and quick_grade(short, "x=3")["correct"]
+    assert Exercise.from_dict({"question": "q", "options": ["A. 1", "B. 2"], "answer": "D"}, key="z") is None
+
+
+def test_free_answers_and_side_questions_go_to_the_llm_grader():
+    ex = Exercise.from_dict(CHOICE, key="x1")
+    llm = ScriptedLLM(lambda m: json.dumps({"is_answer": True, "correct": False, "misconception": "漏了中间项",
+                                            "feedback": ["思路不错，但漏了中间项。", "要加上两倍的 ab。"]},
+                                           ensure_ascii=False))
+    r = asyncio.run(grade(llm, ex, "应该是 a 方加 b 方吧"))
+    assert r["is_answer"] and not r["correct"] and r["misconception"] == "漏了中间项"
+    assert "正确答案是 B。" in r["feedback"]  # the right option is always said
+    side = ScriptedLLM(lambda m: json.dumps({"is_answer": False, "correct": False}))
+    assert not asyncio.run(grade(side, ex, "老师，这个公式是谁发现的？"))["is_answer"]
+
+
+def _lesson_director():
+    d, _, _ = tt._director(tt.ANSWER)
+    planner = LessonPlanner(ScriptedLLM(planner_llm), name="林老师", bio="")
+    outline = asyncio.run(planner.outline("完全平方公式"))
+    d.lesson_title = outline.title
+    d.add_lesson_lines(asyncio.run(planner.section(outline, 1, [])))
+    d.add_lesson_lines(asyncio.run(planner.section(outline, 0, [])))  # the next section is already waiting
+    return d
+
+
+def test_a_posed_exercise_pauses_the_lesson_then_reminds_then_shows_the_answer():
+    d = _lesson_director()
+    said = [d.next_script(k).transcript for k in range(6)]  # two point lines, the summary, then the exercise
+    assert said[3] == "我们来做一道练习。" and said[-1].startswith("选项在黑板上")
+    assert d.exercise is not None and d.exercise.concept == "完全平方公式"
+    waiting = [d.next_script(6 + k) for k in range(d.exercise_reminder_after)]
+    assert all(not s.transcript for s in waiting[:-1])  # the next section waits for the answer
+    assert waiting[-1].transcript.startswith("想好了吗") and waiting[-1].board["key"] == "x1"
+    rest = [d.next_script(20 + k) for k in range(d.exercise_reveal_after - d.exercise_reminder_after + 3)]
+    spoken = [s.transcript for s in rest if s.transcript]
+    assert spoken[0] == "我们一起来看这道题。" and rest[-1].transcript.startswith("第1节")  # answer shown, lesson moves on
+    assert d.exercise is None and any(s.board and s.board["key"] == "x1a" for s in rest)
+    assert d.events.exercise_timeouts == ["完全平方公式"]
+
+
+def test_the_answer_is_graded_the_profile_updated_and_the_lesson_continues(tmp_path):
+    orch, _ = tp.build()
+    orch.student = profile(tmp_path)
+    lesson = _lesson_director()
+    orch.director.lesson_backlog, orch.director.lesson_title = lesson.lesson_backlog, lesson.lesson_title
+    d = orch.director
+    for k in range(5):  # up to the question itself: the student answers before "选项在黑板上" is spoken
+        d.next_script(k)
+    assert d.exercise is not None
+    before = orch.student.mastery("完全平方公式")
+    asyncio.run(orch.on_user_utterance(Utterance(uid="u1", speaker="user", text="选 B", t_end=now())))
+    after = [d.next_script(5 + k).transcript for k in range(4)]
+    assert after[0] == "答对了，很好！" and after[2].startswith("第1节")  # feedback, then the next section
+    assert not any(t.startswith("选项在黑板上") for t in after)  # the rest of the question is dropped
+    assert orch.student.mastery("完全平方公式") > before
+    graded = [e.data for e in tp.events(orch, EventType.LESSON) if e.data["stage"] == "exercise_graded"]
+    assert graded and graded[0]["correct"] and graded[0]["mastery"]["after"] > before
+    assert StudentProfile.load("demo", tmp_path, SEEDS).concepts["完全平方公式"].attempts == 5  # saved
+
+
+def test_a_side_question_during_an_exercise_is_answered_then_the_exercise_is_recalled(tmp_path):
+    orch, _ = tp.build()
+    d = orch.director
+
+    def llm(messages):
+        if messages[0]["role"] != "system":  # the grader: not an answer
+            return json.dumps({"is_answer": False, "correct": False})
+        return json.dumps({"relation": "chat", "kind": "content", "steps": [{"intent": "", "line": "是毕达哥拉斯。"}]},
+                          ensure_ascii=False)
+    d.llm.fn = llm
+    d.exercise = Exercise.from_dict(CHOICE, key="x1")
+    asyncio.run(orch.on_user_utterance(Utterance(uid="u2", speaker="user", text="这个公式谁发现的？", t_end=now())))
+    said = [d.next_script(k).transcript for k in range(2)]
+    assert said == ["是毕达哥拉斯。", "我们回到刚才这道练习，想好了告诉我。"] and d.exercise is not None
+
+
+def test_asking_for_an_exercise_poses_one_at_the_profiles_level(tmp_path):
+    orch, _ = tp.build()
+    orch.student = profile(tmp_path)
+    d = orch.director
+    prompts = []
+
+    def llm(messages):
+        if messages[0]["role"] == "system":
+            assert "学生档案" in messages[0]["content"] and "初二" in messages[0]["content"]
+            return json.dumps({"relation": "chat", "kind": "exercise", "topic": "完全平方公式",
+                               "steps": [{"intent": "", "line": "好，我给你出一道题。"}]}, ensure_ascii=False)
+        prompts.append(messages[-1]["content"])
+        return json.dumps({"exercise": CHOICE}, ensure_ascii=False)
+    d.llm.fn = llm
+
+    async def go():
+        await orch.on_user_utterance(Utterance(uid="u3", speaker="user", text="考考我", t_end=now()))
+        await asyncio.gather(*list(orch._aux))
+    asyncio.run(go())
+    assert "完全平方公式：薄弱" in prompts[0] and "基础题" in prompts[0]
+    said = [d.next_script(k) for k in range(4)]
+    assert said[0].transcript == "好，我给你出一道题。" and said[1].board["key"] == "q1"
+    assert d.exercise is not None and d.exercise.source == "asked"
+
+
+def test_a_question_line_cut_after_the_answer_is_not_said_again(tmp_path):
+    # seen live: the soft switch cut "选项在黑板上…" after the answer was graded; it came back with "好，我们接着讲。"
+    # and re-opened the closed exercise, pausing the lesson again
+    orch, _ = tp.build()
+    orch.student = profile(tmp_path)
+    lesson = _lesson_director()
+    orch.director.lesson_backlog, orch.director.lesson_title = lesson.lesson_backlog, lesson.lesson_title
+    d = orch.director
+    scripts = [d.next_script(k) for k in range(6)]  # the last one poses the exercise, not yet shown
+    asyncio.run(orch.on_user_utterance(Utterance(uid="u1", speaker="user", text="A", t_end=now())))
+    d.on_interrupted([scripts[5]])  # the switch to the feedback drops it
+    after = [d.next_script(6 + k).transcript for k in range(5)]
+    assert after[0].startswith("不太对哦") and not any(t.startswith(("选项在黑板上", "好，我们接着讲")) for t in after)
+    assert any(t.startswith("第1节") for t in after) and d.exercise is None
+
+
+def test_the_section_after_an_exercise_is_written_after_the_answer_and_addresses_the_mistake(tmp_path):
+    outline = {**OUTLINE, "sections": [{**OUTLINE["sections"][1], "title": "公式"},
+                                       {"title": "应用", "goal": "用", "concepts": ["完全平方公式"], "depth": "new"}]}
+    asked = []
+
+    def llm(messages):
+        text = messages[-1]["content"]
+        if "课程大纲" in text:
+            return json.dumps(outline, ensure_ascii=False)
+        if "解释图" in text:  # the figure judge
+            return json.dumps({"points": []})
+        asked.append(text)
+        return json.dumps(section(2 if "第 1/2 节" in text else 1), ensure_ascii=False)
+
+    orch, _ = tp.build()
+    orch.student = profile(tmp_path)
+    d = orch.director
+    d.llm.fn = llm
+    orch.cfg.lesson_lookahead = 100  # plenty of room: only the exercise holds the next section back
+
+    async def go():
+        task = asyncio.create_task(orch._lesson_loop("完全平方公式"))
+        await asyncio.sleep(0.3)
+        assert len(asked) == 1  # the section with the exercise; the next one waits for the answer
+        for k in range(8):
+            d.next_script(k)
+        assert d.exercise is not None
+        await orch.on_user_utterance(Utterance(uid="u1", speaker="user", text="A", t_end=now()))
+        await asyncio.wait_for(task, 5)
+    asyncio.run(go())
+    assert len(asked) == 2 and "学生刚才的练习做错了：完全平方公式" in asked[1]
