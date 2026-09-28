@@ -212,8 +212,18 @@ hold-for-prompt on) the peer measured 330-405-token persona prompts with an upda
 every request at a median of 4.29 s and a maximum of 4.53 s between requests' first chunks
 (n=54, real-time factor about 0.86; log `taomate-live-skill/runs/usp4_demo2/events.jsonl`).
 
-Status: **real time on two GPUs at the line** (real-time factor 1.00 with a constant prompt,
-1.03 sustained with a prompt change every request), code and CPU tests done (35 tests), recipe
+Two-GPU persona-length measurement (peer session live-agent-bb, measured locally 11:47-11:51 on
+live-agent-13's USP2 server: FP8, teacher graphs, pad 512, graph range 320-420, hold off):
+330-405-token prompts, 17 updates over 44 requests, median 5.26 s (min 5.15, max 5.35) between
+requests' first chunks, **real-time factor 1.06**, about 0.3 s of drift per request. The extra
+text rows (about 320 per phase document, plus about 100 pad rows with pad 512) cost the 6% that
+short prompts had left. Next lever under test: the LoRA hooks' launch overhead (about 100
+hooked linears, 3-4 launches each, per forward); if a no-LoRA timing run shows 0.06 s or more
+per phase, the student gets a second FP8 weight set with the LoRA merged in.
+
+Status: **real time on two GPUs for short prompts only** (real-time factor 1.00 with a
+constant 3-60 word prompt, 1.03 with a short prompt change every request, 1.06 with
+persona-length prompts), code and CPU tests done (35 tests), recipe
 section "Two GPUs (USP2)" holds the numbers, `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml`
 is the two-GPU deployment; Codex round taomate_port2 requested. For sustained real time with
 a prompt change every request another 5-6% is needed; levers by expected gain per effort
