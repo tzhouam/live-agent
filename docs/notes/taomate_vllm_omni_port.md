@@ -186,9 +186,19 @@ Findings on the way (all measured locally):
   Remaining fixed costs: VAE decode 0.87 s per request at 480 px tiles; commit forwards
   0.82 s per request.
 
-Status: code and CPU tests done (35 tests), recipe section "Two GPUs (USP2)" holds the
-numbers, `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml` is the two-GPU deployment. Open:
-confirm on GPU that the load-time range capture removes the in-stream captures (server
-queued behind the demo's five GPUs at the time of writing); headroom is ~1%, so the next
-lever if more margin is wanted is the commit path (preallocated KV history buffers, or a
-commit forward restricted to the new rows' K/V) or a shorter VAE window.
+Confirmation run (measured locally, 09:00, worktree 66e71a2e0): the warmup captured 267
+teacher graphs (prompts of 8-96 tokens) in 149-174 s; two live sessions captured nothing;
+prompt updates of 28/23/21 tokens changed the content at their real length. Without the
+timing instrumentation, ten requests averaged 4.98 s between request starts (range
+4.70-5.10 s) for 4.958 s of content; requests that also applied a prompt update took
+5.2-5.3 s (re-encode 0.13-0.27 s).
+
+Status: **real time on two GPUs at the line** (real-time factor 1.00 with a constant prompt,
+1.04-1.07 on requests that change the prompt), code and CPU tests done (35 tests), recipe
+section "Two GPUs (USP2)" holds the numbers, `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml`
+is the two-GPU deployment; Codex round taomate_port2 requested. For sustained real time with
+a prompt change every request another 5-6% is needed; levers by expected gain per effort
+(estimates): frame transport off the step loop (0.2 s/request, runner change), hiding or
+graphing the prompt re-encode (0.13-0.27 s/update), a second FP8 weight set with the LoRA
+merged for the student (0.2-0.25 s/request, small numeric change), CUDA graphs for the
+launch-bound student forwards over preallocated KV buffers (up to 0.9 s/request, large).
