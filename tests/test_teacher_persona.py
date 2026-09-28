@@ -41,7 +41,7 @@ def test_responder_gets_teaching_rules_and_the_teachers_own_examples():
     d, llm, _ = _director(ANSWER)
     _ask(d, "老师，为什么天空是蓝色的？")
     system = llm.calls[0][0]["content"]
-    assert "教学规则" in system and "为什么天空是蓝色" in system
+    assert "教学规则" in system and "杠杆为什么能省力" in system
     assert "drink_tea" not in system  # no examples in another persona's intents
     assert "point_board" in system and "idle_teach" in system
 

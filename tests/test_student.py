@@ -376,5 +376,24 @@ def test_a_knowledge_answer_without_a_board_gets_one_written_for_it():
 def test_the_teacher_persona_requires_a_board_for_knowledge_answers():
     canon = json.loads((tt.CFG / "canon.json").read_text(encoding="utf-8"))
     assert canon["board"] is True and "必须加字段 \"board\"" in canon["responder_style"]
-    quad = next(x for x in canon["responder_examples"] if x.startswith("用户：一元二次方程怎么解？"))
-    assert json.loads(quad.split(" → ", 1)[1])["board"]["items"]  # the example the responder copies has a board
+    replies = [json.loads(x.split(" → ", 1)[1]) for x in canon["responder_examples"]]
+    assert all(r["board"]["items"] for r in replies if r["kind"] == "content")
+    # no knowledge example is one of the page's one-click questions: those answers would be replayed, not composed
+    asked = {x.split(" → ", 1)[0].removeprefix("用户：") for x in canon["responder_examples"]}
+    content_q = {q for q, r in zip(asked, replies) if r["kind"] == "content"}
+    assert not any(q in chip or chip in q for q in content_q for chip in canon["examples"])
+
+
+def test_a_reply_copying_an_example_is_composed_again():
+    canon = json.loads((tt.CFG / "canon.json").read_text(encoding="utf-8"))
+    lever = json.loads(next(x for x in canon["responder_examples"] if "杠杆为什么" in x).split(" → ", 1)[1])
+    fresh = {"relation": "chat", "kind": "content", "board": {"title": "杠杆", "items": ["支点、动力臂、阻力臂"]},
+             "steps": [{"intent": "", "line": "杠杆靠力臂的长短来省力。"}]}
+    d, llm, _ = tt._director(lever)
+    llm.fn = lambda m: json.dumps(lever if len(llm.calls) == 1 else fresh, ensure_ascii=False)
+    r = asyncio.run(d.decide(Utterance(uid="u7", speaker="user", text="杠杆为什么能省力？", t_end=now()), None))
+    assert len(llm.calls) == 2 and "照抄" in llm.calls[1][-1]["content"]
+    assert r["steps"][0]["line"] == "杠杆靠力臂的长短来省力。" and r["regenerated"] == "copied_example"
+    d2, llm2, _ = tt._director(fresh)
+    asyncio.run(d2.decide(Utterance(uid="u8", speaker="user", text="杠杆为什么能省力？", t_end=now()), None))
+    assert len(llm2.calls) == 1  # an answer in its own words is used as it is

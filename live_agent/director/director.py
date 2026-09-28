@@ -270,13 +270,34 @@ class Director:
         if self.student_context:  # the saved student profile (private sessions): answers match the student's level
             sys += "\n学生档案：\n" + self.student_context
         history = [{"role": role, "content": text} for role, text in self.dialogue]
-        raw = await self.llm.chat([{"role": "system", "content": sys}, *history,
-                                   {"role": "user", "content": utt.text}], json_mode=True)
+        msgs = [{"role": "system", "content": sys}, *history, {"role": "user", "content": utt.text}]
+        raw = await self.llm.chat(msgs, json_mode=True)
         try:
             d = parse_json(raw)
         except ValueError:
             d = {"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "抱歉，我没听清，可以再说一次吗？"}]}
+        if self.closed and self._copies_example(d):
+            # answers are composed for this question, not replayed: a reply that copies an example's sentences or
+            # board (seen live when a question matched an example) is asked for again once
+            raw = await self.llm.chat(msgs + [{"role": "assistant", "content": raw}, {"role": "user", "content":
+                "你照抄了系统提示里示例的句子或板书。请针对我的问题重新组织讲解和板书，意思可以相同，但要用你自己的话，只输出 JSON。"}],
+                json_mode=True)
+            try:
+                d = parse_json(raw)
+                d["regenerated"] = "copied_example"
+            except ValueError:
+                pass
         return d
+
+    def _copies_example(self, d: dict) -> bool:
+        """Two or more of the reply's spoken lines / board items appear verbatim in the responder examples."""
+        if d.get("kind") != "content" or not self.responder_examples:
+            return False
+        text = "\n".join(self.responder_examples)
+        board = d.get("board") if isinstance(d.get("board"), dict) else {}
+        parts = [str(st.get("line") or "") for st in d.get("steps") or [] if isinstance(st, dict)]
+        parts += [str(x) for x in (board.get("items") or []) if isinstance(board.get("items"), list)]
+        return sum(1 for x in parts if len(x) >= 6 and x in text) >= 2
 
     def _declined_request(self, utt_text: str, kind: TaskKind, steps: list[dict]) -> bool:
         """Independent of the LLM's ``kind``: an imperative / ability request for the persona that
