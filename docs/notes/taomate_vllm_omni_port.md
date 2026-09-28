@@ -289,7 +289,11 @@ first estimated.
 Status (session ffe817, 2026-09-28 14:25): **real time on two GPUs for the persona workload**
 (measured locally, 30 requests, 332-340-token prompts with a new prompt every request, all
 levers on incl. the twin's `step_async_output`): 4.87 s per 4.958 s request (max 4.99),
-real-time factor 0.98, 1.0 s gained over 30 requests; a 100-request confirmation is running.
+real-time factor 0.98, 1.0 s gained over 30 requests. The 100-request confirmation on the same
+server averaged 4.99 s (factor 1.007): it gained 0.7 s over the first 50 requests and lost 5.7 s
+over the next 50 while the shared host's load average was 35; the device-bound stages were
+unchanged and only host-side parts grew (frame fetch/packing +0.04 s per phase, launch +0.02 s),
+so the margin is real on a quiet host and gone under CPU contention from other users' jobs.
 Short prompts: 4.78 s (factor 0.96, twin's measurement). Contributions this round at persona
 length: text-encoder graphs (re-encode 0.15-0.27 -> 0.048 s), 64-token text buckets (-0.26 s),
 fused LoRA hooks + AdaLN cache off (with the buckets), host preparation overlapped with the
