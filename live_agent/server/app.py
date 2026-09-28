@@ -54,6 +54,7 @@ STATIC = Path(__file__).parent / "static"
 
 
 BOARD_IMAGES = Path(__file__).resolve().parents[2] / ".cache" / "board_images"
+CURRICULUM = Path(__file__).resolve().parents[2] / "configs" / "curriculum"  # national standards + grade profiles
 STUDENT_SEEDS = Path(__file__).resolve().parents[2] / "configs" / "students"  # example profiles (fictional)
 
 
@@ -274,6 +275,14 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                             [x for x in (args.students or args.student).split(",")
                              if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", x)])
     app.state.profiles = profiles
+    from live_agent.curriculum import Curriculum
+
+    curriculum = Curriculum.load(CURRICULUM)  # course knowledge base (empty if not present)
+    app.state.curriculum = curriculum
+
+    @app.get("/api/curriculum")
+    async def curriculum_summary() -> dict:
+        return curriculum.summary()
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -479,7 +488,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
                 orch.image_maker = ImageMaker(args.image_url, BOARD_IMAGES)
             orch.figure_dir = BOARD_IMAGES  # exact plots need no model
-            orch.answer_boards = bool(canon.get("board"))  # a persona with a board writes one for every knowledge answer
+            orch.answer_boards = bool(canon.get("board"))
+            orch.curriculum = curriculum  # a persona with a board writes one for every knowledge answer
             # the page may pick a profile only from the server's allow-list: the demo has one shared access token and no
             # per-student accounts, so the operator decides which profiles this deployment exposes
             allowed = [x for x in (args.students or args.student).split(",") if x]

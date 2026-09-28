@@ -173,6 +173,7 @@ class Orchestrator:
         self.figure_dir = None  # where exact plots are drawn (board_plot); set by the app
         self.student = None  # student.StudentProfile (private sessions): adapts lessons, records exercise results
         self.profile_store = None  # student.ProfileStore shared with the profile page (set by the app)
+        self.curriculum = None  # curriculum.Curriculum: course knowledge base (grade profiles, standards; set by the app)
         self._lesson_mistakes: list[str] = []  # this lesson's wrong answers, addressed by the next section
         self._exercises = 0
         self._shown_exercise = None  # the exercise the page was last told about
@@ -1075,7 +1076,14 @@ class Orchestrator:
         d = self.director
         self._exercises += 1
         profile_epoch, plan = self._profile_epoch, d.plan_version
-        profile = self.student.summary() if self.student is not None else "无（新学生，没有档案）"
+        profile = self._student_context() or "无（新学生，没有档案）"
+        if self.curriculum and self.student is not None:
+            from live_agent.curriculum import parse_grade
+
+            g = parse_grade(self.student.grade)
+            profile += "\n" + self.curriculum.topic_context(topic, g)
+            if self.curriculum.exercise_style(g):
+                profile += f"\n这个年级的练习形式：{self.curriculum.exercise_style(g)}"
         try:
             ex = await make_exercise(d.llm, name=d.persona_name, topic=topic, profile=profile,
                                      key=f"q{self._exercises}")
@@ -1143,6 +1151,19 @@ class Orchestrator:
         self.log.emit(EventType.LESSON, now(), stage="answer_board", title=b.title, board=b.key,
                       seconds=round(now() - t0, 2), lines=len(waiting))
 
+    def _student_context(self) -> str:
+        """What the responder knows about the student: the profile, and how to talk to a student of this grade."""
+        if self.student is None:
+            return ""
+        ctx = self.student.summary()
+        if self.curriculum:
+            from live_agent.curriculum import parse_grade
+
+            teach = self.curriculum.teaching_context(parse_grade(self.student.grade))
+            if teach:
+                ctx += "\n" + teach
+        return ctx
+
     def _save_profile(self) -> None:
         """Save through the shared store (other sessions and the profile page see the change), else directly."""
         if self.profile_store is not None:
@@ -1176,7 +1197,7 @@ class Orchestrator:
         from live_agent.lesson import LessonLine, LessonPlanner
 
         d = self.director
-        planner = LessonPlanner(d.llm, name=d.persona_name, bio=d.persona_bio)
+        planner = LessonPlanner(d.llm, name=d.persona_name, bio=d.persona_bio, curriculum=self.curriculum)
         context = "；".join(t for r, t in d.dialogue if r == "user")[-300:]
         try:
             outline = await planner.outline(topic, context, profile=self.student)
@@ -1297,7 +1318,7 @@ class Orchestrator:
                               chains={c.chain_id: c.status.value for c in self.director.chains.values()},
                               recalled=[])
                 return graded
-        self.director.student_context = self.student.summary() if self.student is not None else ""
+        self.director.student_context = self._student_context()
         decision = await self.director.decide(utt, memories)
         term = (decision or {}).get("forget_term")
         if epoch != self._input_epoch:

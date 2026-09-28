@@ -379,8 +379,8 @@ def test_the_teacher_persona_requires_a_board_for_knowledge_answers():
     replies = [json.loads(x.split(" → ", 1)[1]) for x in canon["responder_examples"]]
     assert all(r["board"]["items"] for r in replies if r["kind"] == "content")
     # no knowledge example is one of the page's one-click questions: those answers would be replayed, not composed
-    asked = {x.split(" → ", 1)[0].removeprefix("用户：") for x in canon["responder_examples"]}
-    content_q = {q for q, r in zip(asked, replies) if r["kind"] == "content"}
+    asked = [x.split(" → ", 1)[0].removeprefix("用户：") for x in canon["responder_examples"]]
+    content_q = [q for q, r in zip(asked, replies) if r["kind"] == "content"]
     assert not any(q in chip or chip in q for q in content_q for chip in canon["examples"])
 
 

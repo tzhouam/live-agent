@@ -1,0 +1,201 @@
+"""Course knowledge base: the national curriculum (grades 1-12) and a teaching profile per grade.
+
+Data lives in ``configs/curriculum/*.json`` (one file per subject, plus ``pedagogy.json``), researched from the 2022
+compulsory-education standards and the 2017/2020 senior-high standards, with per-grade topics from the textbook
+tables of contents; every file lists its sources and which parts are estimates. This module finds where a lesson
+topic sits in the curriculum (subject, grade, the standard's requirements, prerequisites) and how a teacher should
+teach a given grade (methods, amount of content, tone), and renders both as prompt context.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+_CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def parse_grade(text: str | int | None) -> int | None:
+    """"初二" -> 8, "高一" -> 10, "小学三年级" / "三年级" -> 3, "8年级" / "grade 8" -> 8; None if unknown."""
+    if isinstance(text, int):
+        return text if 1 <= text <= 12 else None
+    s = str(text or "").strip().lower()
+    if not s:
+        return None
+    m = re.search(r"(初|高)([一二三123])", s)
+    if m:
+        n = _CN_NUM.get(m.group(2)) or int(m.group(2))
+        return (6 if m.group(1) == "初" else 9) + n
+    m = re.search(r"(\d{1,2})\s*年级|grade\s*(\d{1,2})|^(\d{1,2})$", s)
+    if m:
+        n = int(next(g for g in m.groups() if g))
+        return n if 1 <= n <= 12 else None
+    m = re.search(r"([一二三四五六七八九]|十[一二]?)年级", s)
+    if m:
+        w = m.group(1)
+        n = 10 + (_CN_NUM.get(w[1], 0) if len(w) > 1 else 0) if w.startswith("十") else _CN_NUM[w]
+        return n if 1 <= n <= 12 else None
+    return None
+
+
+def grade_name(g: int) -> str:
+    if g <= 6:
+        return f"小学{'一二三四五六'[g - 1]}年级"
+    return ("初" if g <= 9 else "高") + "一二三"[(g - 7) % 3]
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[\s·、，,（）()《》“”\"']", "", str(s)).lower()
+
+
+@dataclass
+class Match:
+    subject: str
+    grade: int | None
+    topic: str  # the curriculum's own wording
+    stage: str = ""
+    domain: str = ""
+    requirements: list[str] = field(default_factory=list)
+    prerequisites: list[str] = field(default_factory=list)
+    basis: str = ""  # textbook / standard / estimate
+    score: float = 0.0
+
+
+class Curriculum:
+    def __init__(self, subjects: list[dict], pedagogy: dict | None = None):
+        self.subjects = subjects
+        self.pedagogy = pedagogy or {}
+
+    @classmethod
+    def load(cls, directory: str | Path) -> Curriculum:
+        d = Path(directory)
+        subjects, pedagogy = [], {}
+        if d.is_dir():
+            for f in sorted(d.glob("*.json")):
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if f.stem == "pedagogy":
+                    pedagogy = data
+                elif isinstance(data, dict) and data.get("subject"):
+                    subjects.append(data)
+        return cls(subjects, pedagogy)
+
+    def __bool__(self) -> bool:
+        return bool(self.subjects or self.pedagogy)
+
+    # ------------------------------------------------------------ where does a topic sit
+    def lookup(self, topic: str, grade: int | None = None, limit: int = 3) -> list[Match]:
+        """Curriculum entries for ``topic`` (textbook topics first, then the standard's requirements), nearest to
+        the student's grade first."""
+        q = _norm(topic)
+        if len(q) < 2:
+            return []
+        found: list[Match] = []
+        for subj in self.subjects:
+            name = subj.get("subject", "")
+            prereq = {(_norm(k)): v for k, v in (subj.get("prerequisites") or {}).items()}
+            for g, entry in (subj.get("grade_topics") or {}).items():
+                for t in (entry or {}).get("topics") or []:
+                    nt = _norm(t)
+                    if q in nt or (len(nt) >= 2 and nt in q):
+                        g_int = parse_grade(int(g)) if str(g).isdigit() else parse_grade(g)
+                        stage, domain, reqs = self._requirements(subj, g_int, q)
+                        found.append(Match(name, g_int, t, stage, domain, reqs,
+                                           prereq.get(q) or prereq.get(nt) or [], (entry or {}).get("basis", ""),
+                                           score=2.0 + (1.0 if q == nt else len(q) / max(len(nt), 1))))
+            for st in subj.get("stages") or []:
+                for dom in st.get("domains") or []:
+                    hits = [r for r in dom.get("requirements") or [] if q in _norm(r)]
+                    if hits:
+                        gs = st.get("grades") or [None]
+                        found.append(Match(name, gs[0], topic, st.get("name", ""), dom.get("name", ""), hits[:3],
+                                           prereq.get(q, []), "standard", score=1.0))
+        if grade is not None:
+            for m in found:
+                if m.grade is not None:
+                    m.score -= 0.15 * abs(m.grade - grade)
+        found.sort(key=lambda m: -m.score)
+        out, seen = [], set()
+        for m in found:
+            key = (m.subject, m.grade, m.topic)
+            if key not in seen:
+                seen.add(key)
+                out.append(m)
+        return out[:limit]
+
+    def _requirements(self, subj: dict, grade: int | None, q: str) -> tuple[str, str, list[str]]:
+        """The stage containing ``grade`` and its requirements that mention the topic (else the stage's first domain
+        with any requirement mentioning a character of it)."""
+        for st in subj.get("stages") or []:
+            gs = st.get("grades") or []
+            if grade is None or (len(gs) == 2 and gs[0] <= grade <= gs[1]) or grade in gs:
+                for dom in st.get("domains") or []:
+                    hits = [r for r in dom.get("requirements") or [] if q in _norm(r)]
+                    if hits:
+                        return st.get("name", ""), dom.get("name", ""), hits[:3]
+                return st.get("name", ""), "", []
+        return "", "", []
+
+    # ------------------------------------------------------------ how to teach a grade
+    def profile(self, grade: int | None) -> dict[str, Any]:
+        grades = self.pedagogy.get("grades") or {}
+        if grade is None or not grades:
+            return {}
+        return grades.get(str(grade)) or grades.get(str(min(max(grade, 1), 12))) or {}
+
+    def teaching_context(self, grade: int | None) -> str:
+        """Per-grade teaching guidance for prompts (methods, content per explanation, tone, sentence length)."""
+        p = self.profile(grade)
+        if not p:
+            return ""
+        parts = [f"学生是{grade_name(grade)}（{p.get('stage', '')}）。按这个年级的特点来教："]
+        for key, label in (("methods", "教法"), ("content", "内容量"), ("tone", "语气"), ("examples", "例子"),
+                           ("avoid", "避免")):
+            v = p.get(key)
+            if v:
+                parts.append(f"{label}：{'；'.join(v) if isinstance(v, list) else v}")
+        if p.get("vocabulary"):
+            parts.append(f"用词：{p['vocabulary']}")
+        if p.get("encouragement"):
+            parts.append(f"表扬与纠错：{p['encouragement']}")
+        return "\n".join(parts)
+
+    def exercise_style(self, grade: int | None) -> str:
+        return str(self.profile(grade).get("exercise_style") or "")
+
+    def topic_context(self, topic: str, grade: int | None) -> str:
+        """Where the topic sits in the curriculum, for the planner; flags a topic above the student's grade."""
+        ms = self.lookup(topic, grade)
+        if not ms:
+            return ""
+        lines = []
+        for m in ms:
+            s = f"「{m.topic}」：{m.subject}"
+            if m.grade:
+                s += f"，{grade_name(m.grade)}" + ("（教材）" if m.basis == "textbook" else "（估计）" if m.basis == "estimate" else "")
+            if m.stage or m.domain:
+                s += f"，{m.stage}{('·' + m.domain) if m.domain else ''}"
+            if m.requirements:
+                s += f"；课标要求：{'；'.join(m.requirements)}"
+            if m.prerequisites:
+                s += f"；前置知识：{'、'.join(m.prerequisites)}"
+            lines.append(s)
+        top = ms[0]
+        if grade is not None and top.grade is not None and top.grade > grade:
+            lines.append(f"注意：这个内容一般在{grade_name(top.grade)}学，学生现在{grade_name(grade)}，"
+                         f"要从学生已有的知识讲起，降低难度，必要时先补前置知识。")
+        elif grade is not None and top.grade is not None and top.grade < grade - 2:
+            lines.append(f"注意：这是{grade_name(top.grade)}的内容，学生已经{grade_name(grade)}，以复习和提高为主。")
+        return "课程标准参考：\n" + "\n".join(lines)
+
+    def summary(self) -> dict[str, Any]:
+        return {"subjects": [{"subject": s.get("subject"), "grades": s.get("grades"),
+                              "sources": len(s.get("sources") or []),
+                              "topics": sum(len((e or {}).get("topics") or []) for e in (s.get("grade_topics") or {}).values())}
+                             for s in self.subjects],
+                "pedagogy_grades": sorted(int(g) for g in (self.pedagogy.get("grades") or {}) if str(g).isdigit())}
+
+
+__all__ = ["Curriculum", "Match", "grade_name", "parse_grade"]

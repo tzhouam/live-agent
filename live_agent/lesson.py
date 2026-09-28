@@ -26,10 +26,10 @@ DEPTHS = {
     "new": ("10-18", "这一节是新内容，正常讲解。"),
 }
 
-OUTLINE_PROMPT = """你是中学老师「{name}」，要给学生上一节关于「{topic}」的课。人设：{bio}
+OUTLINE_PROMPT = """你是{role}「{name}」，要给学生上一节关于「{topic}」的课。人设：{bio}
 学生档案（年级、考试成绩、各概念的掌握情况）：
 {profile}
-请按这个学生的情况因材施教，设计课程大纲，只输出 JSON：
+{curriculum}请按这个学生的情况因材施教，设计课程大纲，只输出 JSON：
 {{"title": 课程标题（不超过 16 字）, "plan_note": 一句话说明你根据档案怎么安排的（给老师自己看，不念出来）,
  "sections": [{{"title": 小节标题（不超过 14 字）, "goal": 这一节要讲清楚什么（一句话）,
    "concepts": [这一节讲的概念，档案里已有的概念用完全相同的名字，每个不超过 8 字],
@@ -46,7 +46,7 @@ OUTLINE_PROMPT = """你是中学老师「{name}」，要给学生上一节关于
 开场白先说今天学什么，再说分几部分讲，知道学生情况时可以自然地提一句（如「上次考试这里丢了分，今天重点讲」）；每句开场白不超过 {chars} 个汉字。
 学生之前的对话（只作参考）：{context}"""
 
-SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这节课。人设：{bio}
+SECTION_PROMPT = """你是{role}「{name}」，正在上「{title}」这节课。人设：{bio}
 现在讲第 {i}/{n} 节「{section}」，目标：{goal}。
 前面已经讲过：{covered}
 请写这一节的板书和讲稿，只输出 JSON：
@@ -255,14 +255,33 @@ def spoken(text: str, chars: int) -> list[str]:
 
 
 class LessonPlanner:
-    def __init__(self, llm: ChatLLM, *, name: str, bio: str, chars: int = 22):
+    def __init__(self, llm: ChatLLM, *, name: str, bio: str, chars: int = 22, curriculum=None):
         self.llm, self.name, self.bio, self.chars = llm, name, bio, chars
+        self.curriculum = curriculum  # curriculum.Curriculum: where the topic sits, how to teach the grade
+
+    def _grade(self, profile) -> int | None:
+        from live_agent.curriculum import parse_grade
+
+        return parse_grade(profile.grade) if profile is not None else None
+
+    def _role(self, profile) -> str:
+        g = self._grade(profile)
+        return "小学老师" if g is not None and g <= 6 else "高中老师" if g is not None and g >= 10 else "中学老师"
+
+    def _curriculum_block(self, topic: str, profile) -> str:
+        if not self.curriculum:
+            return ""
+        g = self._grade(profile)
+        parts = [self.curriculum.topic_context(topic, g), self.curriculum.teaching_context(g)]
+        text = "\n".join(x for x in parts if x)
+        return (text + "\n") if text else ""
 
     async def outline(self, topic: str, context: str = "", profile=None) -> Outline:
         """``profile``: a student.StudentProfile (None: no saved profile, an average student of ``default_grade``)."""
         raw = await self.llm.chat([{"role": "user", "content": OUTLINE_PROMPT.format(
-            name=self.name, topic=topic, bio=self.bio, chars=self.chars, context=context or "无",
+            name=self.name, topic=topic, bio=self.bio, chars=self.chars, context=context or "无", role=self._role(profile),
             profile=profile.summary() if profile is not None else "无（新学生，没有档案）",
+            curriculum=self._curriculum_block(topic, profile),
             default_grade=(profile.grade if profile is not None and profile.grade else "初中"))}],
             max_tokens=900, temperature=0.4, json_mode=True)
         d = parse_json(raw)
@@ -299,18 +318,25 @@ class LessonPlanner:
         last = i == len(outline.sections) - 1
         depth = sec.get("depth") if sec.get("depth") in DEPTHS else "new"
         adapt = [DEPTHS[depth][1]]
+        want_ex = bool(sec.get("exercise"))
         if profile is not None:
             if profile.grade:
                 adapt.append(f"学生是{profile.grade}，用这个年级听得懂的说法和例子。")
             adapt.append(f"学生对本节概念的掌握：{profile.concept_notes(sec.get('concepts') or [])}。")
             adapt.append(f"只讲本节和「{outline.title}」的内容；学生其他薄弱的知识点不要展开，需要用到时一句话带过。")
+        if self.curriculum and profile is not None:
+            teach = self.curriculum.teaching_context(self._grade(profile))
+            if teach:
+                adapt.append("\n" + teach + "\n")
+            ex_style = self.curriculum.exercise_style(self._grade(profile))
+            if want_ex and ex_style:
+                adapt.append(f"练习题的形式：{ex_style}。")
         if mistakes:
             adapt.append(f"学生刚才的练习做错了：{'；'.join(mistakes[-2:])}。本节第一条要点先用一两句换个说法把这个错误纠正过来。")
-        want_ex = bool(sec.get("exercise"))
         ex_req = ("\n6. 讲完出一道练习，考查本节最重要的概念，难度按学生的掌握度定（薄弱出基础题，已掌握出稍有变化的题）；"
                   "在 JSON 里加字段 \"exercise\"。" + EXERCISE_SPEC.format(chars=self.chars, q_chars=60)) if want_ex else ""
         raw = await self.llm.chat([{"role": "user", "content": SECTION_PROMPT.format(
-            name=self.name, bio=self.bio, title=outline.title, i=i + 1, n=len(outline.sections),
+            name=self.name, bio=self.bio, title=outline.title, i=i + 1, n=len(outline.sections), role=self._role(profile),
             section=sec["title"], goal=sec.get("goal", ""), covered="；".join(covered) or "（这是第一节）",
             max_items=MAX_ITEMS, item_chars=ITEM_CHARS, chars=self.chars, n_lines=DEPTHS[depth][0],
             adapt="".join(adapt), exercise_req=ex_req,
