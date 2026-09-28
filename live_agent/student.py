@@ -50,6 +50,7 @@ class Concept:
     taught: int = 0  # lessons that covered it
     notes: list[str] = field(default_factory=list)  # recent misconceptions (short, newest last)
     updated: str = ""
+    manual: bool = False  # the estimate was set by a teacher on the profile page (until the next graded exercise)
 
 
 @dataclass
@@ -60,6 +61,7 @@ class StudentProfile:
     exams: list[Exam] = field(default_factory=list)
     concepts: dict[str, Concept] = field(default_factory=dict)
     history: list[dict] = field(default_factory=list)  # graded exercises, newest last (bounded)
+    version: int = 0  # bumped on every save: an editor saving an older version is refused (no lost updates)
     path: Path | None = field(default=None, repr=False, compare=False)
 
     # ------------------------------------------------------------ storage
@@ -74,7 +76,7 @@ class StudentProfile:
             concepts[name] = Concept(**{k: v for k, v in c.items() if k in Concept.__dataclass_fields__})
         return cls(student_id=str(d.get("student_id") or "student"), name=str(d.get("name") or ""),
                    grade=str(d.get("grade") or ""), exams=exams, concepts=concepts,
-                   history=list(d.get("history") or [])[-100:], path=path)
+                   history=list(d.get("history") or [])[-100:], version=int(d.get("version") or 0), path=path)
 
     @classmethod
     def load(cls, student_id: str, store: Path, seed_dir: Path | None = None) -> StudentProfile:
@@ -97,6 +99,7 @@ class StudentProfile:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with _SAVE_LOCK:
+            self.version += 1
             tmp = self.path.with_name(f".{self.path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
             tmp.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(self.path)
@@ -157,8 +160,11 @@ class StudentProfile:
         return 0.4 if any(concept in e.weak for e in latest.values()) else None
 
     def source(self, concept: str) -> str | None:
-        """Where the estimate comes from: "exercise" (graded answers), "exam" (a prior), None (unknown)."""
+        """Where the estimate comes from: "manual" (a teacher set it), "exercise" (graded answers), "exam" (a
+        prior), None (unknown)."""
         c = self.concepts.get(concept)
+        if c is not None and c.manual and c.mastery is not None:
+            return "manual"
         if c is not None and c.attempts and c.mastery is not None:
             return "exercise"
         return "exam" if self.mastery(concept) is not None else None
@@ -175,7 +181,7 @@ class StudentProfile:
         if m is None:
             return "unknown"
         c = self.concepts.get(concept)
-        if m >= MASTERED and (c is None or c.attempts < 3):
+        if m >= MASTERED and (c is None or (c.attempts < 3 and not c.manual)):
             return "partial"
         return "mastered" if m >= MASTERED else "partial" if m >= WEAK else "weak"
 
@@ -197,6 +203,7 @@ class StudentProfile:
         c.mastery = round(m + RATE * ((1.0 if correct else 0.0) - m), 3)
         c.attempts += 1
         c.correct += int(bool(correct))
+        c.manual = False  # evidence now
         c.updated = time.strftime("%Y-%m-%d")
         if misconception and not correct:
             c.notes = (c.notes + [str(misconception)[:40]])[-3:]
@@ -204,6 +211,37 @@ class StudentProfile:
                                          "answer": answer[:40], "t": time.strftime("%Y-%m-%d %H:%M")}])[-100:]
         return {"concept": c.name, "correct": bool(correct), "before": before, "after": c.mastery,
                 "level": self.level(c.name)}
+
+    def edit_concepts(self, edits: Any) -> list[str]:
+        """Profile page edits: [{"name", "subject"?, "mastery"? (0-1, or null to clear), "delete"?, "rename"?}]."""
+        changed = []
+        for e in edits if isinstance(edits, list) else []:
+            if not isinstance(e, dict) or not str(e.get("name") or "").strip():
+                continue
+            name = str(e["name"]).strip()[:20]
+            if e.get("delete"):
+                if self.concepts.pop(name, None) is not None:
+                    changed.append(name)
+                continue
+            c = self._concept(name, str(e.get("subject") or "")[:12])
+            if "subject" in e:
+                c.subject = str(e.get("subject") or "")[:12]
+            if "mastery" in e:
+                m = e["mastery"]
+                if m is None:
+                    c.mastery, c.manual = None, False
+                else:
+                    try:
+                        c.mastery, c.manual = round(max(0.0, min(1.0, float(m))), 3), True
+                    except (TypeError, ValueError):
+                        continue
+                c.updated = time.strftime("%Y-%m-%d")
+            new = str(e.get("rename") or "").strip()[:20]
+            if new and new != name and new not in self.concepts:
+                self.concepts[new] = self.concepts.pop(name)
+                self.concepts[new].name = new
+            changed.append(name)
+        return changed
 
     def mark_taught(self, concepts: list[str], subject: str = "") -> None:
         for name in concepts:
@@ -284,13 +322,69 @@ class StudentProfile:
         """For the page panel."""
         names = sorted(set(self.concepts) | {w for e in self.exams for w in e.weak},
                        key=lambda n: (self.mastery(n) is None, -(self.mastery(n) or 0.0)))
-        return {"id": self.student_id, "name": self.name, "grade": self.grade,
+        return {"id": self.student_id, "name": self.name, "grade": self.grade, "version": self.version,
                 "exams": [{"subject": e.subject, "name": e.name, "score": e.score, "full": e.full, "date": e.date,
                            "weak": e.weak} for e in self.exams],
                 "concepts": [{"name": n, "mastery": self.mastery(n), "level": self.level(n), "source": self.source(n),
+                              "subject": self.concepts[n].subject if n in self.concepts else "",
+                              "notes": self.concepts[n].notes if n in self.concepts else [],
                               "attempts": self.concepts[n].attempts if n in self.concepts else 0,
                               "correct": self.concepts[n].correct if n in self.concepts else 0}
-                             for n in names][:30]}
+                             for n in names][:60],
+                "history": list(reversed(self.history[-30:]))}
 
 
-__all__ = ["Concept", "Exam", "LEVELS_CN", "StudentProfile"]
+class ProfileStore:
+    """One shared, in-memory profile per student for the whole server: live sessions and the profile page edit the
+    same object (a session's exercise result and a teacher's edit never overwrite each other), every change is
+    saved, and listeners (open sessions) are told so their page can refresh."""
+
+    def __init__(self, store: Path, seeds: Path | None, allowed: list[str]):
+        self.store, self.seeds, self.allowed = Path(store), seeds, list(dict.fromkeys(allowed))
+        self._profiles: dict[str, StudentProfile] = {}
+        self._listeners: dict[str, list] = {}
+
+    def get(self, student_id: str) -> StudentProfile | None:
+        if student_id not in self.allowed:
+            return None
+        if student_id not in self._profiles:
+            self._profiles[student_id] = StudentProfile.load(student_id, self.store, self.seeds)
+        return self._profiles[student_id]
+
+    def exists(self, student_id: str) -> bool:
+        return (self.store / f"{student_id}.json").exists()
+
+    def subscribe(self, student_id: str, fn) -> None:
+        self._listeners.setdefault(student_id, []).append(fn)
+
+    def unsubscribe(self, student_id: str, fn) -> None:
+        if fn in self._listeners.get(student_id, []):
+            self._listeners[student_id].remove(fn)
+
+    def changed(self, student_id: str, source=None) -> None:
+        """Save and notify every listener except ``source`` (the one that made the change)."""
+        p = self._profiles.get(student_id)
+        if p is None:
+            return
+        p.save()
+        for fn in list(self._listeners.get(student_id, [])):
+            if fn is not source:
+                fn()
+
+    def reset(self, student_id: str) -> StudentProfile | None:
+        """Back to the seed profile (or empty): the saved copy is deleted."""
+        if student_id not in self.allowed:
+            return None
+        old = self._profiles.get(student_id)
+        (self.store / f"{student_id}.json").unlink(missing_ok=True)
+        fresh = StudentProfile.load(student_id, self.store, self.seeds)
+        fresh.version = (old.version if old is not None else 0) + 1
+        if old is not None:  # keep the object identity: sessions hold a reference to it
+            old.__dict__.update({k: v for k, v in fresh.__dict__.items() if k != "path"})
+            fresh = old
+        self._profiles[student_id] = fresh
+        self.changed(student_id)
+        return fresh
+
+
+__all__ = ["Concept", "Exam", "LEVELS_CN", "ProfileStore", "StudentProfile"]

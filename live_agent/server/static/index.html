@@ -140,6 +140,7 @@
         <label>会话 <select id="mode"><option value="private">一对一私聊</option><option value="public">测试直播</option></select></label>
         <label>用户 <input type="text" id="uid" value="user-1" style="flex:0;width:110px;min-width:90px"></label>
         <label title="私聊会话读取并更新这个学生的档案">学生 <input type="text" id="sid" value="demo" style="flex:0;width:80px;min-width:70px"></label>
+        <a href="/profile" target="_blank" id="profLink" style="align-self:center">档案管理</a>
         <button class="primary" id="connect">连接</button>
         <button id="disconnect" disabled>断开</button>
       </div>
@@ -160,7 +161,7 @@
 
   <aside class="panel">
     <div class="card prof" id="profCard">
-      <h2>学生档案 <button id="profEdit" hidden style="float:right;font-size:12px">编辑</button></h2>
+      <h2>学生档案 <button id="profEdit" hidden style="float:right;font-size:12px">管理档案 ↗</button></h2>
       <div id="prof"><div class="empty">私聊会话连接后显示学生的年级、成绩和各知识点掌握度；课程和练习按档案调整。</div></div>
     </div>
     <div class="card">
@@ -355,27 +356,7 @@ function showProfile(p, flash) {
     (exams ? `<ul class="exams">${exams}</ul>` : `<div class="meta">还没有考试成绩</div>`) +
     (cps ? `<div class="meta">知识点掌握度（估计值，未校准；悬停看依据）</div>` + cps : `<div class="meta">还没有知识点记录：做练习后会出现</div>`);
 }
-function examLines(p) { return (p.exams || []).map(e => `${e.subject} ${e.name} ${e.score}/${e.full} ${(e.weak || []).join(",")}`.trim()).join("\n"); }
-$("profEdit").onclick = () => {
-  if (!profile || $("profForm")) return;
-  const f = document.createElement("form"); f.id = "profForm";
-  f.innerHTML = `<label>名字 <input name="name" value="${esc(profile.name)}"></label>
-    <label>年级 <input name="grade" value="${esc(profile.grade)}" placeholder="如 初二"></label>
-    <label>考试成绩（每行：学科 考试 分数/满分 失分点,失分点）<textarea name="exams">${esc(examLines(profile))}</textarea></label>
-    <div><button class="primary" type="submit">保存</button> <button type="button" id="profCancel">取消</button></div>`;
-  $("prof").appendChild(f);
-  $("profCancel").onclick = () => f.remove();
-  f.onsubmit = (ev) => {
-    ev.preventDefault();
-    const exams = f.exams.value.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
-      const m = l.match(/^(\S+)\s+(\S+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\s*(.*)$/);
-      return m ? {subject: m[1], name: m[2], score: +m[3], full: +(m[4] || 100),
-                  weak: m[5].split(/[,，、\s]+/).filter(Boolean)} : null;
-    }).filter(Boolean);
-    send({type: "profile", profile: {name: f.name.value.trim(), grade: f.grade.value.trim(), exams}});
-    f.remove();
-  };
-};
+$("profEdit").onclick = () => window.open(`/profile?student=${encodeURIComponent(profile ? profile.id : $("sid").value)}`, "_blank");
 function showExercise(ex) {  // answer buttons while an exercise waits; the persona's examples otherwise
   const key = ex ? ex.concept + (ex.options || []).join("") : "";
   if (key === exerciseKey) return;

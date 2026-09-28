@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>学生档案管理</title>
+<style>
+  :root {
+    --bg:#f5f1e8; --panel:#fffdf7; --ink:#1d1b17; --muted:#6f685b; --line:#ddd4c2; --accent:#9d3a22;
+    --ok:#2f7d4f; --bad:#b3372a; --warn:#a86b12; --info:#2d5d8a; --chip:#efe8d8; --manual:#6b4fa0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#161512; --panel:#1f1d19; --ink:#ede7da; --muted:#a39b8b; --line:#34302a; --accent:#e0795b;
+      --ok:#5fbf86; --bad:#ec7a6c; --warn:#e2a64a; --info:#7fb0e0; --chip:#2a2722; --manual:#b39ae0;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 "Noto Sans SC",system-ui,sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; justify-content:space-between;
+           padding:12px 16px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
+  h1 { margin:0; font:600 18px "Noto Serif SC",serif; }
+  h2 { margin:0 0 10px; font:600 15px "Noto Serif SC",serif; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; min-width:0; }
+  .row { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; }
+  label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--muted); }
+  input, select { font:inherit; font-size:14px; color:var(--ink); background:var(--bg); border:1px solid var(--line);
+                  border-radius:8px; padding:5px 8px; min-width:0; }
+  input:focus, select:focus, button:focus-visible { outline:2px solid var(--info); outline-offset:1px; }
+  input[type=number] { width:5.5em; }
+  button { font:inherit; font-size:13px; border:1px solid var(--line); background:var(--chip); color:var(--ink);
+           border-radius:8px; padding:5px 12px; cursor:pointer; white-space:nowrap; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button.ghost { background:transparent; }
+  button.danger { color:var(--bad); background:transparent; border-color:var(--bad); }
+  button:disabled { opacity:.5; cursor:default; }
+  a { color:var(--info); }
+  .muted { color:var(--muted); font-size:12px; }
+  .status { font-size:13px; color:var(--muted); }
+  .status.dirty { color:var(--warn); font-weight:600; }
+  .status.err { color:var(--bad); font-weight:600; }
+  .status.ok { color:var(--ok); }
+  .empty { color:var(--muted); font-size:13px; padding:6px 0; }
+  /* exams: one editable row per exam; stacks on narrow screens */
+  .exam { display:grid; grid-template-columns: 6em 1fr 9.5em 5.5em 5.5em 1.4fr 3.5em auto; gap:8px; align-items:end;
+          padding:8px 0; border-bottom:1px dashed var(--line); }
+  .exam .pct { font-variant-numeric:tabular-nums; color:var(--muted); padding-bottom:6px; text-align:right; }
+  .exam input { width:100%; }
+  @media (max-width: 820px) {
+    .exam { grid-template-columns: 1fr 1fr; }
+    .exam .pct { text-align:left; }
+  }
+  /* concepts */
+  .concept { display:grid; grid-template-columns: minmax(7em, 1.1fr) 6em minmax(140px, 2fr) 4.2em minmax(9em, 1.3fr) auto;
+             gap:10px; align-items:center; padding:8px 0; border-bottom:1px dashed var(--line); }
+  .concept .name { font-weight:600; overflow-wrap:anywhere; }
+  .concept input[type=range] { width:100%; }
+  /* the slider is the bar: its colour is the level; untested concepts show a faint slider */
+  .concept.weak input[type=range] { accent-color:var(--bad); } .concept.partial input[type=range] { accent-color:var(--warn); }
+  .concept.mastered input[type=range] { accent-color:var(--ok); } .concept.unknown input[type=range] { opacity:.35; }
+  .bar { height:8px; border-radius:4px; background:var(--chip); overflow:hidden; }
+  .bar i { display:block; height:100%; }
+  .weak .bar i { background:var(--bad); } .partial .bar i { background:var(--warn); }
+  .mastered .bar i { background:var(--ok); } .unknown .bar i { background:var(--line); }
+  .v { font-variant-numeric:tabular-nums; text-align:right; }
+  .src { font-size:12px; color:var(--muted); }
+  .src.manual { color:var(--manual); font-weight:600; }
+  .concept.removed { opacity:.45; text-decoration:line-through; }
+  .concept.changed .name::after { content:" ●"; color:var(--warn); }
+  @media (max-width: 820px) {
+    .concept { grid-template-columns: 1fr auto; }
+    .concept .grow { grid-column: 1 / -1; }
+  }
+  .legend { display:flex; flex-wrap:wrap; gap:10px; font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:4px; vertical-align:-1px; }
+  .legend .l-weak::before { background:var(--bad); } .legend .l-partial::before { background:var(--warn); }
+  .legend .l-mastered::before { background:var(--ok); } .legend .l-unknown::before { background:var(--line); }
+  .hist { width:100%; border-collapse:collapse; font-size:13px; }
+  .hist th, .hist td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .hist th { color:var(--muted); font-weight:500; }
+  .hist .ok { color:var(--ok); } .hist .bad { color:var(--bad); }
+  .tablewrap { overflow-x:auto; }
+  .actions { position:sticky; bottom:0; background:var(--bg); border-top:1px solid var(--line); padding:10px 16px;
+             display:flex; flex-wrap:wrap; gap:8px; justify-content:space-between; align-items:center; }
+  .note { font-size:12px; color:var(--muted); border-left:3px solid var(--line); padding:2px 8px; margin:0 0 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>学生档案管理</h1>
+  <div class="row">
+    <label>学生 <select id="student" aria-label="选择学生"></select></label>
+    <a id="back" href="/">← 返回课堂</a>
+  </div>
+</header>
+
+<main>
+  <p class="note">档案是个人数据，只在「一对一私聊」课堂中使用。老师按档案调整讲课的深浅、例子和练习；学生做练习后掌握度会自动更新。
+    掌握度都是<b>估计值</b>（规则未经校准），这里可以手动修正。</p>
+
+  <section class="card" aria-labelledby="h-basic">
+    <h2 id="h-basic">基本信息</h2>
+    <div class="row">
+      <label>名字 <input id="name" maxlength="20" placeholder="如 小明"></label>
+      <label>年级 <input id="grade" maxlength="12" list="grades" placeholder="如 初二"></label>
+      <datalist id="grades"></datalist>
+      <span class="muted" id="meta"></span>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-exams">
+    <h2 id="h-exams">考试成绩 <button id="addExam">＋ 添加考试</button></h2>
+    <div class="muted" style="margin-bottom:4px">失分知识点用顿号或逗号分开；老师会按最近一次考试的失分点重点讲。</div>
+    <div id="exams"></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-concepts">
+    <h2 id="h-concepts">知识点掌握度（估计）</h2>
+    <div class="legend"><span class="l-weak">薄弱 &lt;50%</span><span class="l-partial">基本理解</span>
+      <span class="l-mastered">已掌握 ≥80%（需 3 道以上练习或老师设定）</span><span class="l-unknown">未评估</span></div>
+    <div id="concepts"></div>
+    <div class="row" style="margin-top:10px">
+      <label>新知识点 <input id="newName" maxlength="20" placeholder="如 因式分解"></label>
+      <label>学科 <input id="newSubject" maxlength="12" placeholder="如 数学" style="width:7em"></label>
+      <label>估计掌握度 % <input id="newMastery" type="number" min="0" max="100" placeholder="留空=未评估"></label>
+      <button id="addConcept" style="align-self:end">＋ 添加知识点</button>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-hist">
+    <h2 id="h-hist">最近的练习 <label style="flex-direction:row;align-items:center;gap:6px;font-size:13px;color:var(--ink)">
+      <input type="checkbox" id="clearHist"> 保存时清空练习记录</label></h2>
+    <div class="tablewrap"><table class="hist"><thead><tr><th>时间</th><th>知识点</th><th>结果</th><th>题目</th><th>学生回答</th></tr></thead>
+      <tbody id="hist"></tbody></table></div>
+  </section>
+</main>
+
+<div class="actions">
+  <span class="status" id="status" role="status" aria-live="polite">载入中…</span>
+  <div class="row">
+    <button class="danger" id="reset" title="删除保存的档案，恢复为示例档案（或空档案）">恢复为初始档案</button>
+    <button class="ghost" id="discard" disabled>放弃修改</button>
+    <button class="primary" id="save" disabled>保存</button>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const LEVEL = {mastered: "已掌握", partial: "基本理解", weak: "薄弱", unknown: "未评估"};
+const GRADES = ["小学一年级","小学二年级","小学三年级","小学四年级","小学五年级","小学六年级","初一","初二","初三","高一","高二","高三"];
+$("grades").innerHTML = GRADES.map(g => `<option value="${g}">`).join("");
+
+let sid = new URLSearchParams(location.search).get("student") || "";
+let server = null;          // the profile as last loaded
+let exams = [];             // editable copy
+let edits = new Map();      // concept name -> {mastery?, delete?, subject?}
+let dirty = false;
+
+function setStatus(text, cls) { const el = $("status"); el.textContent = text; el.className = "status " + (cls || ""); }
+function markDirty() {
+  dirty = true; $("save").disabled = false; $("discard").disabled = false;
+  setStatus("有未保存的修改", "dirty");
+}
+function clean() { dirty = false; $("save").disabled = true; $("discard").disabled = true; }
+
+async function api(path, opts) {
+  const r = await fetch(path, {headers: {"Content-Type": "application/json"}, ...opts});
+  if (!r.ok) { const e = new Error((await r.json().catch(() => ({}))).detail || r.statusText); e.status = r.status; throw e; }
+  return r.json();
+}
+
+async function loadList() {
+  const {students} = await api("/api/students");
+  if (!students.length) { setStatus("服务器没有开放任何学生档案", "err"); return; }
+  if (!students.some(s => s.id === sid)) sid = students[0].id;
+  $("student").innerHTML = students.map(s =>
+    `<option value="${esc(s.id)}"${s.id === sid ? " selected" : ""}>${esc(s.name || s.id)}${s.grade ? " · " + esc(s.grade) : ""} (${esc(s.id)})</option>`).join("");
+  await load();
+}
+
+async function load() {
+  server = await api(`/api/students/${encodeURIComponent(sid)}`);
+  exams = server.exams.map(e => ({...e, weak: (e.weak || []).join("、")}));
+  edits = new Map(); $("clearHist").checked = false;
+  history.replaceState(null, "", `?student=${encodeURIComponent(sid)}`);
+  $("back").href = "/";
+  render(); clean();
+  setStatus(`已载入 · 版本 ${server.version}${server.saved ? "" : " · 尚未保存过（显示的是初始档案）"}`, "ok");
+}
+
+function render() {
+  $("name").value = server.name || ""; $("grade").value = server.grade || "";
+  $("meta").textContent = `档案编号 ${server.id} · 版本 ${server.version}`;
+  renderExams(); renderConcepts(); renderHistory();
+}
+
+function renderExams() {
+  const el = $("exams");
+  if (!exams.length) { el.innerHTML = `<div class="empty">还没有考试成绩。</div>`; return; }
+  el.innerHTML = exams.map((e, i) => {
+    const pct = e.full > 0 && e.score !== "" ? Math.round(100 * e.score / e.full) + "%" : "";
+    return `<div class="exam" data-i="${i}">
+      <label>学科 <input data-k="subject" value="${esc(e.subject)}" maxlength="12"></label>
+      <label>考试 <input data-k="name" value="${esc(e.name)}" maxlength="20" placeholder="如 期中考试"></label>
+      <label>日期 <input data-k="date" type="date" value="${esc(e.date)}"></label>
+      <label>分数 <input data-k="score" type="number" min="0" step="0.5" value="${esc(e.score)}"></label>
+      <label>满分 <input data-k="full" type="number" min="1" step="1" value="${esc(e.full)}"></label>
+      <label>失分知识点 <input data-k="weak" value="${esc(e.weak)}" placeholder="如 因式分解、浮力"></label>
+      <span class="pct">${pct}</span>
+      <button class="ghost" data-del="${i}" aria-label="删除这次考试">删除</button></div>`;
+  }).join("");
+}
+$("exams").addEventListener("input", (ev) => {
+  const row = ev.target.closest(".exam"), k = ev.target.dataset.k;
+  if (!row || !k) return;
+  const e = exams[+row.dataset.i];
+  e[k] = (k === "score" || k === "full") ? (ev.target.value === "" ? "" : +ev.target.value) : ev.target.value;
+  if (k === "score" || k === "full") row.querySelector(".pct").textContent = e.full > 0 && e.score !== "" ? Math.round(100 * e.score / e.full) + "%" : "";
+  markDirty();
+});
+$("exams").addEventListener("click", (ev) => {
+  const i = ev.target.dataset.del;
+  if (i === undefined) return;
+  exams.splice(+i, 1); renderExams(); markDirty();
+});
+$("addExam").onclick = () => {
+  exams.push({subject: "", name: "", date: new Date().toISOString().slice(0, 10), score: "", full: 100, weak: ""});
+  renderExams(); markDirty();
+  $("exams").lastElementChild.querySelector("input").focus();
+};
+
+function srcText(c) {
+  if (c.source === "manual") return `<span class="src manual">老师设定</span>`;
+  if (c.source === "exercise") return `<span class="src">练习 ${c.correct}/${c.attempts} 对</span>`;
+  if (c.source === "exam") return `<span class="src">据考试失分推断</span>`;
+  return `<span class="src">未评估</span>`;
+}
+function levelOf(m, c) {
+  if (m == null) return "unknown";
+  if (m >= 0.8) return (c.attempts >= 3 || c.source === "manual" || edits.get(c.name)?.mastery != null) ? "mastered" : "partial";
+  return m >= 0.5 ? "partial" : "weak";
+}
+function renderConcepts() {
+  const el = $("concepts");
+  const list = server.concepts.slice();
+  for (const [name, e] of edits) if (e.added && !list.some(c => c.name === name))
+    list.push({name, subject: e.subject || "", mastery: null, source: null, attempts: 0, correct: 0, notes: []});
+  if (!list.length) { el.innerHTML = `<div class="empty">还没有知识点记录。做练习或在下面添加。</div>`; return; }
+  el.innerHTML = list.map(c => {
+    const e = edits.get(c.name) || {};
+    const m = "mastery" in e ? e.mastery : c.mastery;
+    const lvl = levelOf(m, c);
+    const pct = m == null ? "–" : (c.source === "exam" && !("mastery" in e) ? "≈" : "") + Math.round(m * 100) + "%";
+    const src = "mastery" in e ? (e.mastery == null ? `<span class="src">将清除</span>` : `<span class="src manual">老师设定（未保存）</span>`) : srcText(c);
+    return `<div class="concept ${lvl}${e.delete ? " removed" : ""}${Object.keys(e).length ? " changed" : ""}" data-name="${esc(c.name)}">
+      <span class="name">${esc(c.name)}</span>
+      <span class="muted">${esc(c.subject || "")}</span>
+      <span class="grow"><input type="range" min="0" max="100" value="${m == null ? 50 : Math.round(m * 100)}" aria-label="${esc(c.name)} 掌握度"
+               title="拖动即由老师设定掌握度"></span>
+      <span class="v">${pct}</span>
+      <span class="grow">${src}${c.notes && c.notes.length ? `<div class="muted">最近的错误：${esc(c.notes[c.notes.length - 1])}</div>` : ""}
+        <div class="muted">${LEVEL[lvl]}</div></span>
+      <span class="row" style="gap:4px">
+        <button class="ghost" data-act="clear" title="清除估计（变为未评估）">清除</button>
+        <button class="ghost" data-act="${e.delete ? "undo" : "delete"}">${e.delete ? "撤销" : "删除"}</button></span></div>`;
+  }).join("");
+}
+$("concepts").addEventListener("input", (ev) => {
+  if (ev.target.type !== "range") return;
+  const name = ev.target.closest(".concept").dataset.name;
+  edits.set(name, {...(edits.get(name) || {}), mastery: +ev.target.value / 100, delete: false});
+  const row = ev.target.closest(".concept");
+  row.querySelector(".v").textContent = ev.target.value + "%";
+  markDirty();
+});
+$("concepts").addEventListener("change", (ev) => { if (ev.target.type === "range") renderConcepts(); });
+$("concepts").addEventListener("click", (ev) => {
+  const act = ev.target.dataset.act; if (!act) return;
+  const name = ev.target.closest(".concept").dataset.name, e = edits.get(name) || {};
+  if (act === "clear") edits.set(name, {...e, mastery: null, delete: false});
+  if (act === "delete") edits.set(name, {...e, delete: true});
+  if (act === "undo") { const {delete: _, ...rest} = e; Object.keys(rest).length ? edits.set(name, rest) : edits.delete(name); }
+  renderConcepts(); markDirty();
+});
+$("addConcept").onclick = () => {
+  const name = $("newName").value.trim(); if (!name) { $("newName").focus(); return; }
+  const raw = $("newMastery").value.trim();
+  const e = {added: true, subject: $("newSubject").value.trim()};
+  if (raw !== "") e.mastery = Math.max(0, Math.min(100, +raw)) / 100;
+  edits.set(name, e);
+  $("newName").value = ""; $("newMastery").value = "";
+  renderConcepts(); markDirty();
+};
+
+function renderHistory() {
+  const h = server.history || [];
+  $("hist").innerHTML = h.length ? h.map(x => `<tr><td>${esc(x.t)}</td><td>${esc(x.concept)}</td>
+      <td class="${x.correct ? "ok" : "bad"}">${x.correct ? "答对" : "答错"}</td><td>${esc(x.question)}</td><td>${esc(x.answer)}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">还没有练习记录。</td></tr>`;
+}
+
+["name", "grade"].forEach(id => $(id).addEventListener("input", markDirty));
+$("clearHist").addEventListener("change", markDirty);
+
+$("save").onclick = async () => {
+  const bad = exams.find(e => !String(e.subject).trim() || e.score === "" || !(e.full > 0));
+  if (bad) { setStatus("每次考试都要填写学科、分数和满分", "err"); return; }
+  const body = {
+    version: server.version, name: $("name").value.trim(), grade: $("grade").value.trim(),
+    exams: exams.map(e => ({subject: e.subject.trim(), name: e.name.trim(), date: e.date, score: +e.score, full: +e.full,
+                            weak: String(e.weak).split(/[、,，;；\s]+/).filter(Boolean)})),
+    concepts: [...edits].map(([name, e]) => ({name, ...(e.delete ? {delete: true} : {}),
+      ...("mastery" in e && !e.delete ? {mastery: e.mastery} : {}), ...(e.added ? {subject: e.subject} : {})})),
+    clear_history: $("clearHist").checked,
+  };
+  $("save").disabled = true; setStatus("保存中…");
+  try {
+    server = await api(`/api/students/${encodeURIComponent(sid)}`, {method: "PUT", body: JSON.stringify(body)});
+    exams = server.exams.map(e => ({...e, weak: (e.weak || []).join("、")}));
+    edits = new Map(); $("clearHist").checked = false; render(); clean();
+    setStatus(`已保存 · 版本 ${server.version} · 正在上课的页面会自动更新`, "ok");
+  } catch (err) {
+    $("save").disabled = false;
+    if (err.status === 409) setStatus("保存失败：你编辑时档案被更新了（例如课堂上刚批改了一道练习）。请「放弃修改」重新载入后再改。", "err");
+    else setStatus("保存失败：" + err.message, "err");
+  }
+};
+$("discard").onclick = () => load().catch(e => setStatus("载入失败：" + e.message, "err"));
+$("reset").onclick = async () => {
+  if (!confirm(`确定把「${server.name || sid}」的档案恢复为初始档案吗？保存的成绩、掌握度和练习记录都会删除。`)) return;
+  try { server = await api(`/api/students/${encodeURIComponent(sid)}/reset`, {method: "POST"}); await load(); setStatus("已恢复为初始档案", "ok"); }
+  catch (err) { setStatus("恢复失败：" + err.message, "err"); }
+};
+$("student").onchange = async () => {
+  if (dirty && !confirm("有未保存的修改，切换学生会丢弃它们。继续吗？")) { $("student").value = sid; return; }
+  sid = $("student").value; await load();
+};
+window.addEventListener("beforeunload", (ev) => { if (dirty) { ev.preventDefault(); ev.returnValue = ""; } });
+
+// while nothing is being edited, follow changes made by a running lesson (graded exercises)
+setInterval(async () => {
+  if (dirty || !server || document.hidden) return;
+  try {
+    const now = await api(`/api/students/${encodeURIComponent(sid)}`);
+    if (now.version !== server.version) { server = now; exams = now.exams.map(e => ({...e, weak: (e.weak || []).join("、")}));
+      render(); setStatus(`已自动更新（课堂中有新的练习结果）· 版本 ${now.version}`, "ok"); }
+  } catch (_) { /* offline for a moment: try again next time */ }
+}, 5000);
+
+loadList().catch(e => setStatus("载入失败：" + e.message, "err"));
+</script>
+</body>
+</html>

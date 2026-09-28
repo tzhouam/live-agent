@@ -397,3 +397,51 @@ def test_a_reply_copying_an_example_is_composed_again():
     d2, llm2, _ = tt._director(fresh)
     asyncio.run(d2.decide(Utterance(uid="u8", speaker="user", text="杠杆为什么能省力？", t_end=now()), None))
     assert len(llm2.calls) == 1  # an answer in its own words is used as it is
+
+
+# ---------------------------------------------------------------- profile page (API) and shared store
+def _client(tmp_path, students="demo,e2e"):
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from live_agent.server.app import build_app
+    args = SimpleNamespace(config=str(tt.CFG), student="demo", students=students, student_store=str(tmp_path),
+                           record=False, generator="mock", log_dir=str(tmp_path / "logs"))
+    return TestClient(build_app(args))
+
+
+def test_the_profile_page_edits_a_profile_with_version_checks(tmp_path):
+    c = _client(tmp_path)
+    assert c.get("/profile").status_code == 200
+    assert [s["id"] for s in c.get("/api/students").json()["students"]] == ["demo", "e2e"]
+    assert c.get("/api/students/someone-else").status_code == 404  # not on the allow-list
+    p = c.get("/api/students/demo").json()
+    body = {"version": p["version"], "grade": "初三", "exams": [{"subject": "数学", "name": "期末", "score": 91, "weak": ["函数"]}],
+            "concepts": [{"name": "完全平方公式", "mastery": 0.7}, {"name": "光合作用", "delete": True},
+                         {"name": "一次函数", "subject": "数学"}]}
+    q = c.put("/api/students/demo", json=body).json()
+    assert q["grade"] == "初三" and q["version"] == p["version"] + 1 and [e["name"] for e in q["exams"]] == ["期末"]
+    cp = {x["name"]: x for x in q["concepts"]}
+    assert cp["完全平方公式"]["mastery"] == 0.7 and cp["完全平方公式"]["source"] == "manual"
+    assert "光合作用" not in cp and cp["一次函数"]["source"] is None and cp["函数"]["source"] == "exam"
+    assert c.put("/api/students/demo", json=body).status_code == 409  # stale version: refused, not overwritten
+    saved = StudentProfile.load("demo", tmp_path, SEEDS)
+    assert saved.grade == "初三" and saved.concepts["完全平方公式"].manual
+    r = c.post("/api/students/demo/reset").json()  # back to the seed (saved again with a newer version)
+    assert r["grade"] == "初二" and r["version"] > q["version"] and "光合作用" in {x["name"] for x in r["concepts"]}
+
+
+def test_sessions_and_the_page_share_one_profile_and_listeners_are_told(tmp_path):
+    from live_agent.student import ProfileStore
+    store = ProfileStore(tmp_path, SEEDS, ["demo"])
+    a, b = store.get("demo"), store.get("demo")
+    assert a is b and store.get("other") is None
+    told = []
+    store.subscribe("demo", lambda: told.append("session"))
+    a.record_exercise("勾股定理", True)
+    store.changed("demo")  # a page edit / another session: the open session hears about it
+    assert told == ["session"] and StudentProfile.load("demo", tmp_path, SEEDS).concepts["勾股定理"].attempts == 4
+    v = a.version
+    store.reset("demo")
+    assert store.get("demo") is a and a.version > v and a.concepts["勾股定理"].attempts == 3  # same object, seed data

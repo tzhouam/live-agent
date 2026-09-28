@@ -38,7 +38,7 @@ import re
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from live_agent.capability import CapabilityManifest, Status
@@ -267,6 +267,13 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
     app.state.shared_gen = None
     app.state.session_lock = asyncio.Lock()
+    from live_agent.student import ProfileStore
+
+    # one shared copy per student for sessions and the profile page; only ids on the allow-list are reachable
+    profiles = ProfileStore(Path(args.student_store), STUDENT_SEEDS,
+                            [x for x in (args.students or args.student).split(",")
+                             if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", x)])
+    app.state.profiles = profiles
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -346,6 +353,52 @@ def build_app(args: argparse.Namespace) -> FastAPI:
     @app.get("/")
     async def index() -> HTMLResponse:
         return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
+
+    # ---------------------------------------------------------------- student profiles (personal data)
+    @app.get("/profile")
+    async def profile_page() -> HTMLResponse:
+        return HTMLResponse((STATIC / "profile.html").read_text(encoding="utf-8"))
+
+    def _profile_or_404(student_id: str):
+        p = profiles.get(student_id)
+        if p is None:
+            raise HTTPException(404, "unknown student")
+        return p
+
+    def _full(p) -> dict:
+        return {**p.view(), "saved": profiles.exists(p.student_id)}
+
+    @app.get("/api/students")
+    async def list_students() -> dict:
+        out = []
+        for sid in profiles.allowed:
+            p = profiles.get(sid)
+            out.append({"id": sid, "name": p.name, "grade": p.grade, "saved": profiles.exists(sid)})
+        return {"students": out}
+
+    @app.get("/api/students/{student_id}")
+    async def get_student(student_id: str) -> dict:
+        return _full(_profile_or_404(student_id))
+
+    @app.put("/api/students/{student_id}")
+    async def put_student(student_id: str, body: dict = Body(...)) -> dict:
+        """Edit name / grade / exams / concept estimates. ``version`` must be the one the editor loaded: a lesson
+        may have graded an exercise meanwhile, and that result must not be overwritten silently."""
+        p = _profile_or_404(student_id)
+        if body.get("version") != p.version:
+            raise HTTPException(409, "the profile changed since it was loaded (reload to see the latest)")
+        p.update_basics({k: body[k] for k in ("name", "grade", "exams") if k in body})
+        p.edit_concepts(body.get("concepts"))
+        if body.get("clear_history"):
+            p.history = []
+        profiles.changed(student_id)
+        return _full(p)
+
+    @app.post("/api/students/{student_id}/reset")
+    async def reset_student(student_id: str) -> dict:
+        """Delete the saved profile: back to the example seed (or empty)."""
+        _profile_or_404(student_id)
+        return _full(profiles.reset(student_id))
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
@@ -433,11 +486,12 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             student_id = str(hello.get("student") or args.student)
             if student_id not in allowed:
                 student_id = args.student
-            if mode == "private" and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", student_id) and student_id in allowed:
-                # personal data: only a private session reads or updates the saved profile
-                from live_agent.student import StudentProfile
-
-                orch.student = StudentProfile.load(student_id, Path(args.student_store), STUDENT_SEEDS)
+            if mode == "private" and student_id in allowed:
+                # personal data: only a private session reads or updates the saved profile (the shared copy)
+                orch.student = profiles.get(student_id)
+                orch.profile_store = profiles
+                if orch.student is not None:
+                    profiles.subscribe(student_id, orch.on_profile_edited)
             if getattr(judge, "vlm", None) is not None:  # the camera focus check uses the judge's VLM (opt-in)
                 from live_agent.attention import AttentionMonitor
 
@@ -555,7 +609,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                     orch.camera_off()
                 elif t == "profile" and orch.student is not None and isinstance(data.get("profile"), dict):
                     orch.student.update_basics(data["profile"])  # name, grade, exams (mastery comes from exercises)
-                    orch.student.save()
+                    orch._save_profile()
                     orch._emit_profile()
                 elif t == "video_codec" and data.get("codec") == "jpeg":
                     transport.video_codec = "jpeg"  # the page failed to decode H.264
@@ -568,6 +622,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 if worker is not None:
                     worker.cancel()
                 if orch is not None:
+                    if orch.student is not None:
+                        profiles.unsubscribe(orch.student.student_id, orch.on_profile_edited)
                     await orch.stop()
                 if transport.recorder is not None:
                     await asyncio.to_thread(transport.recorder.close)  # mux video + audio

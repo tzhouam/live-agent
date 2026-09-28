@@ -172,6 +172,7 @@ class Orchestrator:
         self.image_maker = None  # board_images.ImageMaker (illustrations), set by the app when configured
         self.figure_dir = None  # where exact plots are drawn (board_plot); set by the app
         self.student = None  # student.StudentProfile (private sessions): adapts lessons, records exercise results
+        self.profile_store = None  # student.ProfileStore shared with the profile page (set by the app)
         self._lesson_mistakes: list[str] = []  # this lesson's wrong answers, addressed by the next section
         self._exercises = 0
         self._shown_exercise = None  # the exercise the page was last told about
@@ -1058,7 +1059,7 @@ class Orchestrator:
         if self.student is not None:
             change = self.student.record_exercise(ex.concept, r["correct"], question=ex.question, answer=utt.text,
                                                   misconception=r.get("misconception") or "", subject=ex.subject)
-            self.student.save()
+            self._save_profile()
         if not r["correct"] and (ex.source == "lesson" or d.lesson_title):
             self._lesson_mistakes.append(ex.concept + (f"（{r['misconception']}）" if r.get("misconception") else ""))
         self.log.emit(EventType.LESSON, now(), stage="exercise_graded", concept=ex.concept, correct=r["correct"],
@@ -1119,7 +1120,7 @@ class Orchestrator:
                                                            if s.board is None or s.board.key not in (ex.key, ex.key + "a"))
         if self.student is not None:
             n += sum(self.student.purge(x) for x in terms)
-            self.student.save()
+            self._save_profile()
             self._emit_profile()  # the page drops what it showed
         self._lesson_mistakes = [m for m in self._lesson_mistakes if not any(x in m for x in terms)]
         return n
@@ -1141,6 +1142,17 @@ class Orchestrator:
         self._make_figures()
         self.log.emit(EventType.LESSON, now(), stage="answer_board", title=b.title, board=b.key,
                       seconds=round(now() - t0, 2), lines=len(waiting))
+
+    def _save_profile(self) -> None:
+        """Save through the shared store (other sessions and the profile page see the change), else directly."""
+        if self.profile_store is not None:
+            self.profile_store.changed(self.student.student_id, source=self.on_profile_edited)
+        else:
+            self.student.save()
+
+    def on_profile_edited(self) -> None:
+        """Someone else (the profile page, another session) changed this student's profile: refresh the page."""
+        self._emit_profile()
 
     def _emit_profile(self) -> None:
         """The page gets the profile view directly; the durable log records only that it changed."""
@@ -1203,7 +1215,7 @@ class Orchestrator:
                 d.add_lesson_lines(lines)
                 if self.student is not None and outline.sections[i].get("concepts"):
                     self.student.mark_taught(outline.sections[i]["concepts"])
-                    self.student.save()
+                    self._save_profile()
                 self._make_figures()
                 self._spawn(self._judge_figures(planner, lines), "figure_judgement")
                 ex = next((ln.exercise for ln in lines if getattr(ln, "exercise", None) is not None), None)
@@ -1319,7 +1331,7 @@ class Orchestrator:
             if self.student is not None and (decision or {}).get("profile_update"):
                 changed = self.student.apply_update(decision["profile_update"])
                 if changed:
-                    self.student.save()
+                    self._save_profile()
                     self.log.emit(EventType.LESSON, now(), stage="profile_updated", changed=changed)
                     self._emit_profile()
         self._drain_director_events(now())  # before the erasure, so its redaction covers these events
