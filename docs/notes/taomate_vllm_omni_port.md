@@ -272,7 +272,14 @@ stepwise RPC, swaps every media-bearing chunk result for a shallow copy without 
 `async_output_id`; the original is packed on the thread and delivered as `OUTPUT_READY`, which the
 engine's step streaming already awaits per item. The reply stays synchronous (scheduler bookkeeping
 unchanged); aborted requests drop the placeholder's pending output. Unit-tested (detachment,
-knob); expected gain 0.15-0.18 s per request. The sibling's launch-time split (its measurement,
+knob); expected gain 0.15-0.18 s per request. First GPU run (13:52) failed at the first chunk:
+"Unexpected response type for execute_step: AsyncDiffusionOutput" -- in step execution the
+executor dequeued replies straight from the worker result queue (its result pump ran only in
+request mode), so the packing thread's OUTPUT_READY message landed where the stepwise envelope
+was expected; that is why the worker gate existed. Fixed in 7bf16aeb3: the executor starts its
+pumps and reads synchronous replies from the pump buffer whenever asynchronous outputs can appear
+(request mode, or step execution with the knob); validation re-queued, deploy config keeps the
+knob off until it passes. The sibling's launch-time split (its measurement,
 12 requests at persona length): 34-frame student forwards are GPU-bound (0.68-0.71 s wall,
 0.41-0.43 s host issue), the 17-frame forwards and the commit forwards are launch-bound; student
 CUDA graphs would save only 0.15-0.2 s and are not pursued; the LoRA delta is about 15-20 ms of
