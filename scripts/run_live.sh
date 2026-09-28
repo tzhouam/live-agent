@@ -6,6 +6,7 @@
 #   scripts/run_live.sh packed      # TaoMate-H3 (colocated teacher) + all helper models on 4 GPUs
 #   scripts/run_live.sh full        # TaoMate-H3 (6 GPUs) + Qwen3-8B / Qwen3-VL-8B / Qwen3-ASR (1 GPU)
 #   scripts/run_live.sh omni        # TaoMate-H3 on vLLM-Omni USP4 (4 GPUs) + the helper models (1 GPU)
+#                                   OMNI_GPUS=2: USP2 on 2 GPUs instead (FP8 + CUDA-graph teacher, D-036)
 #
 # Options (env): PORT (default 8200), HOST (default 127.0.0.1), HOURS (GPU reservation, default 2h),
 #                DIRECTOR (closed_loop | open_loop), ALLOW_UNCALIBRATED (1 = accept `documented` actions; default 1
@@ -136,16 +137,18 @@ case "$mode" in
     [ -x "$OMNI_DIR/.venv/bin/vllm" ] || { echo "vLLM-Omni venv not found: $OMNI_DIR/.venv"; exit 1; }
     for p in 8101 8102 8103 8104 "$OMNI_PORT"; do port_free $p || { echo "port $p already in use (models running?)"; exit 1; }; done
     : > "$HELPER_LOG"; : > "$OMNI_LOG"; : > "$SERVER_LOG"
-    echo "[run_live] omni: helper models on 1 GPU (log $HELPER_LOG), vLLM-Omni TaoMate-H3 on 4 GPUs (log $OMNI_LOG) ..."
+    OMNI_GPUS=${OMNI_GPUS:-4}  # 4: USP4 (default); 2: USP2 with FP8 linears and CUDA-graph teacher (D-036)
+    case "$OMNI_GPUS" in 2|4) ;; *) echo "OMNI_GPUS must be 2 or 4"; exit 1;; esac
+    echo "[run_live] omni: helper models on 1 GPU (log $HELPER_LOG), vLLM-Omni TaoMate-H3 on $OMNI_GPUS GPUs (log $OMNI_LOG) ..."
     hsel=(--gpus 1); [ -n "${HELPER_GPU:-}" ] && hsel=(--gpu-ids "$HELPER_GPU")
     gpu run "${hsel[@]}" --timeout "$HOURS" --note "live-agent helper models (run_live.sh)" -- \
       scripts/serve_models.sh > "$HELPER_LOG" 2>&1 &
     pids+=($!)
-    osel=(--gpus 4); [ -n "${GPU_IDS:-}" ] && osel=(--gpu-ids "$GPU_IDS")
+    osel=(--gpus "$OMNI_GPUS"); [ -n "${GPU_IDS:-}" ] && osel=(--gpu-ids "$GPU_IDS")
     repo=$PWD
-    gpu run "${osel[@]}" --timeout "$HOURS" --note "live-agent vLLM-Omni TaoMate-H3 USP4 (run_live.sh)" -- \
+    gpu run "${osel[@]}" --timeout "$HOURS" --note "live-agent vLLM-Omni TaoMate-H3 USP$OMNI_GPUS (run_live.sh)" -- \
       env -C "$OMNI_DIR" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/vllm serve "$OMNI_MODEL" --omni \
-        --trust-remote-code --deploy-config "$repo/configs/vllm_omni/taomate_h3_usp4_jit.yaml" \
+        --trust-remote-code --deploy-config "$repo/configs/vllm_omni/taomate_h3_usp${OMNI_GPUS}_jit.yaml" \
         --lora-path "$repo/.cache/models/TaoMate-H3" --host 127.0.0.1 --port "$OMNI_PORT" > "$OMNI_LOG" 2>&1 &
     pids+=($!)
     t0=$SECONDS
