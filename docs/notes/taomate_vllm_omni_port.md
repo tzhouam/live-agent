@@ -193,8 +193,16 @@ timing instrumentation, ten requests averaged 4.98 s between request starts (ran
 4.70-5.10 s) for 4.958 s of content; requests that also applied a prompt update took
 5.2-5.3 s (re-encode 0.13-0.27 s).
 
+Drift run (measured locally, 10:00, worktree 2df43b386): 100 requests with a different prompt
+(3-60 words) every request, no instrumentation: 5.14 s per request on average (5.09 s once
+warm, requests 20-100), 20 s of drift over 101 requests, i.e. a client buffer of one second
+lasts 5-8 requests at that update rate. Four teacher graphs were captured live for a 3-token
+prompt (the range then started at 8 tokens; the config now starts at 1). A first attempt of
+this run had every graph disabled by an over-strict kwargs guard from the Codex fixes
+(5.66 s per request with the eager teacher); fixed, with a test over the real teacher kwargs.
+
 Status: **real time on two GPUs at the line** (real-time factor 1.00 with a constant prompt,
-1.04-1.07 on requests that change the prompt), code and CPU tests done (35 tests), recipe
+1.03 sustained with a prompt change every request), code and CPU tests done (35 tests), recipe
 section "Two GPUs (USP2)" holds the numbers, `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml`
 is the two-GPU deployment; Codex round taomate_port2 requested. For sustained real time with
 a prompt change every request another 5-6% is needed; levers by expected gain per effort
