@@ -332,3 +332,18 @@ def test_an_answer_drops_the_pending_reminder_and_a_cut_first_line_reopens_later
     d.remind_exercise()  # after a side question: queued, not yet spoken
     asyncio.run(orch.on_user_utterance(Utterance(uid="u5", speaker="user", text="B", t_end=now())))
     assert not any(s.line.startswith("我们回到刚才") for s in d.queue)
+
+
+def test_the_plan_stays_on_the_requested_topic(tmp_path):
+    # seen live: a 勾股定理 lesson got a "core" section on 完全平方公式 because the profile listed it as weak
+    reply = {"title": "勾股定理", "sections": [
+        {"title": "前置一", "role": "prerequisite", "concepts": ["整式乘法"], "depth": "review"},
+        {"title": "前置二", "role": "prerequisite", "concepts": ["完全平方公式"], "depth": "core"},
+        {"title": "定理", "role": "main", "concepts": ["勾股定理"], "depth": "new"},
+        {"title": "晚到的前置", "role": "prerequisite", "concepts": ["平方根"], "depth": "review"},
+        {"title": "应用", "concepts": ["勾股定理"], "depth": "new"}], "intro": ["今天学勾股定理。"]}
+    llm = ScriptedLLM(lambda m: json.dumps(reply, ensure_ascii=False))
+    outline = asyncio.run(LessonPlanner(llm, name="林老师", bio="").outline("勾股定理", profile=profile(tmp_path)))
+    assert [s["title"] for s in outline.sections] == ["前置一", "定理", "应用"]  # one prerequisite, first only
+    prompt = llm.calls[0][-1]["content"]
+    assert "不改变「讲什么」" in prompt and "不要为了补弱点塞进这节课" in prompt

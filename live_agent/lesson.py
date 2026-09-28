@@ -33,11 +33,16 @@ OUTLINE_PROMPT = """你是中学老师「{name}」，要给学生上一节关于
 {{"title": 课程标题（不超过 16 字）, "plan_note": 一句话说明你根据档案怎么安排的（给老师自己看，不念出来）,
  "sections": [{{"title": 小节标题（不超过 14 字）, "goal": 这一节要讲清楚什么（一句话）,
    "concepts": [这一节讲的概念，档案里已有的概念用完全相同的名字，每个不超过 8 字],
+   "role": "main"（「{topic}」本身的内容）或 "prerequisite"（不先会就学不了「{topic}」的前置知识）,
    "depth": "review"（已掌握，一两句带过）或 "core"（薄弱或考试失分，重点讲、放慢、多举例）或 "new"（新内容，正常讲）,
    "exercise": true 或 false（讲完这一节出一道练习）}}],
  "intro": [开场白，2-3 句]}}
-要求：3-5 个小节，由浅入深；讲解深度、用词和例子符合学生的年级；学生已掌握的前置概念只安排简短复习或不讲，薄弱的、考试失分的概念多安排时间；
-整节课 1-3 道练习，放在薄弱概念和重点小节后面；没有档案时按{default_grade}的一般水平讲。
+要求：3-5 个小节，由浅入深，全部围绕「{topic}」；讲解深度、用词和例子符合学生的年级。
+因材施教只改变「怎么讲」，不改变「讲什么」：
+- 不要加入和「{topic}」无关的内容，档案里其他薄弱的知识点（哪怕考试丢过分）不要为了补弱点塞进这节课；
+- 前置知识最多 1 节、放在最前面，只有学生这个前置知识薄弱时才讲，否则不单独成节；
+- 学生对「{topic}」本身薄弱或考试失分：放慢、多举例（core）；已经掌握：讲得更快、例题更有挑战，但仍然讲「{topic}」，不要换话题。
+整节课 1-3 道练习，都考「{topic}」本身，放在重点小节后面；没有档案时按{default_grade}的一般水平讲。
 开场白先说今天学什么，再说分几部分讲，知道学生情况时可以自然地提一句（如「上次考试这里丢了分，今天重点讲」）；每句开场白不超过 {chars} 个汉字。
 学生之前的对话（只作参考）：{context}"""
 
@@ -261,9 +266,18 @@ class LessonPlanner:
             default_grade=(profile.grade if profile is not None and profile.grade else "初中"))}],
             max_tokens=900, temperature=0.4, json_mode=True)
         d = parse_json(raw)
-        sections = []
+        sections, prereq = [], 0
         for s in d.get("sections") or []:
             if isinstance(s, dict) and s.get("title"):
+                # the profile adapts how the topic is taught, never what: off-topic sections are dropped (seen live:
+                # a 勾股定理 lesson got a "core" section on 完全平方公式 because the profile listed it as weak), and at
+                # most one prerequisite section is kept
+                role = s.get("role") if s.get("role") in ("main", "prerequisite") else "main"
+                if role == "prerequisite":
+                    prereq += 1
+                    if prereq > 1 or sections:
+                        continue
+                s["role"] = role
                 s["concepts"] = [str(c).strip()[:12] for c in (s.get("concepts") or []) if str(c).strip()][:4]
                 s["depth"] = s.get("depth") if s.get("depth") in DEPTHS else "new"
                 s["exercise"] = bool(s.get("exercise"))
@@ -289,6 +303,7 @@ class LessonPlanner:
             if profile.grade:
                 adapt.append(f"学生是{profile.grade}，用这个年级听得懂的说法和例子。")
             adapt.append(f"学生对本节概念的掌握：{profile.concept_notes(sec.get('concepts') or [])}。")
+            adapt.append(f"只讲本节和「{outline.title}」的内容；学生其他薄弱的知识点不要展开，需要用到时一句话带过。")
         if mistakes:
             adapt.append(f"学生刚才的练习做错了：{'；'.join(mistakes[-2:])}。本节第一条要点先用一两句换个说法把这个错误纠正过来。")
         want_ex = bool(sec.get("exercise"))
