@@ -139,11 +139,56 @@ margin like USP4's. Levers implemented in the worktree (commit after 37edffce8):
 - Remaining fixed cost: VAE decode 1.26 s per request (7-latent windows, stride 5: 14
   latents decoded per 10 new ones, exact parity with the release's incremental decode).
 
-Status: code and CPU tests done (`tests/diffusion/models/taomate_h3/test_taomate_h3_cuda_graph.py`,
-28 tests pass), `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml` written; the optimized
-USP2 run is **not measured yet** because the shared GPUs were queued (FCFS with partial
-allocation: releasing the baseline server's two cards would have parked them in a queued
-job waiting hours for the rest), and swapping the server inside the reservation was not
-permitted. Next: start the FP8 + graph server with `--wait`, capture five requests, record
-the stage breakdown here and in the recipe; then decide on further levers (VAE decode on a
-side stream, text-encoder cost per prompt update at TP2).
+Results (measured locally, 2026-09-28, worktree commits a53367f52 and later, 480x864,
+GPUs 1 and 4, five requests, constant 32-token prompt, rank 0 with device syncs):
+
+| Stage | 34-frame phase | 17-frame phase |
+| --- | --- | --- |
+| audio teacher (per request, 9 graph replays) | 0.35 s (0.78-0.84 eager) | - |
+| 3 student forwards, FP8 | 0.67-0.70 s (0.77-0.81 BF16) | 0.42-0.45 s |
+| clean-commit forward | 0.24-0.26 s | 0.15-0.17 s |
+| video VAE decode, 2 x 480 px tiles | 0.21-0.22 s (0.35-0.37 with 256 px tiles) | 0.10 s |
+| phase preparation | 0.01-0.03 s | 0.00 s |
+
+Per request: 4.70 s of GPU time; 4.91-4.97 s of wall time between request ends (client:
+4.92-4.95 s between the first chunks of consecutive requests) for 4.958 s of content, so
+**real-time factor 0.99-1.00** (was 1.27). Real time is reached with no headroom; the
+client needs about one second of playback buffer. Contributions: FP8 -0.4 s, teacher
+graphs -0.45 s, 480 px decoder tiles -0.5 s per request (each measured as the stage
+difference between runs; not additive-exact).
+
+Findings on the way (all measured locally):
+
+- **Teacher graphs are keyed by the prompt's token count.** The H3 attention treats the
+  valid rows of a document as a prefix whose length is a Python int of the forward
+  (`max_seqlen_q`), so a fixed text length would need extra rows inside the prefix
+  (attended, so not exact). Consequence: every new prompt length captured three graphs
+  (first request, later requests with 476 or 478 audio rows) inside the stream, 0.7 s
+  each plus 0.5-0.9 s of slow commits while the allocator regrows: 2.1 s before a
+  session's first chunk and 2-3 s per prompt update with a new length. Fix: the load-time
+  warmup now runs four requests (the three-request audio-latent cycle 198/198/199) and
+  captures the graphs of a configured token-count range
+  (`taomate_h3_teacher_graph_text_lengths: "8-96"`, about 270 graphs, ~5 MB and ~0.5 s
+  each; effect on the stream to be confirmed in the next run, the GPUs were queued).
+- **Prompt updates were applied with the first prompt's length.** The step runner pads
+  each request's prompt embeddings to the length it recorded (`txt_seq_lens`) and writes
+  the padded tensor back into the request state, so a shorter new prompt reached the next
+  request zero-padded (rows tagged as text) and a longer one would have been truncated;
+  the token tags stayed those of the old prompt. Found because the teacher captured no
+  new graph after updates of 28/23/21 tokens. Fix in the TaoMate prompt handler: record
+  the new length and tags on the state when the update is applied (CPU test against the
+  real `InputBatch`).
+- Prompt re-encode on the workers (Qwen3-VL, TP2): 0.13-0.20 s for 21-32 tokens, paid
+  inside the phase in which the update arrives.
+- Session-close `empty_cache` removed (the next session paid cudaMalloc again for every new
+  history size in its first request); slow commits now only follow graph captures.
+- Rejected: LingBot-style reuse of the last denoise step's K/V (last student sigma 0.853).
+  Remaining fixed costs: VAE decode 0.87 s per request at 480 px tiles; commit forwards
+  0.82 s per request.
+
+Status: code and CPU tests done (35 tests), recipe section "Two GPUs (USP2)" holds the
+numbers, `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml` is the two-GPU deployment. Open:
+confirm on GPU that the load-time range capture removes the in-stream captures (server
+queued behind the demo's five GPUs at the time of writing); headroom is ~1%, so the next
+lever if more margin is wanted is the commit path (preallocated KV history buffers, or a
+commit forward restricted to the new rows' K/V) or a shorter VAE window.
