@@ -225,8 +225,11 @@ class VllmOmniH3Generator(Generator):
         decoder = self._decoder
         if decoder is None:
             return
-        await asyncio.to_thread(decoder.push, data)  # ~40-80 ms of H.264/AAC decode: off the event loop
-        frame_start, video, audio = decoder.take()
+        def decode():  # decode and stack (~42 MB of frames per chunk): both off the event loop
+            decoder.push(data)
+            return decoder.take()
+
+        frame_start, video, audio = await asyncio.to_thread(decode)
         if epoch != self._session:
             return  # reset while decoding
         local, phase = divmod(index, PHASES)

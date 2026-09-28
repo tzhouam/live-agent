@@ -692,7 +692,7 @@ class Orchestrator:
         count = getattr(self.judge, "count_props", None)
         if not expected or count is None or k in self.dropped or self.director.mode == DirectorMode.OPEN_LOOP:
             return
-        chunks, shown, total = self._presented_media(k)
+        chunks, shown, total = await asyncio.to_thread(self._presented_media, k)  # large frame copies
         if not chunks or (total and shown / total < 0.5):
             return
         try:
@@ -742,7 +742,7 @@ class Orchestrator:
         script = self.scripts.get(k)
         if script is None or not script.checks or self.director.mode == DirectorMode.OPEN_LOOP:
             return
-        chunks, shown, total = self._presented_media(k)
+        chunks, shown, total = await asyncio.to_thread(self._presented_media, k)  # large frame copies
         if total and shown / total < 0.5:
             # presentation of the visual evidence cannot be established: abstain (no verdict)
             self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["frames_not_presented"],
