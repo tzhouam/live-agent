@@ -1,0 +1,14 @@
+tag: taomate_port2
+date_utc: 2026-09-28T01:21:00Z
+repo_head: 29fc7dd3925ac76d54c8f7ea61119f5eaa57be2b
+repo_dirty_files: 6
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.156.0
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/taomate_port2_review.md - < docs/reviews/taomate_port2_prompt.md
+exit_code: 0
+thread_id: 01a0e583-4877-74e2-a8ec-32736fa1defa
+rollout: /home/zhoutaichang/.codex/sessions/2026/09/28/rollout-2026-09-28T08-56-21-01a0e583-4877-74e2-a8ec-32736fa1defa.jsonl
+rollout_models:       5 "model":"gpt-6-sol" 
+inlined_files: /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/cuda_graph.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/transformer.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/audio_teacher.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/interaction/modality_handlers/taomate_h3_prompt.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/models/taomate_h3/pipeline.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/interaction/modality_handlers/prompt.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/diffusion/worker/input_batch.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/tests/diffusion/models/taomate_h3/test_taomate_h3_cuda_graph.py /data/zhoutaichang/worldmodel/vllm-omni-taomate/vllm_omni/deploy/taomate_h3_usp2_realtime.yaml /data/zhoutaichang/worldmodel/vllm-omni-taomate/recipes/TaoLiveAIGC/TaoMate-H3.md
+prompt_sha256: 4fbedec1cb405d41597484c436fa367945b917b1f445514ac41a906aaec056ac

@@ -303,3 +303,17 @@ work), so the device is saturated end to end and nothing overlaps. Left: the twi
 execution, fix 7bf16aeb3 under GPU validation) and the LoRA delta's device time (0.2-0.3 s,
 a merged FP8 student weight set, twin's item). Those two cover the 0.1 s per request that
 persona-length prompts with a change every request still lack (5.05 s per 4.958 s).
+
+### `step_async_output` validated on two GPUs (2026-09-28 14:00)
+
+Measured locally (GPUs 0,1, ten 32-token requests, timings on): 4.78 s between consecutive
+requests' first chunks (range 4.61-4.84 s; 4.98 s without the knob), **real-time factor 0.96**;
+the prompt-update session ran 4.75-4.90 s per request with the content changing per update; no
+warnings, and the executor's result pump ran in step mode. The phase totals fell by 0.05-0.1 s
+each while the inter-phase gap stayed at 0.05 s, so the removed 42 MB shared-memory copy had also
+been slowing the following phase's host side. The two-GPU deploy config turns the knob on
+(worktree 2f561c16b, recipe 19ce24fcf). Persona-length prompts are not re-measured with it yet
+(real-time factor 1.02 before it; the sibling session owns those runs and was asked to include
+the knob); expected about 0.98 (estimate). Remaining lever with a measured basis: the LoRA
+delta's device time, about 0.25 s per request, recoverable only by a merged FP8 student weight
+set (unbiased but not exact; owner decision).
