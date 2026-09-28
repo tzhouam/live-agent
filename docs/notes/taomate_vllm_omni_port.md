@@ -279,13 +279,16 @@ CUDA graphs would save only 0.15-0.2 s and are not pursued; the LoRA delta is ab
 device time per forward (0.2-0.3 s per request), so the merged FP8 student set is worth more than
 first estimated.
 
-Status: **real time on two GPUs for short prompts only** (real-time factor 1.00 with a
-constant 3-60 word prompt, 1.03 with a short prompt change every request, 1.06 with
-persona-length prompts), code and CPU tests done (35 tests), recipe
-section "Two GPUs (USP2)" holds the numbers, `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml`
-is the two-GPU deployment; Codex round taomate_port2 requested. For sustained real time with
-a prompt change every request another 5-6% is needed; levers by expected gain per effort
-(estimates): frame transport off the step loop (0.2 s/request, runner change), hiding or
-graphing the prompt re-encode (0.13-0.27 s/update), a second FP8 weight set with the LoRA
-merged for the student (0.2-0.25 s/request, small numeric change), CUDA graphs for the
-launch-bound student forwards over preallocated KV buffers (up to 0.9 s/request, large).
+Status (session ffe817, 2026-09-28 12:50): **real time on two GPUs for short prompts only**
+(real-time factor 1.00 with a constant short prompt, 1.02 with a short prompt change every
+request, 1.02-1.06 with persona-length prompts: 5.05 s per request with 64-token text buckets,
+fused LoRA hooks, AdaLN cache off and text-encoder graphs, measured locally). Done this round:
+text-encoder CUDA graphs (prompt re-encode 0.15-0.27 s -> 0.048 s), 64-token text buckets
+(-0.26 s at persona length), host preparation of the next phase overlapped with the decode
+(prepare 0.01-0.04 -> 0.001-0.02 s per phase). Dropped after measurement: student CUDA graphs
+(the 34-frame forwards are device-bound; 0.15-0.2 s at most), attention kernel (already FA3),
+LoRA merged into FP8 (twin's check: unbiased but re-rolls the FP8 noise; held pending the hook
+cost). Pending measurement: `taomate_h3_decode_overlap` (video decode on a second stream under
+the launch-bound commit forward, up to 0.1 s per phase) and the twin's `step_async_output`
+(inter-phase gap 0.06 s per phase). Remaining budget to real time at persona length with a
+prompt change every request: about 0.1 s per request beyond those two if both deliver.
