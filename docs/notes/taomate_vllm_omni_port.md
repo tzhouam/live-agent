@@ -239,6 +239,16 @@ sibling session live-agent-13 (same worktree): it owns the prompt re-encode, tex
 device timing, persona runs and student graphs; this session owns the LoRA/FP8 path and the
 frame transport.
 
+No-LoRA timing run (measured locally 12:05-12:10, GPUs 0,1, same config, base H3 without the
+adapter): 3 student forwards 0.62 s per 34-frame phase (0.67-0.70 with the pre-fusion hooks),
+commit 0.23 s (0.25), 4.70 s wall per request against 4.95 s. The LoRA path cost about 0.25 s
+per request before the sibling's addmm fusion, so an estimated 0.12-0.18 s remains that only a
+merged FP8 student weight set could recover (unbiased but not exact, see above). That is about
+half of the persona-length deficit (0.35 s per request); the other half needs the frame transport
+or the student forwards themselves. Note on the sibling's new device-time field: start/end CUDA
+events on one stream span GPU idle gaps as well, so gpu == wall (as measured) does not separate
+device time from launch overhead; a profiler trace or an unsynchronized CPU launch timer is needed.
+
 Status: **real time on two GPUs for short prompts only** (real-time factor 1.00 with a
 constant 3-60 word prompt, 1.03 with a short prompt change every request, 1.06 with
 persona-length prompts), code and CPU tests done (35 tests), recipe
