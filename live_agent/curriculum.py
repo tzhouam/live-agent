@@ -240,8 +240,12 @@ class Curriculum:
             if subj.get("subject") != subject:
                 continue
             e = (subj.get("grade_topics") or {}).get(str(g)) or {}
+            nc = _norm(chapter)
             for t in e.get("topics") or []:
-                if _norm(t).startswith(_norm(chapter)) and chapter.strip():
+                nt = _norm(t)
+                close = nc and (nt.startswith(nc) or nc in nt or (len(nc) >= 6 and nt in nc)
+                                or len(_bigrams(nc) & _bigrams(nt)) / max(len(_bigrams(nc)), 1) >= 0.8)
+                if close:  # the model copied (a close form of) a real chapter; anything else is dropped
                     stage, domain, reqs = self._requirements(subj, g, _norm(topic), t)
                     prereq = {(_norm(k)): v for k, v in (subj.get("prerequisites") or {}).items()}
                     return Match(subject, g, t, stage, domain, reqs, prereq.get(_norm(t)) or [], e.get("basis", ""),
