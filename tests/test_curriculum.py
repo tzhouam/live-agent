@@ -77,3 +77,46 @@ def test_the_locator_maps_a_topic_to_a_chapter_and_drops_invented_ones(tmp_path)
     assert [m.topic for m in asyncio.run(c.locate(llm, "根号的化简", 8))] == ["二次根式"]  # cached: no second call
     assert len(llm.calls) == 1
     assert asyncio.run(c.locate(llm, "勾股定理", 8))[0].topic == "勾股定理" and len(llm.calls) == 1  # exact: no model
+
+
+def test_stage_grade_forms_and_english_whole_words(tmp_path):
+    assert [parse_grade(x) for x in ["初中二年级", "高中一年级", "九年级", "十年级", "二年级下", "幼儿园"]] == [8, 10, 9, 10, 2, None]
+    eng = {"subject": "英语", "grades": [9, 12], "sources": [], "stages": [],
+           "grade_topics": {"9": {"topics": ["Smart Learning"], "basis": "textbook"}, "12": {"topics": ["Art"], "basis": "textbook"}}}
+    (tmp_path / "english.json").write_text(json.dumps(eng, ensure_ascii=False), encoding="utf-8")
+    c = Curriculum.load(tmp_path)
+    assert [(m.topic, m.grade) for m in c.lookup("art", grade=9)] == [("Art", 12)]
+
+
+def test_no_grade_warning_for_a_concept_taught_in_several_grades_or_within_senior_high(tmp_path):
+    d = dict(MATH, grade_topics={**MATH["grade_topics"], "4": {"topics": ["三角形"], "basis": "textbook"},
+                                  "8": {"topics": ["三角形", "勾股定理"], "basis": "textbook"},
+                                  "11": {"topics": ["圆锥曲线的方程"], "basis": "textbook"}})
+    (tmp_path / "math.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    c = Curriculum.load(tmp_path)
+    assert "注意" not in c.topic_context("三角形", 7)  # taught in grades 4 and 8
+    assert "注意" not in c.topic_context("圆锥曲线的方程", 10)  # senior high: order varies by school
+    ctx = c.topic_context("圆锥曲线的方程", 8)
+    assert "一般在高中学" in ctx and "年级为估计" in ctx
+
+
+def test_requirements_need_the_asked_skill_and_locator_picks_stay_candidates(tmp_path):
+    d = dict(MATH, stages=MATH["stages"] + [{"name": "第二学段", "grades": [3, 4], "domains": [
+        {"name": "图形与几何", "requirements": ["认识三角形，了解三角形的分类"], "source": "s1"}]}],
+        grade_topics={**MATH["grade_topics"], "4": {"topics": ["三角形（特性、分类、内角和）"], "basis": "textbook"}})
+    (tmp_path / "math.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    c = Curriculum.load(tmp_path)
+    assert all(not m.requirements for m in c.lookup("三角形面积", 4))  # area is not "types of triangles"
+    replies = iter([json.dumps({"matches": [{"subject": "数学", "grade": 8, "topic": "勾股定理"}]}, ensure_ascii=False),
+                    json.dumps(["not", "an", "object"])])
+    llm = ScriptedLLM(lambda m: next(replies))
+    ctx = asyncio.run(c.topic_context_async(llm, "根号的化简", 5))
+    assert "候选章节" in ctx and "注意" not in ctx  # a real but unverified chapter: no grade warning from it
+    assert asyncio.run(c.locate(llm, "别的话题", 5)) == []  # a JSON list instead of an object is handled
+
+
+def test_the_spoken_line_limit_overrides_the_profile_sentence_length(tmp_path):
+    c = kb(tmp_path)
+    t = c.teaching_context(8, chars=22)
+    assert "每句不超过22个字" in t and "估计" in t
+    assert "教法" not in c.teaching_context(8, chars=22, brief=True)

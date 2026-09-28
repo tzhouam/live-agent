@@ -396,17 +396,20 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         p = _profile_or_404(student_id)
         if body.get("version") != p.version:
             raise HTTPException(409, "the profile changed since it was loaded (reload to see the latest)")
-        p.update_basics({k: body[k] for k in ("name", "grade", "exams") if k in body})
-        p.edit_concepts(body.get("concepts"))
-        if body.get("clear_history"):
-            p.history = []
+        try:
+            p.page_edit(body)  # validated as a whole first: a bad field changes nothing
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
         profiles.changed(student_id)
         return _full(p)
 
     @app.post("/api/students/{student_id}/reset")
-    async def reset_student(student_id: str) -> dict:
-        """Delete the saved profile: back to the example seed (or empty)."""
-        _profile_or_404(student_id)
+    async def reset_student(student_id: str, body: dict = Body(default={})) -> dict:
+        """Back to the example seed (or empty). Like a save, it needs the version the editor loaded: a reset from a
+        stale page must not wipe an exercise graded since."""
+        p = _profile_or_404(student_id)
+        if (body or {}).get("version") != p.version:
+            raise HTTPException(409, "the profile changed since it was loaded (reload to see the latest)")
         return _full(profiles.reset(student_id))
 
     @app.websocket("/ws")

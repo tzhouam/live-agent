@@ -130,7 +130,7 @@
 
   <section class="card" aria-labelledby="h-hist">
     <h2 id="h-hist">最近的练习 <label style="flex-direction:row;align-items:center;gap:6px;font-size:13px;color:var(--ink)">
-      <input type="checkbox" id="clearHist"> 保存时清空练习记录</label></h2>
+      <input type="checkbox" id="clearHist"> 保存时清空练习记录（含练习次数、错因和练习得出的掌握度）</label></h2>
     <div class="tablewrap"><table class="hist"><thead><tr><th>时间</th><th>知识点</th><th>结果</th><th>题目</th><th>学生回答</th></tr></thead>
       <tbody id="hist"></tbody></table></div>
   </section>
@@ -139,7 +139,7 @@
 <div class="actions">
   <span class="status" id="status" role="status" aria-live="polite">载入中…</span>
   <div class="row">
-    <button class="danger" id="reset" title="删除保存的档案，恢复为示例档案（或空档案）">恢复为初始档案</button>
+    <button class="danger" id="reset" title="用示例档案（或空档案）替换保存的档案">恢复为初始档案</button>
     <button class="ghost" id="discard" disabled>放弃修改</button>
     <button class="primary" id="save" disabled>保存</button>
   </div>
@@ -263,7 +263,7 @@ function renderConcepts() {
       <span class="grow">${src}${c.notes && c.notes.length ? `<div class="muted">最近的错误：${esc(c.notes[c.notes.length - 1])}</div>` : ""}
         <div class="muted">${LEVEL[lvl]}</div></span>
       <span class="row" style="gap:4px">
-        <button class="ghost" data-act="clear" title="清除估计（变为未评估）">清除</button>
+        <button class="ghost" data-act="clear" title="清除估计（回到考试推断的估计；没有考试记录则为未评估）">清除</button>
         <button class="ghost" data-act="${e.delete ? "undo" : "delete"}">${e.delete ? "撤销" : "删除"}</button></span></div>`;
   }).join("");
 }
@@ -330,7 +330,7 @@ $("save").onclick = async () => {
 $("discard").onclick = () => load().catch(e => setStatus("载入失败：" + e.message, "err"));
 $("reset").onclick = async () => {
   if (!confirm(`确定把「${server.name || sid}」的档案恢复为初始档案吗？保存的成绩、掌握度和练习记录都会删除。`)) return;
-  try { server = await api(`/api/students/${encodeURIComponent(sid)}/reset`, {method: "POST"}); await load(); setStatus("已恢复为初始档案", "ok"); }
+  try { server = await api(`/api/students/${encodeURIComponent(sid)}/reset`, {method: "POST", body: JSON.stringify({version: server.version})}); await load(); setStatus("已恢复为初始档案", "ok"); }
   catch (err) { setStatus("恢复失败：" + err.message, "err"); }
 };
 $("student").onchange = async () => {

@@ -428,7 +428,8 @@ def test_the_profile_page_edits_a_profile_with_version_checks(tmp_path):
     assert c.put("/api/students/demo", json=body).status_code == 409  # stale version: refused, not overwritten
     saved = StudentProfile.load("demo", tmp_path, SEEDS)
     assert saved.grade == "初三" and saved.concepts["完全平方公式"].manual
-    r = c.post("/api/students/demo/reset").json()  # back to the seed (saved again with a newer version)
+    assert c.post("/api/students/demo/reset", json={"version": p["version"]}).status_code == 409  # stale page
+    r = c.post("/api/students/demo/reset", json={"version": q["version"]}).json()  # back to the seed, newer version
     assert r["grade"] == "初二" and r["version"] > q["version"] and "光合作用" in {x["name"] for x in r["concepts"]}
 
 
@@ -445,3 +446,42 @@ def test_sessions_and_the_page_share_one_profile_and_listeners_are_told(tmp_path
     v = a.version
     store.reset("demo")
     assert store.get("demo") is a and a.version > v and a.concepts["勾股定理"].attempts == 3  # same object, seed data
+
+
+def test_a_bad_field_refuses_the_whole_save_and_the_grade_is_normalised(tmp_path):
+    c = _client(tmp_path)
+    p = c.get("/api/students/demo").json()
+    for bad in ({"concepts": [{"name": "新概念", "mastery": "oops"}]}, {"concepts": [{"name": "x", "mastery": 1.5}]},
+                {"grade": "幼儿园"}, {"exams": [{"subject": "数学", "name": "期末", "score": 120, "full": 100}]},
+                {"concepts": [{"name": "长" * 21}]}, {"clear_history": "yes"}):
+        r = c.put("/api/students/demo", json={"version": p["version"], "grade": "初三", **bad})
+        assert r.status_code == 422, bad
+    q = c.get("/api/students/demo").json()
+    assert q["version"] == p["version"] and q["grade"] == "初二" and "新概念" not in {x["name"] for x in q["concepts"]}
+    assert c.put("/api/students/demo", json={"version": p["version"], "grade": "初中三年级"}).json()["grade"] == "初三"
+
+
+def test_delete_and_clear_do_what_the_page_says(tmp_path):
+    p = StudentProfile.load("demo", tmp_path, SEEDS)
+    assert "完全平方公式" in {w for e in p.exams for w in e.weak}
+    p.page_edit({"concepts": [{"name": "完全平方公式", "delete": True}]})  # also named by an exam: removed there too
+    assert "完全平方公式" not in {x["name"] for x in p.view()["concepts"]}
+    p.record_exercise("勾股定理", False, misconception="斜边搞错")
+    p.page_edit({"concepts": [{"name": "整式乘法", "mastery": 0.9}], "clear_history": True})
+    c = p.concepts["勾股定理"]
+    assert p.history == [] and (c.attempts, c.correct, c.notes, c.mastery) == (0, 0, [], None)
+    assert p.concepts["整式乘法"].mastery == 0.9  # a teacher-set estimate stays
+
+
+def test_a_reset_invalidates_profile_work_in_flight(tmp_path):
+    from live_agent.student import ProfileStore
+    store = ProfileStore(tmp_path, SEEDS, ["demo"])
+    orch, _ = tp.build(max_requests=2)
+    orch.student, orch.profile_store = store.get("demo"), store
+    store.subscribe("demo", orch.on_profile_edited)
+    e0 = orch._profile_epoch
+    store.get("demo").name = "改名"
+    store.changed("demo")  # an ordinary edit: grading in flight still applies
+    assert orch._profile_epoch == e0
+    store.reset("demo")
+    assert orch._profile_epoch == e0 + 1

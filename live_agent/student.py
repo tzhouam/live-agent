@@ -13,6 +13,7 @@ Understanding of a concept is a mastery *estimate* in [0, 1] (shown as an estima
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -243,6 +244,29 @@ class StudentProfile:
             changed.append(name)
         return changed
 
+    def page_edit(self, body: dict) -> None:
+        """One save from the profile page, validated as a whole before anything changes (a bad field refuses the
+        save with ValueError; nothing is half-applied)."""
+        body = validate_page_edit(body)
+        self.update_basics({k: body[k] for k in ("name", "grade", "exams") if k in body})
+        for e in body.get("concepts") or []:
+            if e.get("delete"):  # a concept named by an exam comes back from the exam unless removed there too
+                for ex in self.exams:
+                    ex.weak = [w for w in ex.weak if w != e["name"]]
+        self.edit_concepts(body.get("concepts"))
+        if body.get("clear_history"):
+            self.clear_exercises()
+
+    def clear_exercises(self) -> None:
+        """Erase the exercise evidence: history, attempt counts, misconception notes and exercise-based estimates
+        (teacher-set estimates stay)."""
+        self.history = []
+        for c in self.concepts.values():
+            c.attempts = c.correct = 0
+            c.notes = []
+            if not c.manual:
+                c.mastery = None
+
     def mark_taught(self, concepts: list[str], subject: str = "") -> None:
         for name in concepts:
             if str(name).strip():
@@ -334,6 +358,68 @@ class StudentProfile:
                 "history": list(reversed(self.history[-30:]))}
 
 
+def validate_page_edit(body: Any) -> dict:
+    """The profile page's save request, checked field by field; returns it with the grade normalised."""
+    from live_agent.curriculum import grade_name, parse_grade
+
+    if not isinstance(body, dict):
+        raise ValueError("body must be an object")
+    out = dict(body)
+
+    def text(v, n, what):
+        if v is None:
+            return ""
+        if not isinstance(v, (str, int, float)) or len(str(v)) > n:
+            raise ValueError(f"{what}: at most {n} characters")
+        return str(v).strip()
+
+    def number(v, what, lo=None, hi=None):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            raise ValueError(f"{what}: must be a number")
+        if (lo is not None and v < lo) or (hi is not None and v > hi):
+            raise ValueError(f"{what}: out of range")
+        return float(v)
+
+    if "name" in out:
+        out["name"] = text(out["name"], 20, "name")
+    if "grade" in out:
+        g = text(out["grade"], 12, "grade")
+        if g:
+            n = parse_grade(g)
+            if n is None:
+                raise ValueError("grade: not recognised (e.g. 小学三年级, 初二, 高一)")
+            g = grade_name(n)
+        out["grade"] = g
+    if "exams" in out:
+        if not isinstance(out["exams"], list) or len(out["exams"]) > 20:
+            raise ValueError("exams: a list of at most 20")
+        for e in out["exams"]:
+            if not isinstance(e, dict):
+                raise ValueError("exams: each exam is an object")
+            full = number(e.get("full", 100) or 100, "exam full score", 1, 1000)
+            number(e.get("score"), "exam score", 0, full)
+            text(e.get("subject"), 12, "exam subject"), text(e.get("name"), 20, "exam name")
+            text(e.get("date"), 10, "exam date")
+            weak = e.get("weak") or []
+            if not isinstance(weak, list) or len(weak) > 10:
+                raise ValueError("exam weak points: a list of at most 10")
+            for w in weak:
+                text(w, 16, "exam weak point")
+    if "concepts" in out and out["concepts"] is not None:
+        if not isinstance(out["concepts"], list) or len(out["concepts"]) > 100:
+            raise ValueError("concepts: a list of at most 100 edits")
+        for c in out["concepts"]:
+            if not isinstance(c, dict) or not text(c.get("name"), 20, "concept name"):
+                raise ValueError("concepts: each edit needs a name of 1-20 characters")
+            c["name"] = text(c.get("name"), 20, "concept name")
+            if "mastery" in c and c["mastery"] is not None:
+                number(c["mastery"], "mastery", 0.0, 1.0)
+            text(c.get("rename"), 20, "concept rename"), text(c.get("subject"), 12, "concept subject")
+    if "clear_history" in out and not isinstance(out["clear_history"], bool):
+        raise ValueError("clear_history: true or false")
+    return out
+
+
 class ProfileStore:
     """One shared, in-memory profile per student for the whole server: live sessions and the profile page edit the
     same object (a session's exercise result and a teacher's edit never overwrite each other), every change is
@@ -343,6 +429,7 @@ class ProfileStore:
         self.store, self.seeds, self.allowed = Path(store), seeds, list(dict.fromkeys(allowed))
         self._profiles: dict[str, StudentProfile] = {}
         self._listeners: dict[str, list] = {}
+        self.resets: dict[str, int] = {}  # per student: sessions compare it to invalidate grading started before
 
     def get(self, student_id: str) -> StudentProfile | None:
         if student_id not in self.allowed:
@@ -372,9 +459,11 @@ class ProfileStore:
                 fn()
 
     def reset(self, student_id: str) -> StudentProfile | None:
-        """Back to the seed profile (or empty): the saved copy is deleted."""
+        """Back to the seed profile (or empty): the saved copy is replaced by the seed (with a newer version, so an
+        editor holding the old one is refused). ``resets`` tells open sessions to drop profile work in flight."""
         if student_id not in self.allowed:
             return None
+        self.resets[student_id] = self.resets.get(student_id, 0) + 1
         old = self._profiles.get(student_id)
         (self.store / f"{student_id}.json").unlink(missing_ok=True)
         fresh = StudentProfile.load(student_id, self.store, self.seeds)

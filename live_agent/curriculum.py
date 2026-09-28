@@ -9,6 +9,7 @@ teach a given grade (methods, amount of content, tone), and renders both as prom
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -19,13 +20,14 @@ _CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7,
 
 
 def parse_grade(text: str | int | None) -> int | None:
-    """"初二" -> 8, "高一" -> 10, "小学三年级" / "三年级" -> 3, "8年级" / "grade 8" -> 8; None if unknown."""
+    """"初二" / "初中二年级" -> 8, "高一" / "高中一年级" -> 10, "小学三年级" / "三年级" -> 3, "8年级" / "grade 8" -> 8;
+    None if unknown. Meant for a profile's grade field (the API stores the normalised name), not for free text."""
     if isinstance(text, int):
         return text if 1 <= text <= 12 else None
     s = str(text or "").strip().lower()
     if not s:
         return None
-    m = re.search(r"(初|高)([一二三123])", s)
+    m = re.search(r"(初|高)中?([一二三123])", s)  # the stage first: "初中二年级" is grade 8, not 2
     if m:
         n = _CN_NUM.get(m.group(2)) or int(m.group(2))
         return (6 if m.group(1) == "初" else 9) + n
@@ -66,6 +68,12 @@ def _bigrams(s: str) -> set[str]:
     return {s[i:i + 2] for i in range(len(s) - 1)} or {s}
 
 
+def clean_topic(topic: Any) -> str:
+    """A lesson topic as prompt data: first line only, no control characters, at most 40 characters."""
+    first = str(topic or "").strip().splitlines()[0] if str(topic or "").strip() else ""
+    return re.sub(r"[\x00-\x1f\x7f「」]", "", first).strip()[:40]
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[\s·、，,（）()《》“”\"']", "", str(s)).lower()
 
@@ -83,6 +91,7 @@ class Match:
     score: float = 0.0
     grades: tuple | None = None  # a standard's stage range when no single grade is known
     sim: float = 0.0  # lexical similarity to the asked topic (1 = same wording)
+    located: bool = False  # picked by the model from the chapter index: a candidate, relevance not verified
 
 
 class Curriculum:
@@ -111,6 +120,7 @@ class Curriculum:
         """Curriculum entries for ``topic``: textbook topics by character-pair similarity (so "函数的单调性" finds
         the senior-high function unit rather than grade 8's "函数"), then the standard's requirements that name it;
         nearest to the student's grade first."""
+        topic = clean_topic(topic)
         q = _norm(topic)
         if len(q) < 2:
             return []
@@ -128,17 +138,20 @@ class Curriculum:
                     nt = _norm(t)
                     if latin:  # letter pairs are meaningless for English words: whole words only
                         words = set(re.findall(r"[a-z]{3,}", str(t).lower()))
-                        sim = 1.0 if nt == q else 0.9 if q in nt else 0.6 if any(len(_prefix(w, x)) >= min(5, len(x))
+                        whole = re.search(rf"\b{re.escape(str(topic).lower().strip())}\b", str(t).lower())
+                        sim = 1.0 if nt == q else 0.9 if whole else 0.6 if any(len(_prefix(w, x)) >= min(5, len(x))
                                                                                   for w in words for x in qwords) else 0.0
                     else:
                         sim = 1.0 if nt == q else len(qb & _bigrams(nt)) / max(len(qb), 1)
-                    if q in nt and len(q) >= 2:
+                    if latin:
+                        pass  # whole words only (above): "art" is not in "Smart Learning"
+                    elif q in nt and len(q) >= 2:
                         sim = max(sim, 0.9)
                     elif nt and nt in q:
                         sim = max(sim, 0.6)  # the unit named inside the question ("圆" in "圆的面积")
                     if sim < 0.5:
                         continue
-                    stage, domain, reqs = self._requirements(subj, g_int, q, t)
+                    stage, domain, reqs = self._requirements(subj, g_int, q, t if sim >= 0.9 else "")
                     found.append(Match(name, g_int, t, stage, domain, reqs, prereq.get(nt) or prereq.get(q) or [],
                                        (entry or {}).get("basis", ""), score=1.0 + sim, sim=sim))
                     covered.append((g_int or 0, g_int or 0))
@@ -189,7 +202,7 @@ class Curriculum:
                         sim = max(sim, 0.95)
                     if sim > best[0]:
                         best = (sim, st.get("name", ""), dom.get("name", ""), r)
-        if best[0] >= 0.5:
+        if best[0] >= 0.6:  # half the topic's character pairs was too loose ("三角形面积" got the triangle-types one)
             return best[1], best[2], [best[3]]
         return stage_name, "", []
 
@@ -209,21 +222,21 @@ class Curriculum:
         """Where ``topic`` is taught: exact wording by string match, else the model picks chapters from the index
         (textbooks name chapters, e.g. 运动和力的关系 for 牛顿第二定律). Answers must be copied from the index, so
         nothing is invented; results are cached per topic."""
+        topic = clean_topic(topic)
         lexical = self.lookup(topic, grade)
-        if any(m.sim >= 0.9 for m in lexical) or llm is None or not self.subjects:
+        if any(m.sim >= 0.9 for m in lexical) or llm is None or not self.subjects or len(_norm(topic)) < 2:
             return lexical
         cache = self.__dict__.setdefault("_located", {})
         key = _norm(topic)
-        if key not in cache:
-            from live_agent.llm import parse_json
-
-            raw = await llm.chat([{"role": "user", "content": LOCATE_PROMPT.format(
-                topic=topic, index=self.index_text())}], max_tokens=300, temperature=0.0, json_mode=True)
+        if not isinstance(cache.get(key), list):  # not known yet, or being asked by a concurrent lesson start
+            task = cache.get(key)
+            if task is None:
+                task = cache[key] = asyncio.ensure_future(self._ask_locator(llm, topic))
             try:
-                picks = parse_json(raw).get("matches") or []
-            except ValueError:
-                picks = []
-            cache[key] = [p for p in picks if isinstance(p, dict)][:3]
+                cache[key] = await asyncio.shield(task)
+            except Exception:
+                cache.pop(key, None)
+                raise
         out = []
         for p in cache[key]:
             m = self._entry(str(p.get("subject") or ""), p.get("grade"), str(p.get("topic") or ""), topic)
@@ -232,6 +245,18 @@ class Curriculum:
         if grade is not None:
             out.sort(key=lambda m: abs((m.grade or grade) - grade))
         return out or lexical
+
+    async def _ask_locator(self, llm, topic: str) -> list[dict]:
+        from live_agent.llm import parse_json
+
+        raw = await llm.chat([{"role": "user", "content": LOCATE_PROMPT.format(
+            topic=topic, index=self.index_text())}], max_tokens=300, temperature=0.0, json_mode=True)
+        try:
+            d = parse_json(raw)
+        except ValueError:
+            return []
+        picks = d.get("matches") if isinstance(d, dict) else None
+        return [p for p in picks if isinstance(p, dict)][:3] if isinstance(picks, list) else []
 
     def _entry(self, subject: str, grade, chapter: str, topic: str) -> Match | None:
         """The index entry the locator named (verified: an invented chapter is dropped)."""
@@ -243,13 +268,17 @@ class Curriculum:
             nc = _norm(chapter)
             for t in e.get("topics") or []:
                 nt = _norm(t)
-                close = nc and (nt.startswith(nc) or nc in nt or (len(nc) >= 6 and nt in nc)
+                long_enough = len(nc) >= max(3, len(nt) // 2)  # "二次" alone does not name "二次根式"
+                close = nc and (nc == nt or (long_enough and (nt.startswith(nc) or nc in nt))
+                                or (len(nc) >= 6 and nt in nc)
                                 or len(_bigrams(nc) & _bigrams(nt)) / max(len(_bigrams(nc)), 1) >= 0.8)
                 if close:  # the model copied (a close form of) a real chapter; anything else is dropped
-                    stage, domain, reqs = self._requirements(subj, g, _norm(topic), t)
+                    # a real chapter is not necessarily the right one: it stays a candidate (no requirement from the
+                    # chapter name, no grade warning from it)
+                    stage, domain, reqs = self._requirements(subj, g, _norm(topic))
                     prereq = {(_norm(k)): v for k, v in (subj.get("prerequisites") or {}).items()}
                     return Match(subject, g, t, stage, domain, reqs, prereq.get(_norm(t)) or [], e.get("basis", ""),
-                                 score=2.0, sim=0.95)
+                                 score=2.0, sim=0.7, located=True)
         return None
 
     async def topic_context_async(self, llm, topic: str, grade: int | None) -> str:
@@ -262,14 +291,18 @@ class Curriculum:
             return {}
         return grades.get(str(grade)) or grades.get(str(min(max(grade, 1), 12))) or {}
 
-    def teaching_context(self, grade: int | None) -> str:
-        """Per-grade teaching guidance for prompts (methods, content per explanation, tone, sentence length)."""
+    def teaching_context(self, grade: int | None, chars: int | None = None, brief: bool = False) -> str:
+        """Per-grade teaching guidance for prompts (methods, content per explanation, tone, sentence length).
+        ``chars``: the spoken-line limit, stated as overriding the profile's sentence lengths. ``brief``: only tone,
+        wording and feedback (for the responder, which sees it on every utterance)."""
         p = self.profile(grade)
         if not p:
             return ""
-        parts = [f"学生是{grade_name(grade)}（{p.get('stage', '')}）。按这个年级的特点来教："]
-        for key, label in (("methods", "教法"), ("content", "内容量"), ("tone", "语气"), ("examples", "例子"),
-                           ("avoid", "避免")):
+        parts = [f"学生是{grade_name(grade)}（{p.get('stage', '')}）。按这个年级的特点来教"
+                 "（以下是按学段特点整理的经验建议，不是课标原文；其中的时间、数量和句长是估计）："]
+        keys = (("tone", "语气"),) if brief else (("methods", "教法"), ("content", "内容量"), ("tone", "语气"),
+                                                   ("examples", "例子"), ("avoid", "避免"))
+        for key, label in keys:
             v = p.get(key)
             if v:
                 parts.append(f"{label}：{'；'.join(clean(x) for x in v) if isinstance(v, list) else clean(v)}")
@@ -277,6 +310,9 @@ class Curriculum:
             parts.append(f"用词：{clean(p['vocabulary'])}")
         if p.get("encouragement"):
             parts.append(f"表扬与纠错：{clean(p['encouragement'])}")
+        if chars:
+            parts.append(f"台词硬性限制：每句不超过{chars}个字（视频每段只能说这么多），这条优先于上面的句长建议；"
+                         "长句拆成几句说。")
         return "\n".join(parts)
 
     def exercise_style(self, grade: int | None) -> str:
@@ -294,25 +330,47 @@ class Curriculum:
         for m in ms:
             s = f"「{m.topic}」：{m.subject}"
             if m.grade:
-                s += f"，{grade_name(m.grade)}" + ("（教材）" if m.basis == "textbook" else "（估计）" if m.basis == "estimate" else "")
+                s += f"，{grade_name(m.grade)}"
+                if m.located:
+                    s += "（模型从教材目录里挑的候选章节，未核实是否对应本课）"
+                elif m.basis == "estimate" or m.grade >= 11:
+                    s += "（年级为估计，各校安排不一）"
+                elif m.basis == "textbook":
+                    s += "（教材）"
             elif m.grades and m.grades[0]:
-                s += f"，课标{grade_name(m.grades[0])}" + (f"至{grade_name(m.grades[1])}" if m.grades[1] != m.grades[0] else "")
+                if m.grades[0] >= 10:  # 必修 / 选择性必修 are course categories, not fixed school years
+                    s += "，课标高中阶段（具体年级各校安排不一）"
+                else:
+                    s += f"，课标{grade_name(m.grades[0])}" + (f"至{grade_name(m.grades[1])}" if m.grades[1] != m.grades[0] else "")
             if m.stage or m.domain:
                 s += f"，{m.stage}{('·' + m.domain) if m.domain else ''}"
             if m.requirements:
-                s += f"；课标要求：{'；'.join(clean(r) for r in m.requirements)}"
+                s += f"；课标要求（意译）：{'；'.join(clean(r) for r in m.requirements)}"
             if m.prerequisites:
                 s += f"；前置知识：{'、'.join(m.prerequisites)}"
             lines.append(s)
-        top = next((m for m in ms if m.grade is not None and m.sim >= 0.9), None)
-        if top is None:
-            pass
-        elif grade is not None and top.grade is not None and top.grade > grade:
-            lines.append(f"注意：这个内容一般在{grade_name(top.grade)}学，学生现在{grade_name(grade)}，"
-                         f"要从学生已有的知识讲起，降低难度，必要时先补前置知识。")
-        elif grade is not None and top.grade is not None and top.grade < grade - 2:
-            lines.append(f"注意：这是{grade_name(top.grade)}的内容，学生已经{grade_name(grade)}，以复习和提高为主。")
+        note = self._grade_note(topic, grade)
+        if note:
+            lines.append(note)
         return "课程标准参考（系统检索到的相关条目，只采用和本课真正相关的）：\n" + "\n".join(lines)
+
+    def _grade_note(self, topic: str, grade: int | None) -> str:
+        """Above / below the student's grade only when every textbook grade that teaches the topic (same wording or
+        containing it) says so: a concept taught in several grades ("三角形" in grades 4 and 8) is never flagged, and
+        neither are senior-high grades for a senior-high student (the order of 选择性必修 varies by school)."""
+        if grade is None:
+            return ""
+        taught = sorted({m.grade for m in self.lookup(topic, None, limit=200)
+                         if m.grade is not None and m.sim >= 0.9 and m.basis != "estimate"})
+        if not taught:
+            return ""
+        if taught[0] > grade and not (grade >= 10 and taught[0] >= 10):
+            where = "高中" if taught[0] >= 10 else grade_name(taught[0])
+            return (f"注意：这个内容一般在{where}学，学生现在{grade_name(grade)}，"
+                    f"要从学生已有的知识讲起，降低难度，必要时先补前置知识。")
+        if taught[-1] < grade - 2:
+            return f"注意：这是{grade_name(taught[-1])}的内容，学生已经{grade_name(grade)}，以复习和提高为主。"
+        return ""
 
     def summary(self) -> dict[str, Any]:
         return {"subjects": [{"subject": s.get("subject"), "grades": s.get("grades"),
@@ -330,4 +388,4 @@ topic 必须从目录里原样复制章节名，不要自己编；目录里没�
 {index}"""
 
 
-__all__ = ["Curriculum", "LOCATE_PROMPT", "Match", "grade_name", "parse_grade"]
+__all__ = ["Curriculum", "LOCATE_PROMPT", "Match", "clean_topic", "grade_name", "parse_grade"]

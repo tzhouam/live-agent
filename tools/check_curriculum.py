@@ -23,7 +23,7 @@ def check_subject(d: dict, name: str) -> tuple[list[str], list[str]]:
     ids = {s.get("id") for s in d.get("sources") or []}
     for s in d.get("sources") or []:
         if not str(s.get("url") or "").startswith("http"):
-            warnings.append(f"{name}: source {s.get('id')} has no URL")
+            errors.append(f"{name}: source {s.get('id')} has no URL")
     lo, hi = (d.get("grades") or [1, 12])[:2]
     if not (1 <= lo <= hi <= 12):
         errors.append(f"{name}: grades {d.get('grades')} out of 1-12")
@@ -32,17 +32,26 @@ def check_subject(d: dict, name: str) -> tuple[list[str], list[str]]:
         if not gs or any(not isinstance(g, int) or not 1 <= g <= 12 for g in gs):
             errors.append(f"{name}: stage {st.get('name')} has grades {gs}")
         for dom in st.get("domains") or []:
+            if dom.get("requirements") and not dom.get("source"):
+                errors.append(f"{name}: stage {st.get('name')} / {dom.get('name')} has requirements but no source")
             if dom.get("source") and any(x.strip() not in ids for x in str(dom["source"]).split(",")):
                 errors.append(f"{name}: stage {st.get('name')} / {dom.get('name')} cites unknown source {dom['source']}")
     gt = d.get("grade_topics") or {}
-    missing = [g for g in range(lo, hi + 1) if str(g) not in gt]
+    # a grade inside the subject's range without topics is an error unless the file documents it as a gap
+    # ("gaps": {"9": "why"}), e.g. 地理 and 信息科技 end in grade 8 in the 2022 compulsory standards
+    documented = {str(k) for k in (d.get("gaps") or {})}
+    missing = [g for g in range(lo, hi + 1) if str(g) not in gt and str(g) not in documented]
     if missing:
-        warnings.append(f"{name}: no topics for grades {missing}")
+        errors.append(f"{name}: no topics for grades {missing} (add them or document the gap in 'gaps')")
     for g, e in gt.items():
         if not str(g).isdigit() or not 1 <= int(g) <= 12:
             errors.append(f"{name}: grade_topics key {g!r}")
         if (e or {}).get("source") and any(x.strip() not in ids for x in str(e["source"]).split(",")):
             errors.append(f"{name}: grade {g} cites unknown source {e['source']}")
+        if (e or {}).get("basis") not in ("textbook", "standard", "estimate"):
+            errors.append(f"{name}: grade {g} basis {(e or {}).get('basis')!r} (textbook / standard / estimate)")
+        if not (e or {}).get("source"):
+            errors.append(f"{name}: grade {g} has no source")
         if not (e or {}).get("topics"):
             warnings.append(f"{name}: grade {g} has no topics")
     return errors, warnings

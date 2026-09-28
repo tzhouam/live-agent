@@ -276,7 +276,7 @@ class LessonPlanner:
             where = await self.curriculum.topic_context_async(self.llm, topic, g)
         except Exception:  # noqa: BLE001 - the locator failed: plan without the curriculum reference
             where = self.curriculum.topic_context(topic, g)
-        parts = [where, self.curriculum.teaching_context(g)]
+        parts = [where, self.curriculum.teaching_context(g, self.chars)]
         text = "\n".join(x for x in parts if x)
         return (text + "\n") if text else ""
 
@@ -331,7 +331,7 @@ class LessonPlanner:
             adapt.append(f"学生对本节概念的掌握：{profile.concept_notes(sec.get('concepts') or [])}。")
             adapt.append(f"只讲本节和「{outline.title}」的内容；学生其他薄弱的知识点不要展开，需要用到时一句话带过。")
         if self.curriculum and profile is not None:
-            teach = self.curriculum.teaching_context(self._grade(profile))
+            teach = self.curriculum.teaching_context(self._grade(profile), self.chars)
             if teach:
                 adapt.append("\n" + teach + "\n")
             ex_style = self.curriculum.exercise_style(self._grade(profile))

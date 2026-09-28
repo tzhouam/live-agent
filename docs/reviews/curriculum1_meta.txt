@@ -1,0 +1,14 @@
+tag: curriculum1
+date_utc: 2026-09-28T14:41:52Z
+repo_head: 5b8a67c9f1b352c336ffe0d15fd1c8acf117ce98
+repo_dirty_files: 10
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.156.0
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/curriculum1_review.md - < docs/reviews/curriculum1_prompt.md
+exit_code: 0
+thread_id: 01a0e870-16e6-7eb3-bd40-725024cdfa85
+rollout: /home/zhoutaichang/.codex/sessions/2026/09/28/rollout-2026-09-28T22-34-15-01a0e870-16e6-7eb3-bd40-725024cdfa85.jsonl
+rollout_models:       5 "model":"gpt-6-sol" 
+inlined_files: live_agent/curriculum.py tests/test_curriculum.py tools/check_curriculum.py docs/reviews/curriculum1_diff.patch configs/curriculum/pedagogy.json configs/curriculum/math.json docs/reviews/curriculum1_data_summary.txt
+prompt_sha256: 5e70a38eff60fa1b4d3595f3c00af0afd330831aaa2d0e5b6c226cf08c8cb84a

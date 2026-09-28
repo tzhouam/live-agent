@@ -178,7 +178,8 @@ class Orchestrator:
         self._exercises = 0
         self._shown_exercise = None  # the exercise the page was last told about
         self.answer_boards = False  # persona with a board: every knowledge answer gets one (set by the app)
-        self._profile_epoch = 0  # bumped by erasure: work started before it must not write to the profile
+        self._profile_epoch = 0  # bumped by erasure and profile resets: work started before it must not write to the profile
+        self._profile_resets = 0  # the store's reset count last seen
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
         self._checked: set[int] = set()
@@ -1159,7 +1160,10 @@ class Orchestrator:
         if self.curriculum:
             from live_agent.curriculum import parse_grade
 
-            teach = self.curriculum.teaching_context(parse_grade(self.student.grade))
+            from live_agent.director.director import CHARS_PER_REQUEST
+
+            # the responder sees this on every utterance: tone, wording and feedback only
+            teach = self.curriculum.teaching_context(parse_grade(self.student.grade), CHARS_PER_REQUEST, brief=True)
             if teach:
                 ctx += "\n" + teach
         return ctx
@@ -1172,7 +1176,13 @@ class Orchestrator:
             self.student.save()
 
     def on_profile_edited(self) -> None:
-        """Someone else (the profile page, another session) changed this student's profile: refresh the page."""
+        """Someone else (the profile page, another session) changed this student's profile: refresh the page. After
+        a reset, grading and exercise generation in flight must not write into the fresh profile."""
+        store, sid = self.profile_store, getattr(self.student, "student_id", None)
+        resets = store.resets.get(sid, 0) if store is not None else 0
+        if resets != self._profile_resets:
+            self._profile_resets = resets
+            self._profile_epoch += 1
         self._emit_profile()
 
     def _emit_profile(self) -> None:

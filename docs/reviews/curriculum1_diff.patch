@@ -1,0 +1,1007 @@
+diff --git a/live_agent/lesson.py b/live_agent/lesson.py
+index 9daaf5c..7d6fe70 100644
+--- a/live_agent/lesson.py
++++ b/live_agent/lesson.py
+@@ -26,10 +26,10 @@ DEPTHS = {
+     "new": ("10-18", "这一节是新内容，正常讲解。"),
+ }
+ 
+-OUTLINE_PROMPT = """你是中学老师「{name}」，要给学生上一节关于「{topic}」的课。人设：{bio}
++OUTLINE_PROMPT = """你是{role}「{name}」，要给学生上一节关于「{topic}」的课。人设：{bio}
+ 学生档案（年级、考试成绩、各概念的掌握情况）：
+ {profile}
+-请按这个学生的情况因材施教，设计课程大纲，只输出 JSON：
++{curriculum}请按这个学生的情况因材施教，设计课程大纲，只输出 JSON：
+ {{"title": 课程标题（不超过 16 字）, "plan_note": 一句话说明你根据档案怎么安排的（给老师自己看，不念出来）,
+  "sections": [{{"title": 小节标题（不超过 14 字）, "goal": 这一节要讲清楚什么（一句话）,
+    "concepts": [这一节讲的概念，档案里已有的概念用完全相同的名字，每个不超过 8 字],
+@@ -46,7 +46,7 @@ OUTLINE_PROMPT = """你是中学老师「{name}」，要给学生上一节关于
+ 开场白先说今天学什么，再说分几部分讲，知道学生情况时可以自然地提一句（如「上次考试这里丢了分，今天重点讲」）；每句开场白不超过 {chars} 个汉字。
+ 学生之前的对话（只作参考）：{context}"""
+ 
+-SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这节课。人设：{bio}
++SECTION_PROMPT = """你是{role}「{name}」，正在上「{title}」这节课。人设：{bio}
+ 现在讲第 {i}/{n} 节「{section}」，目标：{goal}。
+ 前面已经讲过：{covered}
+ 请写这一节的板书和讲稿，只输出 JSON：
+@@ -255,14 +255,39 @@ def spoken(text: str, chars: int) -> list[str]:
+ 
+ 
+ class LessonPlanner:
+-    def __init__(self, llm: ChatLLM, *, name: str, bio: str, chars: int = 22):
++    def __init__(self, llm: ChatLLM, *, name: str, bio: str, chars: int = 22, curriculum=None):
+         self.llm, self.name, self.bio, self.chars = llm, name, bio, chars
++        self.curriculum = curriculum  # curriculum.Curriculum: where the topic sits, how to teach the grade
++
++    def _grade(self, profile) -> int | None:
++        from live_agent.curriculum import parse_grade
++
++        return parse_grade(profile.grade) if profile is not None else None
++
++    def _role(self, profile) -> str:
++        g = self._grade(profile)
++        return "小学老师" if g is not None and g <= 6 else "高中老师" if g is not None and g >= 10 else "中学老师"
++
++    async def _curriculum_block(self, topic: str, profile) -> str:
++        if not self.curriculum:
++            return ""
++        g = self._grade(profile)
++        try:
++            where = await self.curriculum.topic_context_async(self.llm, topic, g)
++        except Exception:  # noqa: BLE001 - the locator failed: plan without the curriculum reference
++            where = self.curriculum.topic_context(topic, g)
++        parts = [where, self.curriculum.teaching_context(g)]
++        text = "\n".join(x for x in parts if x)
++        return (text + "\n") if text else ""
+ 
+     async def outline(self, topic: str, context: str = "", profile=None) -> Outline:
+         """``profile``: a student.StudentProfile (None: no saved profile, an average student of ``default_grade``)."""
++        curriculum = await self._curriculum_block(topic, profile)
++        self.last_curriculum = curriculum  # for the log
+         raw = await self.llm.chat([{"role": "user", "content": OUTLINE_PROMPT.format(
+-            name=self.name, topic=topic, bio=self.bio, chars=self.chars, context=context or "无",
++            name=self.name, topic=topic, bio=self.bio, chars=self.chars, context=context or "无", role=self._role(profile),
+             profile=profile.summary() if profile is not None else "无（新学生，没有档案）",
++            curriculum=curriculum,
+             default_grade=(profile.grade if profile is not None and profile.grade else "初中"))}],
+             max_tokens=900, temperature=0.4, json_mode=True)
+         d = parse_json(raw)
+@@ -299,18 +324,25 @@ class LessonPlanner:
+         last = i == len(outline.sections) - 1
+         depth = sec.get("depth") if sec.get("depth") in DEPTHS else "new"
+         adapt = [DEPTHS[depth][1]]
++        want_ex = bool(sec.get("exercise"))
+         if profile is not None:
+             if profile.grade:
+                 adapt.append(f"学生是{profile.grade}，用这个年级听得懂的说法和例子。")
+             adapt.append(f"学生对本节概念的掌握：{profile.concept_notes(sec.get('concepts') or [])}。")
+             adapt.append(f"只讲本节和「{outline.title}」的内容；学生其他薄弱的知识点不要展开，需要用到时一句话带过。")
++        if self.curriculum and profile is not None:
++            teach = self.curriculum.teaching_context(self._grade(profile))
++            if teach:
++                adapt.append("\n" + teach + "\n")
++            ex_style = self.curriculum.exercise_style(self._grade(profile))
++            if want_ex and ex_style:
++                adapt.append(f"练习题的形式：{ex_style}。")
+         if mistakes:
+             adapt.append(f"学生刚才的练习做错了：{'；'.join(mistakes[-2:])}。本节第一条要点先用一两句换个说法把这个错误纠正过来。")
+-        want_ex = bool(sec.get("exercise"))
+         ex_req = ("\n6. 讲完出一道练习，考查本节最重要的概念，难度按学生的掌握度定（薄弱出基础题，已掌握出稍有变化的题）；"
+                   "在 JSON 里加字段 \"exercise\"。" + EXERCISE_SPEC.format(chars=self.chars, q_chars=60)) if want_ex else ""
+         raw = await self.llm.chat([{"role": "user", "content": SECTION_PROMPT.format(
+-            name=self.name, bio=self.bio, title=outline.title, i=i + 1, n=len(outline.sections),
++            name=self.name, bio=self.bio, title=outline.title, i=i + 1, n=len(outline.sections), role=self._role(profile),
+             section=sec["title"], goal=sec.get("goal", ""), covered="；".join(covered) or "（这是第一节）",
+             max_items=MAX_ITEMS, item_chars=ITEM_CHARS, chars=self.chars, n_lines=DEPTHS[depth][0],
+             adapt="".join(adapt), exercise_req=ex_req,
+diff --git a/live_agent/orchestrator.py b/live_agent/orchestrator.py
+index 703fa7f..b1cdece 100644
+--- a/live_agent/orchestrator.py
++++ b/live_agent/orchestrator.py
+@@ -172,6 +172,8 @@ class Orchestrator:
+         self.image_maker = None  # board_images.ImageMaker (illustrations), set by the app when configured
+         self.figure_dir = None  # where exact plots are drawn (board_plot); set by the app
+         self.student = None  # student.StudentProfile (private sessions): adapts lessons, records exercise results
++        self.profile_store = None  # student.ProfileStore shared with the profile page (set by the app)
++        self.curriculum = None  # curriculum.Curriculum: course knowledge base (grade profiles, standards; set by the app)
+         self._lesson_mistakes: list[str] = []  # this lesson's wrong answers, addressed by the next section
+         self._exercises = 0
+         self._shown_exercise = None  # the exercise the page was last told about
+@@ -1058,7 +1060,7 @@ class Orchestrator:
+         if self.student is not None:
+             change = self.student.record_exercise(ex.concept, r["correct"], question=ex.question, answer=utt.text,
+                                                   misconception=r.get("misconception") or "", subject=ex.subject)
+-            self.student.save()
++            self._save_profile()
+         if not r["correct"] and (ex.source == "lesson" or d.lesson_title):
+             self._lesson_mistakes.append(ex.concept + (f"（{r['misconception']}）" if r.get("misconception") else ""))
+         self.log.emit(EventType.LESSON, now(), stage="exercise_graded", concept=ex.concept, correct=r["correct"],
+@@ -1074,7 +1076,14 @@ class Orchestrator:
+         d = self.director
+         self._exercises += 1
+         profile_epoch, plan = self._profile_epoch, d.plan_version
+-        profile = self.student.summary() if self.student is not None else "无（新学生，没有档案）"
++        profile = self._student_context() or "无（新学生，没有档案）"
++        if self.curriculum and self.student is not None:
++            from live_agent.curriculum import parse_grade
++
++            g = parse_grade(self.student.grade)
++            profile += "\n" + self.curriculum.topic_context(topic, g)
++            if self.curriculum.exercise_style(g):
++                profile += f"\n这个年级的练习形式：{self.curriculum.exercise_style(g)}"
+         try:
+             ex = await make_exercise(d.llm, name=d.persona_name, topic=topic, profile=profile,
+                                      key=f"q{self._exercises}")
+@@ -1119,7 +1128,7 @@ class Orchestrator:
+                                                            if s.board is None or s.board.key not in (ex.key, ex.key + "a"))
+         if self.student is not None:
+             n += sum(self.student.purge(x) for x in terms)
+-            self.student.save()
++            self._save_profile()
+             self._emit_profile()  # the page drops what it showed
+         self._lesson_mistakes = [m for m in self._lesson_mistakes if not any(x in m for x in terms)]
+         return n
+@@ -1142,6 +1151,30 @@ class Orchestrator:
+         self.log.emit(EventType.LESSON, now(), stage="answer_board", title=b.title, board=b.key,
+                       seconds=round(now() - t0, 2), lines=len(waiting))
+ 
++    def _student_context(self) -> str:
++        """What the responder knows about the student: the profile, and how to talk to a student of this grade."""
++        if self.student is None:
++            return ""
++        ctx = self.student.summary()
++        if self.curriculum:
++            from live_agent.curriculum import parse_grade
++
++            teach = self.curriculum.teaching_context(parse_grade(self.student.grade))
++            if teach:
++                ctx += "\n" + teach
++        return ctx
++
++    def _save_profile(self) -> None:
++        """Save through the shared store (other sessions and the profile page see the change), else directly."""
++        if self.profile_store is not None:
++            self.profile_store.changed(self.student.student_id, source=self.on_profile_edited)
++        else:
++            self.student.save()
++
++    def on_profile_edited(self) -> None:
++        """Someone else (the profile page, another session) changed this student's profile: refresh the page."""
++        self._emit_profile()
++
+     def _emit_profile(self) -> None:
+         """The page gets the profile view directly; the durable log records only that it changed."""
+         if self.student is None:
+@@ -1164,7 +1197,7 @@ class Orchestrator:
+         from live_agent.lesson import LessonLine, LessonPlanner
+ 
+         d = self.director
+-        planner = LessonPlanner(d.llm, name=d.persona_name, bio=d.persona_bio)
++        planner = LessonPlanner(d.llm, name=d.persona_name, bio=d.persona_bio, curriculum=self.curriculum)
+         context = "；".join(t for r, t in d.dialogue if r == "user")[-300:]
+         try:
+             outline = await planner.outline(topic, context, profile=self.student)
+@@ -1203,7 +1236,7 @@ class Orchestrator:
+                 d.add_lesson_lines(lines)
+                 if self.student is not None and outline.sections[i].get("concepts"):
+                     self.student.mark_taught(outline.sections[i]["concepts"])
+-                    self.student.save()
++                    self._save_profile()
+                 self._make_figures()
+                 self._spawn(self._judge_figures(planner, lines), "figure_judgement")
+                 ex = next((ln.exercise for ln in lines if getattr(ln, "exercise", None) is not None), None)
+@@ -1285,7 +1318,7 @@ class Orchestrator:
+                               chains={c.chain_id: c.status.value for c in self.director.chains.values()},
+                               recalled=[])
+                 return graded
+-        self.director.student_context = self.student.summary() if self.student is not None else ""
++        self.director.student_context = self._student_context()
+         decision = await self.director.decide(utt, memories)
+         term = (decision or {}).get("forget_term")
+         if epoch != self._input_epoch:
+@@ -1319,7 +1352,7 @@ class Orchestrator:
+             if self.student is not None and (decision or {}).get("profile_update"):
+                 changed = self.student.apply_update(decision["profile_update"])
+                 if changed:
+-                    self.student.save()
++                    self._save_profile()
+                     self.log.emit(EventType.LESSON, now(), stage="profile_updated", changed=changed)
+                     self._emit_profile()
+         self._drain_director_events(now())  # before the erasure, so its redaction covers these events
+diff --git a/live_agent/server/app.py b/live_agent/server/app.py
+index c981105..331bee6 100644
+--- a/live_agent/server/app.py
++++ b/live_agent/server/app.py
+@@ -38,7 +38,7 @@ import re
+ from pathlib import Path
+ 
+ import numpy as np
+-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
++from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+ from fastapi.responses import HTMLResponse
+ 
+ from live_agent.capability import CapabilityManifest, Status
+@@ -54,6 +54,7 @@ STATIC = Path(__file__).parent / "static"
+ 
+ 
+ BOARD_IMAGES = Path(__file__).resolve().parents[2] / ".cache" / "board_images"
++CURRICULUM = Path(__file__).resolve().parents[2] / "configs" / "curriculum"  # national standards + grade profiles
+ STUDENT_SEEDS = Path(__file__).resolve().parents[2] / "configs" / "students"  # example profiles (fictional)
+ 
+ 
+@@ -267,6 +268,21 @@ def build_app(args: argparse.Namespace) -> FastAPI:
+ 
+     app.state.shared_gen = None
+     app.state.session_lock = asyncio.Lock()
++    from live_agent.student import ProfileStore
++
++    # one shared copy per student for sessions and the profile page; only ids on the allow-list are reachable
++    profiles = ProfileStore(Path(args.student_store), STUDENT_SEEDS,
++                            [x for x in (args.students or args.student).split(",")
++                             if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", x)])
++    app.state.profiles = profiles
++    from live_agent.curriculum import Curriculum
++
++    curriculum = Curriculum.load(CURRICULUM)  # course knowledge base (empty if not present)
++    app.state.curriculum = curriculum
++
++    @app.get("/api/curriculum")
++    async def curriculum_summary() -> dict:
++        return curriculum.summary()
+ 
+     @app.on_event("startup")
+     async def _startup() -> None:
+@@ -347,6 +363,52 @@ def build_app(args: argparse.Namespace) -> FastAPI:
+     async def index() -> HTMLResponse:
+         return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
+ 
++    # ---------------------------------------------------------------- student profiles (personal data)
++    @app.get("/profile")
++    async def profile_page() -> HTMLResponse:
++        return HTMLResponse((STATIC / "profile.html").read_text(encoding="utf-8"))
++
++    def _profile_or_404(student_id: str):
++        p = profiles.get(student_id)
++        if p is None:
++            raise HTTPException(404, "unknown student")
++        return p
++
++    def _full(p) -> dict:
++        return {**p.view(), "saved": profiles.exists(p.student_id)}
++
++    @app.get("/api/students")
++    async def list_students() -> dict:
++        out = []
++        for sid in profiles.allowed:
++            p = profiles.get(sid)
++            out.append({"id": sid, "name": p.name, "grade": p.grade, "saved": profiles.exists(sid)})
++        return {"students": out}
++
++    @app.get("/api/students/{student_id}")
++    async def get_student(student_id: str) -> dict:
++        return _full(_profile_or_404(student_id))
++
++    @app.put("/api/students/{student_id}")
++    async def put_student(student_id: str, body: dict = Body(...)) -> dict:
++        """Edit name / grade / exams / concept estimates. ``version`` must be the one the editor loaded: a lesson
++        may have graded an exercise meanwhile, and that result must not be overwritten silently."""
++        p = _profile_or_404(student_id)
++        if body.get("version") != p.version:
++            raise HTTPException(409, "the profile changed since it was loaded (reload to see the latest)")
++        p.update_basics({k: body[k] for k in ("name", "grade", "exams") if k in body})
++        p.edit_concepts(body.get("concepts"))
++        if body.get("clear_history"):
++            p.history = []
++        profiles.changed(student_id)
++        return _full(p)
++
++    @app.post("/api/students/{student_id}/reset")
++    async def reset_student(student_id: str) -> dict:
++        """Delete the saved profile: back to the example seed (or empty)."""
++        _profile_or_404(student_id)
++        return _full(profiles.reset(student_id))
++
+     @app.websocket("/ws")
+     async def ws_endpoint(ws: WebSocket) -> None:
+         await ws.accept()
+@@ -426,18 +488,20 @@ def build_app(args: argparse.Namespace) -> FastAPI:
+ 
+                 orch.image_maker = ImageMaker(args.image_url, BOARD_IMAGES)
+             orch.figure_dir = BOARD_IMAGES  # exact plots need no model
+-            orch.answer_boards = bool(canon.get("board"))  # a persona with a board writes one for every knowledge answer
++            orch.answer_boards = bool(canon.get("board"))
++            orch.curriculum = curriculum  # a persona with a board writes one for every knowledge answer
+             # the page may pick a profile only from the server's allow-list: the demo has one shared access token and no
+             # per-student accounts, so the operator decides which profiles this deployment exposes
+             allowed = [x for x in (args.students or args.student).split(",") if x]
+             student_id = str(hello.get("student") or args.student)
+             if student_id not in allowed:
+                 student_id = args.student
+-            if mode == "private" and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", student_id) and student_id in allowed:
+-                # personal data: only a private session reads or updates the saved profile
+-                from live_agent.student import StudentProfile
+-
+-                orch.student = StudentProfile.load(student_id, Path(args.student_store), STUDENT_SEEDS)
++            if mode == "private" and student_id in allowed:
++                # personal data: only a private session reads or updates the saved profile (the shared copy)
++                orch.student = profiles.get(student_id)
++                orch.profile_store = profiles
++                if orch.student is not None:
++                    profiles.subscribe(student_id, orch.on_profile_edited)
+             if getattr(judge, "vlm", None) is not None:  # the camera focus check uses the judge's VLM (opt-in)
+                 from live_agent.attention import AttentionMonitor
+ 
+@@ -555,7 +619,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
+                     orch.camera_off()
+                 elif t == "profile" and orch.student is not None and isinstance(data.get("profile"), dict):
+                     orch.student.update_basics(data["profile"])  # name, grade, exams (mastery comes from exercises)
+-                    orch.student.save()
++                    orch._save_profile()
+                     orch._emit_profile()
+                 elif t == "video_codec" and data.get("codec") == "jpeg":
+                     transport.video_codec = "jpeg"  # the page failed to decode H.264
+@@ -568,6 +632,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
+                 if worker is not None:
+                     worker.cancel()
+                 if orch is not None:
++                    if orch.student is not None:
++                        profiles.unsubscribe(orch.student.student_id, orch.on_profile_edited)
+                     await orch.stop()
+                 if transport.recorder is not None:
+                     await asyncio.to_thread(transport.recorder.close)  # mux video + audio
+diff --git a/live_agent/server/static/index.html b/live_agent/server/static/index.html
+index 5a40c2d..3f86aa3 100644
+--- a/live_agent/server/static/index.html
++++ b/live_agent/server/static/index.html
+@@ -140,6 +140,7 @@
+         <label>会话 <select id="mode"><option value="private">一对一私聊</option><option value="public">测试直播</option></select></label>
+         <label>用户 <input type="text" id="uid" value="user-1" style="flex:0;width:110px;min-width:90px"></label>
+         <label title="私聊会话读取并更新这个学生的档案">学生 <input type="text" id="sid" value="demo" style="flex:0;width:80px;min-width:70px"></label>
++        <a href="/profile" target="_blank" id="profLink" style="align-self:center">档案管理</a>
+         <button class="primary" id="connect">连接</button>
+         <button id="disconnect" disabled>断开</button>
+       </div>
+@@ -160,7 +161,7 @@
+ 
+   <aside class="panel">
+     <div class="card prof" id="profCard">
+-      <h2>学生档案 <button id="profEdit" hidden style="float:right;font-size:12px">编辑</button></h2>
++      <h2>学生档案 <button id="profEdit" hidden style="float:right;font-size:12px">管理档案 ↗</button></h2>
+       <div id="prof"><div class="empty">私聊会话连接后显示学生的年级、成绩和各知识点掌握度；课程和练习按档案调整。</div></div>
+     </div>
+     <div class="card">
+@@ -355,27 +356,7 @@ function showProfile(p, flash) {
+     (exams ? `<ul class="exams">${exams}</ul>` : `<div class="meta">还没有考试成绩</div>`) +
+     (cps ? `<div class="meta">知识点掌握度（估计值，未校准；悬停看依据）</div>` + cps : `<div class="meta">还没有知识点记录：做练习后会出现</div>`);
+ }
+-function examLines(p) { return (p.exams || []).map(e => `${e.subject} ${e.name} ${e.score}/${e.full} ${(e.weak || []).join(",")}`.trim()).join("\n"); }
+-$("profEdit").onclick = () => {
+-  if (!profile || $("profForm")) return;
+-  const f = document.createElement("form"); f.id = "profForm";
+-  f.innerHTML = `<label>名字 <input name="name" value="${esc(profile.name)}"></label>
+-    <label>年级 <input name="grade" value="${esc(profile.grade)}" placeholder="如 初二"></label>
+-    <label>考试成绩（每行：学科 考试 分数/满分 失分点,失分点）<textarea name="exams">${esc(examLines(profile))}</textarea></label>
+-    <div><button class="primary" type="submit">保存</button> <button type="button" id="profCancel">取消</button></div>`;
+-  $("prof").appendChild(f);
+-  $("profCancel").onclick = () => f.remove();
+-  f.onsubmit = (ev) => {
+-    ev.preventDefault();
+-    const exams = f.exams.value.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+-      const m = l.match(/^(\S+)\s+(\S+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\s*(.*)$/);
+-      return m ? {subject: m[1], name: m[2], score: +m[3], full: +(m[4] || 100),
+-                  weak: m[5].split(/[,，、\s]+/).filter(Boolean)} : null;
+-    }).filter(Boolean);
+-    send({type: "profile", profile: {name: f.name.value.trim(), grade: f.grade.value.trim(), exams}});
+-    f.remove();
+-  };
+-};
++$("profEdit").onclick = () => window.open(`/profile?student=${encodeURIComponent(profile ? profile.id : $("sid").value)}`, "_blank");
+ function showExercise(ex) {  // answer buttons while an exercise waits; the persona's examples otherwise
+   const key = ex ? ex.concept + (ex.options || []).join("") : "";
+   if (key === exerciseKey) return;
+diff --git a/live_agent/server/static/profile.html b/live_agent/server/static/profile.html
+new file mode 100644
+index 0000000..e3cc4bc
+--- /dev/null
++++ b/live_agent/server/static/profile.html
+@@ -0,0 +1,355 @@
++<!doctype html>
++<html lang="zh-CN">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>学生档案管理</title>
++<style>
++  :root {
++    --bg:#f5f1e8; --panel:#fffdf7; --ink:#1d1b17; --muted:#6f685b; --line:#ddd4c2; --accent:#9d3a22;
++    --ok:#2f7d4f; --bad:#b3372a; --warn:#a86b12; --info:#2d5d8a; --chip:#efe8d8; --manual:#6b4fa0;
++  }
++  @media (prefers-color-scheme: dark) {
++    :root:not([data-theme="light"]) {
++      --bg:#161512; --panel:#1f1d19; --ink:#ede7da; --muted:#a39b8b; --line:#34302a; --accent:#e0795b;
++      --ok:#5fbf86; --bad:#ec7a6c; --warn:#e2a64a; --info:#7fb0e0; --chip:#2a2722; --manual:#b39ae0;
++    }
++  }
++  * { box-sizing:border-box; }
++  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 "Noto Sans SC",system-ui,sans-serif; }
++  header { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; justify-content:space-between;
++           padding:12px 16px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
++  h1 { margin:0; font:600 18px "Noto Serif SC",serif; }
++  h2 { margin:0 0 10px; font:600 15px "Noto Serif SC",serif; display:flex; justify-content:space-between; align-items:center; gap:8px; }
++  main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:16px; }
++  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; min-width:0; }
++  .row { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; }
++  label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--muted); }
++  input, select { font:inherit; font-size:14px; color:var(--ink); background:var(--bg); border:1px solid var(--line);
++                  border-radius:8px; padding:5px 8px; min-width:0; }
++  input:focus, select:focus, button:focus-visible { outline:2px solid var(--info); outline-offset:1px; }
++  input[type=number] { width:5.5em; }
++  button { font:inherit; font-size:13px; border:1px solid var(--line); background:var(--chip); color:var(--ink);
++           border-radius:8px; padding:5px 12px; cursor:pointer; white-space:nowrap; }
++  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
++  button.ghost { background:transparent; }
++  button.danger { color:var(--bad); background:transparent; border-color:var(--bad); }
++  button:disabled { opacity:.5; cursor:default; }
++  a { color:var(--info); }
++  .muted { color:var(--muted); font-size:12px; }
++  .status { font-size:13px; color:var(--muted); }
++  .status.dirty { color:var(--warn); font-weight:600; }
++  .status.err { color:var(--bad); font-weight:600; }
++  .status.ok { color:var(--ok); }
++  .empty { color:var(--muted); font-size:13px; padding:6px 0; }
++  /* exams: one editable row per exam; stacks on narrow screens */
++  .exam { display:grid; grid-template-columns: 6em 1fr 9.5em 5.5em 5.5em 1.4fr 3.5em auto; gap:8px; align-items:end;
++          padding:8px 0; border-bottom:1px dashed var(--line); }
++  .exam .pct { font-variant-numeric:tabular-nums; color:var(--muted); padding-bottom:6px; text-align:right; }
++  .exam input { width:100%; }
++  @media (max-width: 820px) {
++    .exam { grid-template-columns: 1fr 1fr; }
++    .exam .pct { text-align:left; }
++  }
++  /* concepts */
++  .concept { display:grid; grid-template-columns: minmax(7em, 1.1fr) 6em minmax(140px, 2fr) 4.2em minmax(9em, 1.3fr) auto;
++             gap:10px; align-items:center; padding:8px 0; border-bottom:1px dashed var(--line); }
++  .concept .name { font-weight:600; overflow-wrap:anywhere; }
++  .concept input[type=range] { width:100%; }
++  /* the slider is the bar: its colour is the level; untested concepts show a faint slider */
++  .concept.weak input[type=range] { accent-color:var(--bad); } .concept.partial input[type=range] { accent-color:var(--warn); }
++  .concept.mastered input[type=range] { accent-color:var(--ok); } .concept.unknown input[type=range] { opacity:.35; }
++  .bar { height:8px; border-radius:4px; background:var(--chip); overflow:hidden; }
++  .bar i { display:block; height:100%; }
++  .weak .bar i { background:var(--bad); } .partial .bar i { background:var(--warn); }
++  .mastered .bar i { background:var(--ok); } .unknown .bar i { background:var(--line); }
++  .v { font-variant-numeric:tabular-nums; text-align:right; }
++  .src { font-size:12px; color:var(--muted); }
++  .src.manual { color:var(--manual); font-weight:600; }
++  .concept.removed { opacity:.45; text-decoration:line-through; }
++  .concept.changed .name::after { content:" ●"; color:var(--warn); }
++  @media (max-width: 820px) {
++    .concept { grid-template-columns: 1fr auto; }
++    .concept .grow { grid-column: 1 / -1; }
++  }
++  .legend { display:flex; flex-wrap:wrap; gap:10px; font-size:12px; color:var(--muted); margin-bottom:6px; }
++  .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:4px; vertical-align:-1px; }
++  .legend .l-weak::before { background:var(--bad); } .legend .l-partial::before { background:var(--warn); }
++  .legend .l-mastered::before { background:var(--ok); } .legend .l-unknown::before { background:var(--line); }
++  .hist { width:100%; border-collapse:collapse; font-size:13px; }
++  .hist th, .hist td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
++  .hist th { color:var(--muted); font-weight:500; }
++  .hist .ok { color:var(--ok); } .hist .bad { color:var(--bad); }
++  .tablewrap { overflow-x:auto; }
++  .actions { position:sticky; bottom:0; background:var(--bg); border-top:1px solid var(--line); padding:10px 16px;
++             display:flex; flex-wrap:wrap; gap:8px; justify-content:space-between; align-items:center; }
++  .note { font-size:12px; color:var(--muted); border-left:3px solid var(--line); padding:2px 8px; margin:0 0 10px; }
++</style>
++</head>
++<body>
++<header>
++  <h1>学生档案管理</h1>
++  <div class="row">
++    <label>学生 <select id="student" aria-label="选择学生"></select></label>
++    <a id="back" href="/">← 返回课堂</a>
++  </div>
++</header>
++
++<main>
++  <p class="note">档案是个人数据，只在「一对一私聊」课堂中使用。老师按档案调整讲课的深浅、例子和练习；学生做练习后掌握度会自动更新。
++    掌握度都是<b>估计值</b>（规则未经校准），这里可以手动修正。</p>
++
++  <section class="card" aria-labelledby="h-basic">
++    <h2 id="h-basic">基本信息</h2>
++    <div class="row">
++      <label>名字 <input id="name" maxlength="20" placeholder="如 小明"></label>
++      <label>年级 <input id="grade" maxlength="12" list="grades" placeholder="如 初二"></label>
++      <datalist id="grades"></datalist>
++      <span class="muted" id="meta"></span>
++    </div>
++  </section>
++
++  <section class="card" aria-labelledby="h-exams">
++    <h2 id="h-exams">考试成绩 <button id="addExam">＋ 添加考试</button></h2>
++    <div class="muted" style="margin-bottom:4px">失分知识点用顿号或逗号分开；老师会按最近一次考试的失分点重点讲。</div>
++    <div id="exams"></div>
++  </section>
++
++  <section class="card" aria-labelledby="h-concepts">
++    <h2 id="h-concepts">知识点掌握度（估计）</h2>
++    <div class="legend"><span class="l-weak">薄弱 &lt;50%</span><span class="l-partial">基本理解</span>
++      <span class="l-mastered">已掌握 ≥80%（需 3 道以上练习或老师设定）</span><span class="l-unknown">未评估</span></div>
++    <div id="concepts"></div>
++    <div class="row" style="margin-top:10px">
++      <label>新知识点 <input id="newName" maxlength="20" placeholder="如 因式分解"></label>
++      <label>学科 <input id="newSubject" maxlength="12" placeholder="如 数学" style="width:7em"></label>
++      <label>估计掌握度 % <input id="newMastery" type="number" min="0" max="100" placeholder="留空=未评估"></label>
++      <button id="addConcept" style="align-self:end">＋ 添加知识点</button>
++    </div>
++  </section>
++
++  <section class="card" aria-labelledby="h-hist">
++    <h2 id="h-hist">最近的练习 <label style="flex-direction:row;align-items:center;gap:6px;font-size:13px;color:var(--ink)">
++      <input type="checkbox" id="clearHist"> 保存时清空练习记录</label></h2>
++    <div class="tablewrap"><table class="hist"><thead><tr><th>时间</th><th>知识点</th><th>结果</th><th>题目</th><th>学生回答</th></tr></thead>
++      <tbody id="hist"></tbody></table></div>
++  </section>
++</main>
++
++<div class="actions">
++  <span class="status" id="status" role="status" aria-live="polite">载入中…</span>
++  <div class="row">
++    <button class="danger" id="reset" title="删除保存的档案，恢复为示例档案（或空档案）">恢复为初始档案</button>
++    <button class="ghost" id="discard" disabled>放弃修改</button>
++    <button class="primary" id="save" disabled>保存</button>
++  </div>
++</div>
++
++<script>
++const $ = (id) => document.getElementById(id);
++const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
++const LEVEL = {mastered: "已掌握", partial: "基本理解", weak: "薄弱", unknown: "未评估"};
++const GRADES = ["小学一年级","小学二年级","小学三年级","小学四年级","小学五年级","小学六年级","初一","初二","初三","高一","高二","高三"];
++$("grades").innerHTML = GRADES.map(g => `<option value="${g}">`).join("");
++
++let sid = new URLSearchParams(location.search).get("student") || "";
++let server = null;          // the profile as last loaded
++let exams = [];             // editable copy
++let edits = new Map();      // concept name -> {mastery?, delete?, subject?}
++let dirty = false;
++
++function setStatus(text, cls) { const el = $("status"); el.textContent = text; el.className = "status " + (cls || ""); }
++function markDirty() {
++  dirty = true; $("save").disabled = false; $("discard").disabled = false;
++  setStatus("有未保存的修改", "dirty");
++}
++function clean() { dirty = false; $("save").disabled = true; $("discard").disabled = true; }
++
++async function api(path, opts) {
++  const r = await fetch(path, {headers: {"Content-Type": "application/json"}, ...opts});
++  if (!r.ok) { const e = new Error((await r.json().catch(() => ({}))).detail || r.statusText); e.status = r.status; throw e; }
++  return r.json();
++}
++
++async function loadList() {
++  const {students} = await api("/api/students");
++  if (!students.length) { setStatus("服务器没有开放任何学生档案", "err"); return; }
++  if (!students.some(s => s.id === sid)) sid = students[0].id;
++  $("student").innerHTML = students.map(s =>
++    `<option value="${esc(s.id)}"${s.id === sid ? " selected" : ""}>${esc(s.name || s.id)}${s.grade ? " · " + esc(s.grade) : ""} (${esc(s.id)})</option>`).join("");
++  await load();
++}
++
++async function load() {
++  server = await api(`/api/students/${encodeURIComponent(sid)}`);
++  exams = server.exams.map(e => ({...e, weak: (e.weak || []).join("、")}));
++  edits = new Map(); $("clearHist").checked = false;
++  history.replaceState(null, "", `?student=${encodeURIComponent(sid)}`);
++  $("back").href = "/";
++  render(); clean();
++  setStatus(`已载入 · 版本 ${server.version}${server.saved ? "" : " · 尚未保存过（显示的是初始档案）"}`, "ok");
++}
++
++function render() {
++  $("name").value = server.name || ""; $("grade").value = server.grade || "";
++  $("meta").textContent = `档案编号 ${server.id} · 版本 ${server.version}`;
++  renderExams(); renderConcepts(); renderHistory();
++}
++
++function renderExams() {
++  const el = $("exams");
++  if (!exams.length) { el.innerHTML = `<div class="empty">还没有考试成绩。</div>`; return; }
++  el.innerHTML = exams.map((e, i) => {
++    const pct = e.full > 0 && e.score !== "" ? Math.round(100 * e.score / e.full) + "%" : "";
++    return `<div class="exam" data-i="${i}">
++      <label>学科 <input data-k="subject" value="${esc(e.subject)}" maxlength="12"></label>
++      <label>考试 <input data-k="name" value="${esc(e.name)}" maxlength="20" placeholder="如 期中考试"></label>
++      <label>日期 <input data-k="date" type="date" value="${esc(e.date)}"></label>
++      <label>分数 <input data-k="score" type="number" min="0" step="0.5" value="${esc(e.score)}"></label>
++      <label>满分 <input data-k="full" type="number" min="1" step="1" value="${esc(e.full)}"></label>
++      <label>失分知识点 <input data-k="weak" value="${esc(e.weak)}" placeholder="如 因式分解、浮力"></label>
++      <span class="pct">${pct}</span>
++      <button class="ghost" data-del="${i}" aria-label="删除这次考试">删除</button></div>`;
++  }).join("");
++}
++$("exams").addEventListener("input", (ev) => {
++  const row = ev.target.closest(".exam"), k = ev.target.dataset.k;
++  if (!row || !k) return;
++  const e = exams[+row.dataset.i];
++  e[k] = (k === "score" || k === "full") ? (ev.target.value === "" ? "" : +ev.target.value) : ev.target.value;
++  if (k === "score" || k === "full") row.querySelector(".pct").textContent = e.full > 0 && e.score !== "" ? Math.round(100 * e.score / e.full) + "%" : "";
++  markDirty();
++});
++$("exams").addEventListener("click", (ev) => {
++  const i = ev.target.dataset.del;
++  if (i === undefined) return;
++  exams.splice(+i, 1); renderExams(); markDirty();
++});
++$("addExam").onclick = () => {
++  exams.push({subject: "", name: "", date: new Date().toISOString().slice(0, 10), score: "", full: 100, weak: ""});
++  renderExams(); markDirty();
++  $("exams").lastElementChild.querySelector("input").focus();
++};
++
++function srcText(c) {
++  if (c.source === "manual") return `<span class="src manual">老师设定</span>`;
++  if (c.source === "exercise") return `<span class="src">练习 ${c.correct}/${c.attempts} 对</span>`;
++  if (c.source === "exam") return `<span class="src">据考试失分推断</span>`;
++  return `<span class="src">未评估</span>`;
++}
++function levelOf(m, c) {
++  if (m == null) return "unknown";
++  if (m >= 0.8) return (c.attempts >= 3 || c.source === "manual" || edits.get(c.name)?.mastery != null) ? "mastered" : "partial";
++  return m >= 0.5 ? "partial" : "weak";
++}
++function renderConcepts() {
++  const el = $("concepts");
++  const list = server.concepts.slice();
++  for (const [name, e] of edits) if (e.added && !list.some(c => c.name === name))
++    list.push({name, subject: e.subject || "", mastery: null, source: null, attempts: 0, correct: 0, notes: []});
++  if (!list.length) { el.innerHTML = `<div class="empty">还没有知识点记录。做练习或在下面添加。</div>`; return; }
++  el.innerHTML = list.map(c => {
++    const e = edits.get(c.name) || {};
++    const m = "mastery" in e ? e.mastery : c.mastery;
++    const lvl = levelOf(m, c);
++    const pct = m == null ? "–" : (c.source === "exam" && !("mastery" in e) ? "≈" : "") + Math.round(m * 100) + "%";
++    const src = "mastery" in e ? (e.mastery == null ? `<span class="src">将清除</span>` : `<span class="src manual">老师设定（未保存）</span>`) : srcText(c);
++    return `<div class="concept ${lvl}${e.delete ? " removed" : ""}${Object.keys(e).length ? " changed" : ""}" data-name="${esc(c.name)}">
++      <span class="name">${esc(c.name)}</span>
++      <span class="muted">${esc(c.subject || "")}</span>
++      <span class="grow"><input type="range" min="0" max="100" value="${m == null ? 50 : Math.round(m * 100)}" aria-label="${esc(c.name)} 掌握度"
++               title="拖动即由老师设定掌握度"></span>
++      <span class="v">${pct}</span>
++      <span class="grow">${src}${c.notes && c.notes.length ? `<div class="muted">最近的错误：${esc(c.notes[c.notes.length - 1])}</div>` : ""}
++        <div class="muted">${LEVEL[lvl]}</div></span>
++      <span class="row" style="gap:4px">
++        <button class="ghost" data-act="clear" title="清除估计（变为未评估）">清除</button>
++        <button class="ghost" data-act="${e.delete ? "undo" : "delete"}">${e.delete ? "撤销" : "删除"}</button></span></div>`;
++  }).join("");
++}
++$("concepts").addEventListener("input", (ev) => {
++  if (ev.target.type !== "range") return;
++  const name = ev.target.closest(".concept").dataset.name;
++  edits.set(name, {...(edits.get(name) || {}), mastery: +ev.target.value / 100, delete: false});
++  const row = ev.target.closest(".concept");
++  row.querySelector(".v").textContent = ev.target.value + "%";
++  markDirty();
++});
++$("concepts").addEventListener("change", (ev) => { if (ev.target.type === "range") renderConcepts(); });
++$("concepts").addEventListener("click", (ev) => {
++  const act = ev.target.dataset.act; if (!act) return;
++  const name = ev.target.closest(".concept").dataset.name, e = edits.get(name) || {};
++  if (act === "clear") edits.set(name, {...e, mastery: null, delete: false});
++  if (act === "delete") edits.set(name, {...e, delete: true});
++  if (act === "undo") { const {delete: _, ...rest} = e; Object.keys(rest).length ? edits.set(name, rest) : edits.delete(name); }
++  renderConcepts(); markDirty();
++});
++$("addConcept").onclick = () => {
++  const name = $("newName").value.trim(); if (!name) { $("newName").focus(); return; }
++  const raw = $("newMastery").value.trim();
++  const e = {added: true, subject: $("newSubject").value.trim()};
++  if (raw !== "") e.mastery = Math.max(0, Math.min(100, +raw)) / 100;
++  edits.set(name, e);
++  $("newName").value = ""; $("newMastery").value = "";
++  renderConcepts(); markDirty();
++};
++
++function renderHistory() {
++  const h = server.history || [];
++  $("hist").innerHTML = h.length ? h.map(x => `<tr><td>${esc(x.t)}</td><td>${esc(x.concept)}</td>
++      <td class="${x.correct ? "ok" : "bad"}">${x.correct ? "答对" : "答错"}</td><td>${esc(x.question)}</td><td>${esc(x.answer)}</td></tr>`).join("")
++    : `<tr><td colspan="5" class="empty">还没有练习记录。</td></tr>`;
++}
++
++["name", "grade"].forEach(id => $(id).addEventListener("input", markDirty));
++$("clearHist").addEventListener("change", markDirty);
++
++$("save").onclick = async () => {
++  const bad = exams.find(e => !String(e.subject).trim() || e.score === "" || !(e.full > 0));
++  if (bad) { setStatus("每次考试都要填写学科、分数和满分", "err"); return; }
++  const body = {
++    version: server.version, name: $("name").value.trim(), grade: $("grade").value.trim(),
++    exams: exams.map(e => ({subject: e.subject.trim(), name: e.name.trim(), date: e.date, score: +e.score, full: +e.full,
++                            weak: String(e.weak).split(/[、,，;；\s]+/).filter(Boolean)})),
++    concepts: [...edits].map(([name, e]) => ({name, ...(e.delete ? {delete: true} : {}),
++      ...("mastery" in e && !e.delete ? {mastery: e.mastery} : {}), ...(e.added ? {subject: e.subject} : {})})),
++    clear_history: $("clearHist").checked,
++  };
++  $("save").disabled = true; setStatus("保存中…");
++  try {
++    server = await api(`/api/students/${encodeURIComponent(sid)}`, {method: "PUT", body: JSON.stringify(body)});
++    exams = server.exams.map(e => ({...e, weak: (e.weak || []).join("、")}));
++    edits = new Map(); $("clearHist").checked = false; render(); clean();
++    setStatus(`已保存 · 版本 ${server.version} · 正在上课的页面会自动更新`, "ok");
++  } catch (err) {
++    $("save").disabled = false;
++    if (err.status === 409) setStatus("保存失败：你编辑时档案被更新了（例如课堂上刚批改了一道练习）。请「放弃修改」重新载入后再改。", "err");
++    else setStatus("保存失败：" + err.message, "err");
++  }
++};
++$("discard").onclick = () => load().catch(e => setStatus("载入失败：" + e.message, "err"));
++$("reset").onclick = async () => {
++  if (!confirm(`确定把「${server.name || sid}」的档案恢复为初始档案吗？保存的成绩、掌握度和练习记录都会删除。`)) return;
++  try { server = await api(`/api/students/${encodeURIComponent(sid)}/reset`, {method: "POST"}); await load(); setStatus("已恢复为初始档案", "ok"); }
++  catch (err) { setStatus("恢复失败：" + err.message, "err"); }
++};
++$("student").onchange = async () => {
++  if (dirty && !confirm("有未保存的修改，切换学生会丢弃它们。继续吗？")) { $("student").value = sid; return; }
++  sid = $("student").value; await load();
++};
++window.addEventListener("beforeunload", (ev) => { if (dirty) { ev.preventDefault(); ev.returnValue = ""; } });
++
++// while nothing is being edited, follow changes made by a running lesson (graded exercises)
++setInterval(async () => {
++  if (dirty || !server || document.hidden) return;
++  try {
++    const now = await api(`/api/students/${encodeURIComponent(sid)}`);
++    if (now.version !== server.version) { server = now; exams = now.exams.map(e => ({...e, weak: (e.weak || []).join("、")}));
++      render(); setStatus(`已自动更新（课堂中有新的练习结果）· 版本 ${now.version}`, "ok"); }
++  } catch (_) { /* offline for a moment: try again next time */ }
++}, 5000);
++
++loadList().catch(e => setStatus("载入失败：" + e.message, "err"));
++</script>
++</body>
++</html>
+diff --git a/live_agent/student.py b/live_agent/student.py
+index f71947b..07c32fd 100644
+--- a/live_agent/student.py
++++ b/live_agent/student.py
+@@ -50,6 +50,7 @@ class Concept:
+     taught: int = 0  # lessons that covered it
+     notes: list[str] = field(default_factory=list)  # recent misconceptions (short, newest last)
+     updated: str = ""
++    manual: bool = False  # the estimate was set by a teacher on the profile page (until the next graded exercise)
+ 
+ 
+ @dataclass
+@@ -60,6 +61,7 @@ class StudentProfile:
+     exams: list[Exam] = field(default_factory=list)
+     concepts: dict[str, Concept] = field(default_factory=dict)
+     history: list[dict] = field(default_factory=list)  # graded exercises, newest last (bounded)
++    version: int = 0  # bumped on every save: an editor saving an older version is refused (no lost updates)
+     path: Path | None = field(default=None, repr=False, compare=False)
+ 
+     # ------------------------------------------------------------ storage
+@@ -74,7 +76,7 @@ class StudentProfile:
+             concepts[name] = Concept(**{k: v for k, v in c.items() if k in Concept.__dataclass_fields__})
+         return cls(student_id=str(d.get("student_id") or "student"), name=str(d.get("name") or ""),
+                    grade=str(d.get("grade") or ""), exams=exams, concepts=concepts,
+-                   history=list(d.get("history") or [])[-100:], path=path)
++                   history=list(d.get("history") or [])[-100:], version=int(d.get("version") or 0), path=path)
+ 
+     @classmethod
+     def load(cls, student_id: str, store: Path, seed_dir: Path | None = None) -> StudentProfile:
+@@ -97,6 +99,7 @@ class StudentProfile:
+             return
+         self.path.parent.mkdir(parents=True, exist_ok=True)
+         with _SAVE_LOCK:
++            self.version += 1
+             tmp = self.path.with_name(f".{self.path.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
+             tmp.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
+             tmp.replace(self.path)
+@@ -157,8 +160,11 @@ class StudentProfile:
+         return 0.4 if any(concept in e.weak for e in latest.values()) else None
+ 
+     def source(self, concept: str) -> str | None:
+-        """Where the estimate comes from: "exercise" (graded answers), "exam" (a prior), None (unknown)."""
++        """Where the estimate comes from: "manual" (a teacher set it), "exercise" (graded answers), "exam" (a
++        prior), None (unknown)."""
+         c = self.concepts.get(concept)
++        if c is not None and c.manual and c.mastery is not None:
++            return "manual"
+         if c is not None and c.attempts and c.mastery is not None:
+             return "exercise"
+         return "exam" if self.mastery(concept) is not None else None
+@@ -175,7 +181,7 @@ class StudentProfile:
+         if m is None:
+             return "unknown"
+         c = self.concepts.get(concept)
+-        if m >= MASTERED and (c is None or c.attempts < 3):
++        if m >= MASTERED and (c is None or (c.attempts < 3 and not c.manual)):
+             return "partial"
+         return "mastered" if m >= MASTERED else "partial" if m >= WEAK else "weak"
+ 
+@@ -197,6 +203,7 @@ class StudentProfile:
+         c.mastery = round(m + RATE * ((1.0 if correct else 0.0) - m), 3)
+         c.attempts += 1
+         c.correct += int(bool(correct))
++        c.manual = False  # evidence now
+         c.updated = time.strftime("%Y-%m-%d")
+         if misconception and not correct:
+             c.notes = (c.notes + [str(misconception)[:40]])[-3:]
+@@ -205,6 +212,37 @@ class StudentProfile:
+         return {"concept": c.name, "correct": bool(correct), "before": before, "after": c.mastery,
+                 "level": self.level(c.name)}
+ 
++    def edit_concepts(self, edits: Any) -> list[str]:
++        """Profile page edits: [{"name", "subject"?, "mastery"? (0-1, or null to clear), "delete"?, "rename"?}]."""
++        changed = []
++        for e in edits if isinstance(edits, list) else []:
++            if not isinstance(e, dict) or not str(e.get("name") or "").strip():
++                continue
++            name = str(e["name"]).strip()[:20]
++            if e.get("delete"):
++                if self.concepts.pop(name, None) is not None:
++                    changed.append(name)
++                continue
++            c = self._concept(name, str(e.get("subject") or "")[:12])
++            if "subject" in e:
++                c.subject = str(e.get("subject") or "")[:12]
++            if "mastery" in e:
++                m = e["mastery"]
++                if m is None:
++                    c.mastery, c.manual = None, False
++                else:
++                    try:
++                        c.mastery, c.manual = round(max(0.0, min(1.0, float(m))), 3), True
++                    except (TypeError, ValueError):
++                        continue
++                c.updated = time.strftime("%Y-%m-%d")
++            new = str(e.get("rename") or "").strip()[:20]
++            if new and new != name and new not in self.concepts:
++                self.concepts[new] = self.concepts.pop(name)
++                self.concepts[new].name = new
++            changed.append(name)
++        return changed
++
+     def mark_taught(self, concepts: list[str], subject: str = "") -> None:
+         for name in concepts:
+             if str(name).strip():
+@@ -284,13 +322,69 @@ class StudentProfile:
+         """For the page panel."""
+         names = sorted(set(self.concepts) | {w for e in self.exams for w in e.weak},
+                        key=lambda n: (self.mastery(n) is None, -(self.mastery(n) or 0.0)))
+-        return {"id": self.student_id, "name": self.name, "grade": self.grade,
++        return {"id": self.student_id, "name": self.name, "grade": self.grade, "version": self.version,
+                 "exams": [{"subject": e.subject, "name": e.name, "score": e.score, "full": e.full, "date": e.date,
+                            "weak": e.weak} for e in self.exams],
+                 "concepts": [{"name": n, "mastery": self.mastery(n), "level": self.level(n), "source": self.source(n),
++                              "subject": self.concepts[n].subject if n in self.concepts else "",
++                              "notes": self.concepts[n].notes if n in self.concepts else [],
+                               "attempts": self.concepts[n].attempts if n in self.concepts else 0,
+                               "correct": self.concepts[n].correct if n in self.concepts else 0}
+-                             for n in names][:30]}
++                             for n in names][:60],
++                "history": list(reversed(self.history[-30:]))}
++
++
++class ProfileStore:
++    """One shared, in-memory profile per student for the whole server: live sessions and the profile page edit the
++    same object (a session's exercise result and a teacher's edit never overwrite each other), every change is
++    saved, and listeners (open sessions) are told so their page can refresh."""
+ 
++    def __init__(self, store: Path, seeds: Path | None, allowed: list[str]):
++        self.store, self.seeds, self.allowed = Path(store), seeds, list(dict.fromkeys(allowed))
++        self._profiles: dict[str, StudentProfile] = {}
++        self._listeners: dict[str, list] = {}
+ 
+-__all__ = ["Concept", "Exam", "LEVELS_CN", "StudentProfile"]
++    def get(self, student_id: str) -> StudentProfile | None:
++        if student_id not in self.allowed:
++            return None
++        if student_id not in self._profiles:
++            self._profiles[student_id] = StudentProfile.load(student_id, self.store, self.seeds)
++        return self._profiles[student_id]
++
++    def exists(self, student_id: str) -> bool:
++        return (self.store / f"{student_id}.json").exists()
++
++    def subscribe(self, student_id: str, fn) -> None:
++        self._listeners.setdefault(student_id, []).append(fn)
++
++    def unsubscribe(self, student_id: str, fn) -> None:
++        if fn in self._listeners.get(student_id, []):
++            self._listeners[student_id].remove(fn)
++
++    def changed(self, student_id: str, source=None) -> None:
++        """Save and notify every listener except ``source`` (the one that made the change)."""
++        p = self._profiles.get(student_id)
++        if p is None:
++            return
++        p.save()
++        for fn in list(self._listeners.get(student_id, [])):
++            if fn is not source:
++                fn()
++
++    def reset(self, student_id: str) -> StudentProfile | None:
++        """Back to the seed profile (or empty): the saved copy is deleted."""
++        if student_id not in self.allowed:
++            return None
++        old = self._profiles.get(student_id)
++        (self.store / f"{student_id}.json").unlink(missing_ok=True)
++        fresh = StudentProfile.load(student_id, self.store, self.seeds)
++        fresh.version = (old.version if old is not None else 0) + 1
++        if old is not None:  # keep the object identity: sessions hold a reference to it
++            old.__dict__.update({k: v for k, v in fresh.__dict__.items() if k != "path"})
++            fresh = old
++        self._profiles[student_id] = fresh
++        self.changed(student_id)
++        return fresh
++
++
++__all__ = ["Concept", "Exam", "LEVELS_CN", "ProfileStore", "StudentProfile"]
+diff --git a/tests/test_student.py b/tests/test_student.py
+index dc6c5cf..c9e26e5 100644
+--- a/tests/test_student.py
++++ b/tests/test_student.py
+@@ -379,8 +379,8 @@ def test_the_teacher_persona_requires_a_board_for_knowledge_answers():
+     replies = [json.loads(x.split(" → ", 1)[1]) for x in canon["responder_examples"]]
+     assert all(r["board"]["items"] for r in replies if r["kind"] == "content")
+     # no knowledge example is one of the page's one-click questions: those answers would be replayed, not composed
+-    asked = {x.split(" → ", 1)[0].removeprefix("用户：") for x in canon["responder_examples"]}
+-    content_q = {q for q, r in zip(asked, replies) if r["kind"] == "content"}
++    asked = [x.split(" → ", 1)[0].removeprefix("用户：") for x in canon["responder_examples"]]
++    content_q = [q for q, r in zip(asked, replies) if r["kind"] == "content"]
+     assert not any(q in chip or chip in q for q in content_q for chip in canon["examples"])
+ 
+ 
+@@ -397,3 +397,51 @@ def test_a_reply_copying_an_example_is_composed_again():
+     d2, llm2, _ = tt._director(fresh)
+     asyncio.run(d2.decide(Utterance(uid="u8", speaker="user", text="杠杆为什么能省力？", t_end=now()), None))
+     assert len(llm2.calls) == 1  # an answer in its own words is used as it is
++
++
++# ---------------------------------------------------------------- profile page (API) and shared store
++def _client(tmp_path, students="demo,e2e"):
++    from types import SimpleNamespace
++
++    from fastapi.testclient import TestClient
++
++    from live_agent.server.app import build_app
++    args = SimpleNamespace(config=str(tt.CFG), student="demo", students=students, student_store=str(tmp_path),
++                           record=False, generator="mock", log_dir=str(tmp_path / "logs"))
++    return TestClient(build_app(args))
++
++
++def test_the_profile_page_edits_a_profile_with_version_checks(tmp_path):
++    c = _client(tmp_path)
++    assert c.get("/profile").status_code == 200
++    assert [s["id"] for s in c.get("/api/students").json()["students"]] == ["demo", "e2e"]
++    assert c.get("/api/students/someone-else").status_code == 404  # not on the allow-list
++    p = c.get("/api/students/demo").json()
++    body = {"version": p["version"], "grade": "初三", "exams": [{"subject": "数学", "name": "期末", "score": 91, "weak": ["函数"]}],
++            "concepts": [{"name": "完全平方公式", "mastery": 0.7}, {"name": "光合作用", "delete": True},
++                         {"name": "一次函数", "subject": "数学"}]}
++    q = c.put("/api/students/demo", json=body).json()
++    assert q["grade"] == "初三" and q["version"] == p["version"] + 1 and [e["name"] for e in q["exams"]] == ["期末"]
++    cp = {x["name"]: x for x in q["concepts"]}
++    assert cp["完全平方公式"]["mastery"] == 0.7 and cp["完全平方公式"]["source"] == "manual"
++    assert "光合作用" not in cp and cp["一次函数"]["source"] is None and cp["函数"]["source"] == "exam"
++    assert c.put("/api/students/demo", json=body).status_code == 409  # stale version: refused, not overwritten
++    saved = StudentProfile.load("demo", tmp_path, SEEDS)
++    assert saved.grade == "初三" and saved.concepts["完全平方公式"].manual
++    r = c.post("/api/students/demo/reset").json()  # back to the seed (saved again with a newer version)
++    assert r["grade"] == "初二" and r["version"] > q["version"] and "光合作用" in {x["name"] for x in r["concepts"]}
++
++
++def test_sessions_and_the_page_share_one_profile_and_listeners_are_told(tmp_path):
++    from live_agent.student import ProfileStore
++    store = ProfileStore(tmp_path, SEEDS, ["demo"])
++    a, b = store.get("demo"), store.get("demo")
++    assert a is b and store.get("other") is None
++    told = []
++    store.subscribe("demo", lambda: told.append("session"))
++    a.record_exercise("勾股定理", True)
++    store.changed("demo")  # a page edit / another session: the open session hears about it
++    assert told == ["session"] and StudentProfile.load("demo", tmp_path, SEEDS).concepts["勾股定理"].attempts == 4
++    v = a.version
++    store.reset("demo")
++    assert store.get("demo") is a and a.version > v and a.concepts["勾股定理"].attempts == 3  # same object, seed data
