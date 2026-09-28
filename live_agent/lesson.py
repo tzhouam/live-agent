@@ -154,8 +154,35 @@ def set_figure(board: Board, fig, point: int | None = None, why: str = "") -> Fi
     return f
 
 
+_CTRL = {"\n": "\\n", "\t": "\\t", "\x0c": "\\f", "\x08": "\\b", "\r": "\\r"}
+
+
+def repair_latex(text: str) -> str:
+    """LaTeX whose backslash a JSON reply did not double: "\\neq" arrives as a newline + "eq" (seen live on the board as
+    "(a+b)² eq a²+b²"), likewise \\times / \\theta (tab), \\frac (form feed), \\beta (backspace), \\right (CR).
+    Inside $...$ a control character followed by a letter is put back as the command."""
+    def fix(m):
+        return re.sub(r"[\n\t\x0c\x08\r](?=[a-zA-Z])", lambda c: _CTRL[c.group(0)], m.group(0))
+    return re.sub(r"\$[^$]*\$", fix, text or "")
+
+
+# LaTeX commands read out (the rest are dropped): the meaning of ≠, ×, a fraction or a root must survive speech
+_TEX_SAY = [(r"\\d?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}", r"\2分之\1"), (r"\\sqrt\s*\{([^{}]*)\}", r"根号\1"),
+            (r"\\(neq|ne)(?![a-zA-Z])", "不等于"), (r"\\(times|cdot)(?![a-zA-Z])", "乘"), (r"\\div(?![a-zA-Z])", "除以"),
+            (r"\\(leq|le)(?![a-zA-Z])", "小于等于"), (r"\\(geq|ge)(?![a-zA-Z])", "大于等于"), (r"\\pm(?![a-zA-Z])", "加减"),
+            (r"\\approx(?![a-zA-Z])", "约等于"), (r"\\pi(?![a-zA-Z])", "派"), (r"\\(to|rightarrow)(?![a-zA-Z])", "变成"),
+            (r"<", "小于"), (r">", "大于")]
+
+
+def _tex_say(tex: str) -> str:
+    for pat, rep in _TEX_SAY:
+        tex = re.sub(pat, rep, tex)
+    return re.sub(r"\\[a-zA-Z]+|[{}]", "", tex)
+
+
 def render_item(text: str) -> str:
     """Board text -> safe HTML: plain text escaped, **bold**, $...$ LaTeX as MathML (text fallback)."""
+    text = repair_latex(text)
     out = []
     for i, part in enumerate(re.split(r"\$([^$]+)\$", text)):
         if i % 2:
@@ -193,7 +220,7 @@ def spoken(text: str, chars: int) -> list[str]:
     """A spoken line: no LaTeX/markup/symbols, split at punctuation into pieces of at most ``chars`` characters
     (a fragment shorter than 6 characters is merged into its neighbour, up to ``chars`` + 4)."""
     # inline LaTeX is read out, not dropped (dropping left "公式是 ，记住它。"): commands and braces go, symbols are said
-    text = re.sub(r"\$([^$]*)\$", lambda m: re.sub(r"\\[a-zA-Z]+|[{}]", "", m.group(1)), text or "")
+    text = re.sub(r"\$([^$]*)\$", lambda m: _tex_say(m.group(1)), repair_latex(text))
     text = text.replace("\\", "").strip()
     text = _say(text).replace("*", "").strip()
     if not text:

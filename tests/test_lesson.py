@@ -288,3 +288,12 @@ def test_geometry_is_drawn_to_scale(tmp_path):
     assert (tmp_path / name).stat().st_size > 10_000
     with pytest.raises(ValueError):
         render_plot({"polygons": [{"points": [[0, 0]]}]}, tmp_path)  # a one-point polygon is nothing to draw
+
+
+def test_latex_with_a_backslash_eaten_by_json_is_repaired_and_commands_are_read_out():
+    # seen live: the board showed "(a+b)² eq a²+b²" -- "\neq" in a JSON string became a newline + "eq"
+    broken = json.loads('{"t": "$(a+b)^2 \\neq a^2+b^2$ 和 $2\\times 3$"}')["t"]
+    html = render_item(broken)
+    assert "<mo>&#x02260;</mo>" in html and "<mi>e</mi>" not in html  # the ≠ sign, no stray "eq"
+    assert spoken(broken, 40) == ["a加b的和的平方 不等于 a的平方加b的平方 和 2乘 3"]
+    assert spoken("$\\frac{1}{2}$", 22) == ["2分之1"]
