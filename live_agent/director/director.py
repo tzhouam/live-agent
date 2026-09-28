@@ -200,18 +200,8 @@ class Director:
         if (self.lesson_backlog or self.lesson_title) and d.get("kind") not in ("lesson", "lesson_stop"):
             self._lesson_resume = True  # a reply during a lesson: the lesson resumes after it, and says so
         self._apply_decision(utt, d)
-        board = d.get("board")
-        if isinstance(board, dict) and board.get("items"):  # an answer with its own board (formula, steps)
-            from live_agent.lesson import MAX_ITEMS, Board
-
-            self._answer_boards += 1
-            b = Board(key=f"a{self._answer_boards}", title=str(board.get("title") or "")[:24],
-                      items=[str(x)[:60] for x in board["items"] if str(x).strip()][:MAX_ITEMS])
-            from live_agent.lesson import set_figure
-
-            fig = set_figure(b, board.get("figure"))
-            if fig is not None:
-                self.pending_figures.append(fig)
+        b = self.answer_board(d.get("board"))
+        if b is not None:  # an answer with its own board (formula, steps)
             for seg in self.queue:
                 if id(seg) not in before and seg.board is None:
                     seg.board = b
@@ -239,6 +229,27 @@ class Director:
                     if seg.memory_ids is None and id(seg) not in before:
                         seg.memory_ids = list(memory_ids) if memory_ids is not None else None
                         seg.recall_id = recall_id
+
+    @staticmethod
+    def answer_board_missing(d: dict) -> bool:
+        b = d.get("board")
+        return not (isinstance(b, dict) and isinstance(b.get("items"), list) and any(str(x).strip() for x in b["items"]))
+
+    def answer_board(self, board) -> Any:
+        """A reply's board ({"title", "items", "figure"?}) as a lesson.Board, or None."""
+        if not isinstance(board, dict) or not board.get("items") or not isinstance(board["items"], list):
+            return None
+        from live_agent.lesson import MAX_ITEMS, Board, set_figure
+
+        self._answer_boards += 1
+        b = Board(key=f"a{self._answer_boards}", title=str(board.get("title") or "")[:24],
+                  items=[str(x)[:60] for x in board["items"] if str(x).strip()][:MAX_ITEMS])
+        if not b.items:
+            return None
+        fig = set_figure(b, board.get("figure"))
+        if fig is not None:
+            self.pending_figures.append(fig)
+        return b
 
     async def decide(self, utt: Utterance, memories: list[str] | None = None) -> dict:
         """Responder LLM call only; no state is changed."""

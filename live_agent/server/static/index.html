@@ -316,6 +316,9 @@ function onStatus(m) {
   setConn("会话中", true);
   if (Array.isArray(m.examples) && m.examples.length) { personaChips = m.examples; setChips(m.examples, true); }
   showProfile(m.student);
+  if (m.board && !$("board").classList.contains("on"))  // the teacher's board is there from the start, empty
+    showBoard({key: "idle", title: "黑板", reveal: null,
+               items: ["提问题：老师边讲边写板书", "说「给我上一节……的课」：系统讲一节课，板书同步"]});
   $("cam").hidden = !m.attention; $("cam").disabled = false;
   const b = $("badges"); b.querySelectorAll(".badge:not(#conn)").forEach(x => x.remove());
   const items = [

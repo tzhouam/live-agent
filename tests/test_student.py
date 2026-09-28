@@ -347,3 +347,34 @@ def test_the_plan_stays_on_the_requested_topic(tmp_path):
     assert [s["title"] for s in outline.sections] == ["前置一", "定理", "应用"]  # one prerequisite, first only
     prompt = llm.calls[0][-1]["content"]
     assert "不改变「讲什么」" in prompt and "不要为了补弱点塞进这节课" in prompt
+
+
+def test_a_knowledge_answer_without_a_board_gets_one_written_for_it():
+    # seen live: "一元二次方程怎么解？" was answered with no board (the responder copied a board-less example)
+    orch, _ = tp.build()
+    orch.answer_boards = True
+    d = orch.director
+
+    def llm(messages):
+        if messages[0]["role"] == "system":
+            return json.dumps({"relation": "chat", "kind": "content", "steps": [
+                {"intent": "", "line": "常用配方法和求根公式。"}, {"intent": "", "line": "先算判别式。"}]}, ensure_ascii=False)
+        assert "学生问：「一元二次方程怎么解？」" in messages[-1]["content"]
+        return json.dumps({"title": "一元二次方程", "items": ["求根公式 $x=\\\\frac{-b\\\\pm\\\\sqrt{b^2-4ac}}{2a}$",
+                                                               "判别式 $\\\\Delta=b^2-4ac$"]}, ensure_ascii=False)
+    d.llm.fn = llm
+
+    async def go():
+        await orch.on_user_utterance(Utterance(uid="u6", speaker="user", text="一元二次方程怎么解？", t_end=now()))
+        await asyncio.gather(*list(orch._aux))
+    asyncio.run(go())
+    s = d.next_script(0)
+    assert s.transcript == "常用配方法和求根公式。" and s.board["title"] == "一元二次方程" and len(s.board["items"]) == 2
+    assert [e.data["stage"] for e in tp.events(orch, EventType.LESSON)] == ["answer_board"]
+
+
+def test_the_teacher_persona_requires_a_board_for_knowledge_answers():
+    canon = json.loads((tt.CFG / "canon.json").read_text(encoding="utf-8"))
+    assert canon["board"] is True and "必须加字段 \"board\"" in canon["responder_style"]
+    quad = next(x for x in canon["responder_examples"] if x.startswith("用户：一元二次方程怎么解？"))
+    assert json.loads(quad.split(" → ", 1)[1])["board"]["items"]  # the example the responder copies has a board

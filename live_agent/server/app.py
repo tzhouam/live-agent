@@ -426,6 +426,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
                 orch.image_maker = ImageMaker(args.image_url, BOARD_IMAGES)
             orch.figure_dir = BOARD_IMAGES  # exact plots need no model
+            orch.answer_boards = bool(canon.get("board"))  # a persona with a board writes one for every knowledge answer
             # the page may pick a profile only from the server's allow-list: the demo has one shared access token and no
             # per-student accounts, so the operator decides which profiles this deployment exposes
             allowed = [x for x in (args.students or args.student).split(",") if x]
@@ -480,6 +481,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                            "asr": bool(args.asr_url), "persona": canon.get("display_name", ""),
                                            "examples": canon.get("examples", []),
                                            "attention": orch.attention is not None,
+                                           "board": bool(canon.get("board")),
                                            "student": orch.student.view() if orch.student is not None else None},
                                           ensure_ascii=False))
 

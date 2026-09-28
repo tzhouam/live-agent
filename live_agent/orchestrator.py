@@ -56,6 +56,12 @@ class Judge(Protocol):
     async def judge(self, q, chunks, request_index: int, t_evidence: float) -> Verdict: ...
 
 
+ANSWER_BOARD_PROMPT = """学生问：「{question}」
+老师口头回答：「{answer}」
+请为这个回答写黑板板书，只输出 JSON：{{"title": 标题（不超过 12 字）, "items": [2-4 条板书要点，每条不超过 30 字，公式写在 $...$ 里（LaTeX）]}}
+板书只写回答里讲到的内容，简洁准确，像老师真正写在黑板上的。"""
+
+
 class CorrectionMode(str, enum.Enum):
     GRADIENT = "gradient"  # forward semantic gradient (A2)
     REPEAT = "repeat"  # contrast: repeat the instruction unchanged
@@ -169,6 +175,7 @@ class Orchestrator:
         self._lesson_mistakes: list[str] = []  # this lesson's wrong answers, addressed by the next section
         self._exercises = 0
         self._shown_exercise = None  # the exercise the page was last told about
+        self.answer_boards = False  # persona with a board: every knowledge answer gets one (set by the app)
         self._profile_epoch = 0  # bumped by erasure: work started before it must not write to the profile
         self._rng = random.Random(self.cfg.seed)
         self._chain_costs: list[float] = []
@@ -1117,6 +1124,24 @@ class Orchestrator:
         self._lesson_mistakes = [m for m in self._lesson_mistakes if not any(x in m for x in terms)]
         return n
 
+    async def _answer_board(self, question: str, segs: list) -> None:
+        from live_agent.llm import parse_json
+
+        d = self.director
+        t0 = now()
+        raw = await d.llm.chat([{"role": "user", "content": ANSWER_BOARD_PROMPT.format(
+            question=question[:200], answer="".join(x.line for x in segs)[:600])}],
+            max_tokens=400, temperature=0.2, json_mode=True)
+        b = d.answer_board(parse_json(raw))
+        if b is None:
+            return
+        waiting = [x for x in segs if any(x is q for q in d.queue)]  # lines not yet locked
+        for x in waiting:
+            x.board = b
+        self._make_figures()
+        self.log.emit(EventType.LESSON, now(), stage="answer_board", title=b.title, board=b.key,
+                      seconds=round(now() - t0, 2), lines=len(waiting))
+
     def _emit_profile(self) -> None:
         """The page gets the profile view directly; the durable log records only that it changed."""
         if self.student is None:
@@ -1270,8 +1295,14 @@ class Orchestrator:
         else:
             if term:  # the confirmation is spoken only after the erasure is verified (below)
                 decision = {**decision, "steps": []}
+            queued_before = {id(x) for x in self.director.queue}
             self.director.apply(utt, decision, memory_ids=memory_ids, recall_id=recall_id)
             self._decisions += 1  # only applied decisions end the post-interruption wait
+            if self.answer_boards and (decision or {}).get("kind") == "content" \
+                    and self.director.answer_board_missing(decision):
+                segs = [x for x in self.director.queue if id(x) not in queued_before and x.board is None and x.line]
+                if segs:  # the responder left it out: write one now and show it from the next unlocked line
+                    self._spawn(self._answer_board(utt.text, segs), "answer_board")
             self._make_figures()
             kind = (decision or {}).get("kind")
             if kind == "lesson" and str((decision or {}).get("topic") or "").strip():
