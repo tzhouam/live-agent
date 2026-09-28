@@ -206,8 +206,11 @@ live agent's persona prompts are 345-360 tokens, above `taomate_h3_pad_text_toke
 outside the graph range of the two-GPU config, so they run unpinned with lazy captures. All
 two-GPU numbers here are for 3-60 word prompts. For persona prompts use a pad of at least
 the longest prompt (e.g. 448) and a graph range around the real lengths (e.g. "300-430");
-the request period at that length is not measured yet and will be somewhat higher (about
-320 more text rows per phase document).
+the two-GPU request period at that length is not measured yet and will be somewhat higher
+(about 320 more text rows per phase document). On four GPUs (USP4 demo server, eager BF16,
+hold-for-prompt on) the peer measured 330-405-token persona prompts with an update on almost
+every request at a median of 4.29 s and a maximum of 4.53 s between requests' first chunks
+(n=54, real-time factor about 0.86; log `taomate-live-skill/runs/usp4_demo2/events.jsonl`).
 
 Status: **real time on two GPUs at the line** (real-time factor 1.00 with a constant prompt,
 1.03 sustained with a prompt change every request), code and CPU tests done (35 tests), recipe
