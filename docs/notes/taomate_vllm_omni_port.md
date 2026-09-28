@@ -295,7 +295,11 @@ text-encoder CUDA graphs (prompt re-encode 0.15-0.27 s -> 0.048 s), 64-token tex
 (prepare 0.01-0.04 -> 0.001-0.02 s per phase). Dropped after measurement: student CUDA graphs
 (the 34-frame forwards are device-bound; 0.15-0.2 s at most), attention kernel (already FA3),
 LoRA merged into FP8 (twin's check: unbiased but re-rolls the FP8 noise; held pending the hook
-cost). Pending measurement: `taomate_h3_decode_overlap` (video decode on a second stream under
-the launch-bound commit forward, up to 0.1 s per phase) and the twin's `step_async_output`
-(inter-phase gap 0.06 s per phase). Remaining budget to real time at persona length with a
-prompt change every request: about 0.1 s per request beyond those two if both deliver.
+cost). Measured and dropped: `taomate_h3_decode_overlap` (video decode on a second stream queued
+before the commit forward): phase totals within 0.015 s of the serial order, period 5.11 vs
+5.08 s; the commit forward runs the same rows as a student forward (about 0.23 s of device
+work), so the device is saturated end to end and nothing overlaps. Left: the twin's
+`step_async_output` (host transport gap, 0.24 s per request; first version broke step
+execution, fix 7bf16aeb3 under GPU validation) and the LoRA delta's device time (0.2-0.3 s,
+a merged FP8 student weight set, twin's item). Those two cover the 0.1 s per request that
+persona-length prompts with a change every request still lack (5.05 s per 4.958 s).
