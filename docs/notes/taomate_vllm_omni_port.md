@@ -201,6 +201,14 @@ prompt (the range then started at 8 tokens; the config now starts at 1). A first
 this run had every graph disabled by an over-strict kwargs guard from the Codex fixes
 (5.66 s per request with the eager teacher); fixed, with a test over the real teacher kwargs.
 
+Caveat from the peer session live-agent-bb (measured locally with the FL2VA tokenizer): the
+live agent's persona prompts are 345-360 tokens, above `taomate_h3_pad_text_tokens: 256` and
+outside the graph range of the two-GPU config, so they run unpinned with lazy captures. All
+two-GPU numbers here are for 3-60 word prompts. For persona prompts use a pad of at least
+the longest prompt (e.g. 448) and a graph range around the real lengths (e.g. "300-430");
+the request period at that length is not measured yet and will be somewhat higher (about
+320 more text rows per phase document).
+
 Status: **real time on two GPUs at the line** (real-time factor 1.00 with a constant prompt,
 1.03 sustained with a prompt change every request), code and CPU tests done (35 tests), recipe
 section "Two GPUs (USP2)" holds the numbers, `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml`
