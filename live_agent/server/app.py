@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import io
 from fractions import Fraction
 import json
@@ -99,14 +100,15 @@ def to_pcm16(audio: np.ndarray | None, n_samples: int) -> bytes:
 
 
 PANEL_EVENTS = {"lock", "verdict", "repair", "completion_claim", "refusal", "capacity_skip", "narration_guard",
-                "playback_stop", "speech_onset", "utterance_end", "audit", "error", "request_done", "continuity", "lesson"}
+                "playback_stop", "speech_onset", "utterance_end", "audit", "error", "request_done", "continuity", "lesson", "attention"}
 PANEL_FIELDS = ("action", "transcript", "chain_ids", "chain_id", "step", "retry_of", "corrections", "kind", "label",
                 "confidence", "rationale", "mode", "correction", "queued", "earliest_correctable", "reason", "text",
                 "original", "cleaned", "erasure", "erasure_complete", "pending_targets", "deleted", "dropped",
                 "decision", "chains", "recalled", "issues", "error", "where", "lead_s", "total_s", "onset_source",
                 "audibility", "revision", "speaker", "uid", "counts", "expected", "wrong", "target", "gave_up", "anchor_removed", "stage",
                 "title", "sections", "section", "lines", "points", "board", "seconds",
-                "attempt", "labels")
+                "attempt", "labels",
+                "point", "judgements", "state", "stable", "nudge")
 
 
 def panel_event(ev, t0: float) -> dict | None:
@@ -420,6 +422,10 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
                 orch.image_maker = ImageMaker(args.image_url, BOARD_IMAGES)
             orch.figure_dir = BOARD_IMAGES  # exact plots need no model
+            if getattr(judge, "vlm", None) is not None:  # the camera focus check uses the judge's VLM (opt-in)
+                from live_agent.attention import AttentionMonitor
+
+                orch.attention = AttentionMonitor(judge.vlm)
             if args.record:  # everything the generator produced, incl. chunks dropped by barge-ins
                 from live_agent.sim import Recorder
 
@@ -457,7 +463,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                            "judge": "mock" if args.vlm_url == "mock" else ("vlm" if args.vlm_url else "none"),
                                            "responder": "rules" if args.llm_url == "scripted" else args.llm_model,
                                            "asr": bool(args.asr_url), "persona": canon.get("display_name", ""),
-                                           "examples": canon.get("examples", [])},
+                                           "examples": canon.get("examples", []),
+                                           "attention": orch.attention is not None},
                                           ensure_ascii=False))
 
             async def handle_inputs() -> None:
@@ -521,6 +528,13 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                     await ws.send_text(json.dumps({"type": "pong", "t": data.get("t"), "ts": now()}))
                 elif t == "clock":
                     transport.on_clock(data)
+                elif t == "camera" and isinstance(data.get("jpeg"), str) and len(data["jpeg"]) <= 400_000:
+                    try:  # opt-in attention check: analysed in memory, never stored or recorded
+                        orch.on_camera(base64.b64decode(data["jpeg"]))
+                    except (ValueError, TypeError):
+                        pass
+                elif t == "camera_off":
+                    orch.camera_off()
                 elif t == "video_codec" and data.get("codec") == "jpeg":
                     transport.video_codec = "jpeg"  # the page failed to decode H.264
         except WebSocketDisconnect:

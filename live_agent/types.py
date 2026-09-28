@@ -149,6 +149,7 @@ class EventType(str, enum.Enum):
     AUDIT = "audit"  # pre-generation script audit (proposal §15)
     NARRATION_GUARD = "narration_guard"  # completion wording removed from an unverified line
     LESSON = "lesson"  # lesson planning progress (outline / section generated / failed / finished)
+    ATTENTION = "attention"  # student focus from the opt-in camera (state only; frames are never kept)
     CONTINUITY = "continuity"  # prop counts on presented frames vs the ledger (and the correction queued)
     ERROR = "error"
     OBSERVATION_END = "observation_end"

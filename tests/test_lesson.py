@@ -89,7 +89,7 @@ def test_a_lesson_plays_with_its_board_and_survives_a_question():
     orch, client = tp.build(max_requests=22)
     orch.director.llm.fn = llm
     asyncio.run(tp.run(orch, client, [(2.0, "给我上一节光合作用的课"), (14.0, "为什么要光？")]))
-    stages = [e.data["stage"] for e in tp.events(orch, EventType.LESSON)]
+    stages = [e.data["stage"] for e in tp.events(orch, EventType.LESSON) if not e.data["stage"].startswith("figure")]
     assert stages[:3] == ["outline", "section", "section"] and stages[-1] == "planned"
     locks = [e for e in tp.events(orch, EventType.LOCK)]
     said = [e.data["transcript"] for e in locks if e.data["transcript"]]
@@ -107,23 +107,55 @@ class FakeImages:
 
     async def make(self, prompt, seed=42):
         self.prompts.append(prompt)
+        n = len(self.prompts)  # before the await: concurrent calls must not share a name
         await asyncio.sleep(0.01)
-        return f"/board/img/{len(self.prompts):016x}.png"
+        return f"/board/img/{n:016x}.png"
 
 
-def test_a_section_figure_appears_on_the_board_once_generated():
-    planner = LessonPlanner(ScriptedLLM(planner_llm), name="林老师", bio="")
-    outline = asyncio.run(planner.outline("光合作用"))
-    board = asyncio.run(planner.section(outline, 0, []))[0].board
-    assert board.figure_prompt.startswith("第1节示意图") and "figure" not in board.view(0)  # not generated yet
-    board.figure_url = "/board/img/0123456789abcdef.png"
-    fig = board.view(0)["figure"]
-    assert fig["url"].endswith(".png") and fig["caption"] == "叶片&lt;示意&gt;"
+def test_a_board_shows_the_figure_of_the_point_being_explained_only():
+    from live_agent.lesson import set_figure
+
+    board = Board("s0", "光合作用", ["原料", "场所", "产物"])
+    f1 = set_figure(board, {"prompt": "叶绿体结构，标注「叶绿体」", "caption": "叶绿体<示意>"}, point=1)
+    assert f1 is not None and "figure" not in board.view(1)  # not drawn yet
+    f1.url = "/board/img/0123456789abcdef.png"
+    assert board.view(1)["figure"] == {"url": f1.url, "caption": "叶绿体&lt;示意&gt;"}
+    assert "figure" not in board.view(2) and "figure" not in board.view(0)  # never another point's picture
+    whole = set_figure(board, {"plot": {"functions": ["x"]}})  # a board-level figure fills the other points
+    whole.url = "/board/img/p123456789abcdef.png"
+    assert board.view(2)["figure"]["url"] == whole.url and board.view(1)["figure"]["url"] == f1.url
+
+
+def test_the_figure_judge_decides_per_point_and_caps_the_count():
+    verdicts = {"points": [
+        {"i": 0, "complexity": 1, "need": False, "why": "定义复述", "figure": None},
+        {"i": 1, "complexity": 3, "need": True, "why": "结构复杂", "figure": {"prompt": "叶绿体结构，标注「类囊体」"}},
+        {"i": 2, "complexity": 3, "need": True, "why": "过程", "figure": {"plot": {"functions": ["x**2"]}}},
+        {"i": 2, "complexity": 3, "need": True, "why": "重复", "figure": {"prompt": "again"}},
+        {"i": 9, "complexity": 3, "need": True, "why": "越界", "figure": {"prompt": "x"}}]}
+    seen = {}
+
+    def llm(messages):
+        seen["prompt"] = messages[-1]["content"]
+        return json.dumps(verdicts, ensure_ascii=False)
+
+    planner = LessonPlanner(ScriptedLLM(llm), name="林老师", bio="")
+    board = Board("s0", "光合作用", ["定义", "场所", "产物"])
+    from live_agent.lesson import LessonLine
+    lines = [LessonLine("先说定义。", board, 0), LessonLine("看黑板上的图。", board, 1), LessonLine("产物是糖。", board, 2)]
+    out = asyncio.run(planner.judge_figures(lines, max_figs=2))
+    assert "1. 场所：看黑板上的图。" in seen["prompt"]  # each point with what she says about it
+    assert [(o["point"], o["need"], o["kind"]) for o in out] == [
+        (0, False, None), (1, True, "illustration"), (2, True, "plot"), (2, False, None)]
+    assert [f.point for f in board.figures] == [1, 2]  # capped at 2, out-of-range point ignored
 
 
 def test_lesson_figures_are_generated_in_the_background_and_shown_on_later_lines():
     def llm(messages):
         if messages[0]["role"] != "system":
+            if "教学设计专家" in messages[-1]["content"]:
+                return json.dumps({"points": [{"i": 0, "complexity": 3, "need": True, "why": "结构",
+                                               "figure": {"prompt": "一片叶子，标注「叶绿体」"}}]}, ensure_ascii=False)
             return planner_llm(messages)
         return json.dumps({"relation": "new", "kind": "lesson", "topic": "光合作用",
                            "steps": [{"intent": "", "line": "好，我们来上一节光合作用。"}]}, ensure_ascii=False)
@@ -132,10 +164,14 @@ def test_lesson_figures_are_generated_in_the_background_and_shown_on_later_lines
     orch.director.llm.fn = llm
     orch.image_maker = FakeImages()
     asyncio.run(tp.run(orch, client, [(2.0, "给我上一节光合作用的课")]))
-    assert len(orch.image_maker.prompts) == 2  # one per section, generated once
+    prompts = orch.image_maker.prompts
+    assert len(prompts) == 4  # per section: its board figure + one judged point, each drawn once
     shown = [s.board for s in orch.scripts.values() if s.board and s.board["key"] == "s0"]
-    assert shown and any("figure" in b for b in shown)
-    assert any(e.data.get("stage") == "figure" for e in tp.events(orch, EventType.LESSON))
+    on0 = {b["figure"]["url"] for b in shown if "figure" in b and b["reveal"] == 0}
+    on1 = {b["figure"]["url"] for b in shown if "figure" in b and b["reveal"] == 1}
+    assert on0 and not (on0 & on1)  # point 0's picture on point 0 only (point 1 falls back to the board figure)
+    stages = [e.data.get("stage") for e in tp.events(orch, EventType.LESSON)]
+    assert "figure_judgement" in stages and "figure" in stages
 
 
 def test_image_maker_calls_the_images_api_and_reuses_files(tmp_path, monkeypatch):
@@ -192,12 +228,12 @@ def test_a_figure_is_a_plot_or_an_illustration_and_prompt_text_on_a_picture_is_r
     from live_agent.lesson import set_figure
 
     b = Board("s0", "二次函数", [])
-    assert set_figure(b, {"plot": {"functions": ["x**2"]}, "caption": "图像"}) and b.figure_plot and not b.figure_prompt
-    b2 = Board("s1", "光合作用", [])
-    assert set_figure(b2, {"prompt": "一片叶子，标注「水」"}) and b2.figure_prompt and b2.figure_plot is None
-    assert not set_figure(Board("s2", "", []), {"caption": "only"})
-    b3 = Board("s3", "勾股定理", [])
-    assert set_figure(b3, {"plot": {"polygons": [{"points": [[0, 0], [3, 0], [0, 4]]}]}})  # geometry-only plot (seen live)
+    f = set_figure(b, {"plot": {"functions": ["x**2"]}, "caption": "图像"})
+    assert f and f.plot and not f.prompt
+    f2 = set_figure(Board("s1", "光合作用", []), {"prompt": "一片叶子，标注「水」"})
+    assert f2 and f2.prompt and f2.plot is None
+    assert set_figure(Board("s2", "", []), {"caption": "only"}) is None
+    assert set_figure(Board("s3", "勾股定理", []), {"plot": {"polygons": [{"points": [[0, 0], [3, 0], [0, 4]]}]}})
     prompt = "一元二次方程的抛物线示意图：开口向上，顶点标注「顶点」"
     assert missing_labels(["顶点"], ["一元二次方程的抛物线", "顶点"], prompt) == ["一元二次方程的抛物线"]  # seen live
 
@@ -208,9 +244,11 @@ def test_a_lesson_plot_is_drawn_and_shown(tmp_path):
             text = messages[-1]["content"]
             if "课程大纲" in text:
                 return json.dumps(OUTLINE, ensure_ascii=False)
-            sec = section(1)
-            sec["board"]["figure"] = {"plot": {"functions": ["x**2-1"], "x": [-2, 2]}, "caption": "y=x²-1"}
-            return json.dumps(sec, ensure_ascii=False)
+            if "教学设计专家" in text:
+                return json.dumps({"points": [{"i": 1, "complexity": 3, "need": True, "why": "函数图像",
+                                               "figure": {"plot": {"functions": ["x**2-1"], "x": [-2, 2]},
+                                                          "caption": "y=x²-1"}}]}, ensure_ascii=False)
+            return json.dumps(section(1), ensure_ascii=False)
         return json.dumps({"relation": "new", "kind": "lesson", "topic": "二次函数",
                            "steps": [{"intent": "", "line": "好，我们来上一节二次函数。"}]}, ensure_ascii=False)
 

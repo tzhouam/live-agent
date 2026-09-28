@@ -30,13 +30,27 @@ SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这�
 现在讲第 {i}/{n} 节「{section}」，目标：{goal}。
 前面已经讲过：{covered}
 请写这一节的板书和讲稿，只输出 JSON：
-{{"board": {{"title": 小节标题, "figure": 配图（见下）或 null}},
+{{"board": {{"title": 小节标题}},
  "points": [{{"text": 一条板书要点, "lines": [讲这条要点时老师说的话，按顺序]}}],
  "summary": [这一节的小结句]}}
 板书要求：3-{max_items} 条要点，每条不超过 {item_chars} 个字，简洁像真正的板书；公式用 LaTeX 写在 $...$ 里（如 $x^2+y^2=r^2$）。
 对齐要求：每句讲稿都放在它正在讲的那条要点下面；讲完一条再讲下一条；只属于整节的小结放在 summary 里。
-配图：每一节尽量配一张图（这一节确实用不上图时才写 null）；讲稿里只要说到「看这个图」「这个正方形」「这条曲线」等画面，就必须给出对应的 figure，
-并且图里画的就是讲稿说的东西。两种：
+讲稿要求：
+1. 每条要点讲 2-4 句：先说要点，再解释原因，再举生活中的例子或算一个小例题。
+2. 每句不超过 {chars} 个汉字，口语化；公式和符号全部用中文读出来（如「a 加 b 的和的平方」「x 的平方」），讲稿里不要出现 $、LaTeX、括号、加减乘除号或等号。
+3. 直接从这一节的内容讲起，不要打招呼，不要重复开场白或前面讲过的话。
+   配图由系统按要点另外判断和绘制；讲图形、图像或结构时可以说「看黑板上的图」，但不要描述图里没有的细节。
+4. summary 写 1-2 句，简短小结这一节{outro}。
+5. 讲稿总共 10-18 句。"""
+
+
+FIGURE_JUDGE_PROMPT = """你是教学设计专家。下面是「{title}」这一节的板书要点，以及老师讲每条要点时说的话。
+请逐条判断：这条要点是否复杂到需要一张解释图，学生光听讲、看文字不容易理解。
+需要图的典型情况：几何图形和空间关系；函数图像和数量变化；细胞、分子、器官等结构；有多个步骤、阶段或循环的过程；实验装置；多个量的对比。
+讲解里说到「看黑板上的图」「这个形状」「这条曲线」的，必须配图。
+不需要图的：定义复述、简单事实、结论小结、鼓励和提问。每节最多 {max_figs} 张图，优先给最难懂的要点。
+只输出 JSON：{{"points": [{{"i": 要点序号, "complexity": 1-3（1 简单，2 一般，3 抽象或空间关系复杂）, "need": true 或 false, "why": 一句理由, "figure": 需要时写配图，否则 null}}]}}
+配图写法：
 - 函数图像、坐标系里的点：{{"plot": {{"functions": ["x**2-2*x-3"], "x": [-3, 5], "points": [{{"x": -1, "y": 0, "label": "x₁"}}], "title": 图标题}}, "caption": 图注}}
   （functions 用 Python 写法：x**2、2*x、sqrt(x)、sin(x)；图会被精确画出）
 - 几何图形（三角形、正方形、多边形，按比例精确画在方格上）：{{"plot": {{"polygons": [{{"points": [[0,0],[4,0],[0,3]], "label": "直角三角形", "sides": ["4", "5", "3"]}}], "grid": true}}, "caption": 图注}}
@@ -44,12 +58,22 @@ SECTION_PROMPT = """你是中学老师「{name}」，正在上「{title}」这�
 - 插图、结构、流程、实验装置示意：{{"prompt": 配图描述, "caption": 图注}}；prompt 具体写清画什么、怎么摆放，要标注的文字都放在「」里
   （如：一片绿叶，太阳的箭头标注「阳光」，根部箭头标注「水」）；这类图由图像模型画，画不准数学关系，几何图形和函数图像一律用 plot。
 caption 不超过 16 个字。
-讲稿要求：
-1. 每条要点讲 2-4 句：先说要点，再解释原因，再举生活中的例子或算一个小例题。
-2. 每句不超过 {chars} 个汉字，口语化；公式和符号全部用中文读出来（如「a 加 b 的和的平方」「x 的平方」），讲稿里不要出现 $、LaTeX、括号、加减乘除号或等号。
-3. 直接从这一节的内容讲起，不要打招呼，不要重复开场白或前面讲过的话。
-4. summary 写 1-2 句，简短小结这一节{outro}。
-5. 讲稿总共 10-18 句。"""
+要点和讲解：
+{points}"""
+
+
+@dataclass
+class Figure:
+    """One explanatory figure: an exact plot spec or an illustration prompt, for one board point (None = the board)."""
+
+    point: int | None
+    prompt: str = ""
+    plot: dict | None = None
+    caption: str = ""
+    url: str = ""  # set once drawn; boards locked after that show it
+    why: str = ""  # the judgement that asked for it
+    board_key: str = ""
+    queued: bool = False  # handed to the drawer once (never twice)
 
 
 @dataclass
@@ -57,10 +81,7 @@ class Board:
     key: str  # changes when the board is rewritten (a new section / answer)
     title: str
     items: list[str] = field(default_factory=list)  # raw text with $...$ LaTeX
-    figure_prompt: str = ""  # an explanatory image is wanted (generated in the background)
-    figure_plot: dict | None = None  # an exact graph instead (board_plot spec: functions, x range, points)
-    figure_caption: str = ""
-    figure_url: str = ""  # set once the image exists; boards locked after that show it
+    figures: list[Figure] = field(default_factory=list)  # per point (judged) or for the whole board
 
     def view(self, reveal: int | None, progress: tuple[int, int] | None = None) -> dict[str, Any]:
         """What the page shows: items up to ``reveal`` (all when None), the ``reveal``-th highlighted, with the
@@ -69,9 +90,18 @@ class Board:
              "reveal": reveal}
         if progress is not None and reveal is not None:
             v["progress"] = list(progress)
-        if self.figure_url:
-            v["figure"] = {"url": self.figure_url, "caption": html.escape(self.figure_caption)}
+        fig = self.figure_for(reveal)
+        if fig is not None:
+            v["figure"] = {"url": fig.url, "caption": html.escape(fig.caption)}
         return v
+
+    def figure_for(self, reveal: int | None) -> Figure | None:
+        """The figure of the point being explained, else the board's own figure; never another point's figure
+        (it would illustrate something she is not talking about)."""
+        ready = [f for f in self.figures if f.url]
+        exact = [f for f in ready if reveal is not None and f.point == reveal]
+        whole = [f for f in ready if f.point is None]
+        return (exact or whole or [None])[0]
 
 
 @dataclass
@@ -90,19 +120,20 @@ class Outline:
     intro: list[str]
 
 
-def set_figure(board: Board, fig) -> bool:
-    """Attach a figure request (an exact plot spec or an illustration prompt) to ``board``; True if one was set."""
+def set_figure(board: Board, fig, point: int | None = None, why: str = "") -> Figure | None:
+    """Attach a figure request (an exact plot spec or an illustration prompt) to ``board`` for ``point``."""
     if not isinstance(fig, dict):
-        return False
+        return None
     plot = fig.get("plot")
+    f = Figure(point=point, caption=str(fig.get("caption") or "")[:20], why=str(why)[:60], board_key=board.key)
     if isinstance(plot, dict) and (plot.get("functions") or plot.get("points") or plot.get("polygons")):
-        board.figure_plot = fig["plot"]
+        f.plot = plot
     elif str(fig.get("prompt") or "").strip():
-        board.figure_prompt = str(fig["prompt"]).strip()[:400]
+        f.prompt = str(fig["prompt"]).strip()[:400]
     else:
-        return False
-    board.figure_caption = str(fig.get("caption") or "")[:20]
-    return True
+        return None
+    board.figures.append(f)
+    return f
 
 
 def render_item(text: str) -> str:
@@ -224,6 +255,31 @@ class LessonPlanner:
         if not any(ln.item is not None for ln in lines):
             raise ValueError(f"lesson section {i} without lines")
         return lines
+
+    async def judge_figures(self, lines: list[LessonLine], max_figs: int = 3) -> list[dict]:
+        """Per board point: is it complex enough to need an explanatory figure? Attaches the figures to the board
+        and returns the judgements (point, complexity, need, why) for the log."""
+        board = next((ln.board for ln in lines if ln.board is not None), None)
+        if board is None or not board.items:
+            return []
+        said = {j: [] for j in range(len(board.items))}
+        for ln in lines:
+            if ln.item is not None and ln.item in said:
+                said[ln.item].append(ln.text)
+        points = "\n".join(f"{j}. {board.items[j]}：{''.join(said[j])}" for j in range(len(board.items)))
+        raw = await self.llm.chat([{"role": "user", "content": FIGURE_JUDGE_PROMPT.format(
+            title=board.title, max_figs=max_figs, points=points)}], max_tokens=1200, temperature=0.2, json_mode=True)
+        out = []
+        for d in parse_json(raw).get("points") or []:
+            if not isinstance(d, dict) or not isinstance(d.get("i"), int) or not 0 <= d["i"] < len(board.items):
+                continue
+            room = sum(1 for f in board.figures if f.point is not None) < max_figs
+            fig = set_figure(board, d.get("figure"), point=d["i"], why=str(d.get("why") or "")) \
+                if d.get("need") and room else None
+            out.append({"point": d["i"], "complexity": d.get("complexity"), "need": fig is not None,
+                        "why": str(d.get("why") or "")[:60],
+                        "kind": ("plot" if fig and fig.plot else "illustration" if fig else None)})
+        return out
 
     def intro_lines(self, outline: Outline) -> list[LessonLine]:
         board = Board(key="outline", title=outline.title, items=[s["title"] for s in outline.sections])

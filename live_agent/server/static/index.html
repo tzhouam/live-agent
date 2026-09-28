@@ -55,6 +55,10 @@
   .board li { margin:10px 0; transition: opacity .5s, color .3s; }
   .board li.hidden { opacity:0; }
   .board li.now { color:#ffe08a; }
+  .camview { width: 88px; height: 66px; border-radius: 6px; object-fit: cover; background: #000; transform: scaleX(-1); }
+  .focusline { margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--chip); font-size: 14px; }
+  .focusline.focused { box-shadow: inset 4px 0 0 var(--ok); }
+  .focusline.distracted, .focusline.absent { box-shadow: inset 4px 0 0 var(--warn); }
   .board .dots { font-size:.55em; letter-spacing:.18em; margin-left:.5em; white-space:nowrap; color:#ffe08a; opacity:.9; }
   .board ol { overflow:hidden; min-height:0; }
   .board math { font-size:1.08em; }
@@ -126,6 +130,8 @@
       </div>
       <div class="row" style="margin-bottom:8px">
         <button class="talk" id="talk" disabled aria-label="按住说话">🎙 按住说话</button>
+        <button id="cam" hidden title="摄像头画面只用于判断是否专注，不保存">📷 开启专注检测</button>
+        <video id="camView" class="camview" muted playsinline hidden aria-label="摄像头预览"></video>
         <input type="text" id="text" placeholder="输入指令，回车发送（发送即打断当前播放）" disabled aria-label="文字输入">
         <button id="send" disabled>发送</button>
       </div>
@@ -149,6 +155,7 @@
         <div class="stat"><b id="sRtt">–</b><span>网络 RTT (ms)</span></div>
       </div>
       <div class="meta" style="margin-top:6px">* 音频能量起点，诊断值；是否切题需人工判定。</div>
+      <div class="focusline" id="focus" aria-live="polite">专注检测：未开启</div>
     </div>
     <div class="card">
       <h2>意图链（导演状态）</h2>
@@ -228,6 +235,7 @@ $("connect").onclick = () => {
     ping(); setTimeout(ping, 300); setTimeout(ping, 600); pingTimer = setInterval(ping, 3000);
   };
   ws.onclose = () => {
+    camOff(false);
     setConn("连接已关闭"); clearInterval(pingTimer);
     ["talk","text","send","disconnect"].forEach(id => $(id).disabled = true);
     document.querySelectorAll(".chip").forEach(b => b.disabled = true);
@@ -287,6 +295,7 @@ async function onMessage(ev) {
 function onStatus(m) {
   setConn("会话中", true);
   if (Array.isArray(m.examples) && m.examples.length) setChips(m.examples, true);
+  $("cam").hidden = !m.attention; $("cam").disabled = false;
   const b = $("badges"); b.querySelectorAll(".badge:not(#conn)").forEach(x => x.remove());
   const items = [
     ["生成", m.generator === "mock" ? "mock（CPU 演示）" : m.generator],
@@ -386,8 +395,21 @@ function onEvent(m) {
       const s = {outline: `课程大纲：${d.title || ""}（${(d.sections || []).length} 节）`,
                  section: `第 ${(d.section ?? 0) + 1} 节已备好：${d.title || ""}（${d.lines} 句，${d.points} 条板书）`,
                  section_failed: `第 ${(d.section ?? 0) + 1} 节生成失败${d.attempt ? "，已跳过" : "，重试中"}`,
-                 outline_failed: "课程大纲生成失败", planned: `整节课已备好：${d.title || ""}`}[d.stage];
+                 outline_failed: "课程大纲生成失败", planned: `整节课已备好：${d.title || ""}`,
+                 figure_judgement: `配图判断「${d.title || ""}」：` + (d.judgements || []).map(j =>
+                   `第 ${j.point + 1} 条 复杂度 ${j.complexity ?? "?"} ${j.need ? "→ 配图" : "→ 不配"}${j.why ? "（" + j.why + "）" : ""}`).join("；"),
+                 figure: `第 ${(d.point ?? 0) + 1} 条的配图已画好（${d.kind === "plot" ? "精确作图" : "插图"}）`,
+                 figure_failed: `配图失败：${d.error || ""}`}[d.stage];
       if (s) feed(t, d.stage.endsWith("failed") ? "bad" : "", "备课", s);
+      break;
+    }
+    case "attention": {
+      const name = {focused: "专注", distracted: "走神", absent: "不在画面", unknown: "无法判断", off: "未开启"};
+      const el = $("focus"), st = d.stable || d.state;
+      el.className = "focusline " + (st || "");
+      el.textContent = d.state === "off" ? "专注检测：未开启" :
+        `专注检测：${name[st] || st}` + (d.reason ? `（${d.reason}）` : "");
+      if (d.nudge) feed(t, "warn", "提醒学生", `「${d.nudge}」`);
       break;
     }
     case "continuity":
@@ -523,9 +545,17 @@ function ctxToPerf(t) {
   return o.performanceTime + (t - o.contextTime) * 1000;
 }
 
+// The context time of the sample the listener hears right now. audioCtx.currentTime runs ahead of the speaker by the
+// output latency (tens of ms wired, 150-300 ms on Bluetooth), so frames picked by it show the mouth before the voice.
+function heardTime() {
+  const o = audioCtx.getOutputTimestamp ? audioCtx.getOutputTimestamp() : null;
+  if (o && o.performanceTime > 0 && o.contextTime > 0) return o.contextTime + (performance.now() - o.performanceTime) / 1000;
+  return audioCtx.currentTime - (audioCtx.outputLatency || audioCtx.baseLatency || 0);
+}
+
 function render() {
   if (audioCtx) {
-    const t = audioCtx.currentTime;
+    const t = heardTime();  // frames, caption and board follow the sound as heard (lip sync)
     for (const q of queue) {
       if (!q.startedSent && t >= q.start) {
         q.startedSent = true; $("overlay").style.display = "none";
@@ -549,6 +579,35 @@ function render() {
   }
   requestAnimationFrame(render);
 }
+
+// ---------------------------------------------------------------- camera focus check (opt-in)
+// A 320x240 frame every 3 s goes to the server only while the student has switched this on; the server analyses it
+// in memory (focused / distracted / absent) and never stores or records it.
+let camStream = null, camTimer = null;
+const camCanvas = document.createElement("canvas"); camCanvas.width = 320; camCanvas.height = 240;
+async function camOn() {
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({video: {width: {ideal: 320}, height: {ideal: 240}, facingMode: "user"}, audio: false});
+  } catch (e) { chat("sys", "无法使用摄像头：" + e.message); return; }
+  const v = $("camView"); v.srcObject = camStream; v.hidden = false; v.play().catch(() => {});
+  camTimer = setInterval(() => {
+    if (!ws || ws.readyState !== 1 || !v.videoWidth) return;
+    camCanvas.getContext("2d").drawImage(v, 0, 0, 320, 240);
+    send({type: "camera", jpeg: camCanvas.toDataURL("image/jpeg", 0.6).split(",")[1]});
+  }, 3000);
+  $("cam").textContent = "📷 关闭专注检测";
+  $("focus").textContent = "专注检测：已开启（画面只用于判断，不保存）";
+}
+function camOff(tell = true) {
+  if (camTimer) clearInterval(camTimer);
+  camTimer = null;
+  if (camStream) camStream.getTracks().forEach(t => t.stop());
+  const was = !!camStream; camStream = null;
+  $("camView").hidden = true; $("cam").textContent = "📷 开启专注检测";
+  if (was && tell) send({type: "camera_off"});
+  $("focus").className = "focusline"; $("focus").textContent = "专注检测：未开启";
+}
+$("cam").onclick = () => camStream ? camOff() : camOn();
 
 // ---------------------------------------------------------------- input
 // A comment does not cut the video here: the server keeps it playing and sends "stop" when the reply is ready.

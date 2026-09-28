@@ -143,7 +143,7 @@ class Director:
         self._lesson_resume = False
         self.present_intent: str | None = None  # gesture toward the board for a point's first line
         self._answer_boards = 0
-        self.pending_figures: list = []  # boards whose explanatory image should be generated (orchestrator)
+        self.pending_figures: list = []  # lesson.Figure objects to draw (orchestrator)
         self.plan_version = 0
         self.queue: deque[Segment] = deque()
         self.held: dict[str, dict[int, list[Segment]]] = {}  # multistep: steps not yet released
@@ -200,8 +200,9 @@ class Director:
                       items=[str(x)[:60] for x in board["items"] if str(x).strip()][:MAX_ITEMS])
             from live_agent.lesson import set_figure
 
-            if set_figure(b, board.get("figure")):
-                self.pending_figures.append(b)
+            fig = set_figure(b, board.get("figure"))
+            if fig is not None:
+                self.pending_figures.append(fig)
             for seg in self.queue:
                 if id(seg) not in before and seg.board is None:
                     seg.board = b
@@ -660,12 +661,17 @@ class Director:
     def add_lesson_lines(self, lines) -> None:
         """Append lesson.LessonLine items (a section, or the intro) to the lesson backlog."""
         for ln in lines:
-            if ln.board is not None and (ln.board.figure_prompt or ln.board.figure_plot) and not ln.board.figure_url \
-                    and all(b is not ln.board for b in self.pending_figures):
-                self.pending_figures.append(ln.board)
+            if ln.board is not None:
+                self.pending_figures += [f for f in ln.board.figures
+                                         if not f.url and all(f is not g for g in self.pending_figures)]
             self.lesson_backlog.append(Segment(chain_id=None, plan_version=self.plan_version, line=ln.text,
                                                board=ln.board, reveal=ln.item, lesson=True, gesture=ln.gesture,
                                                progress=getattr(ln, "progress", None)))
+
+    def nudge(self, line: str) -> None:
+        """A short line to win back a distracted student: spoken next (before the next lesson line), gesturing at the
+        board; not a reply, so the lesson does not announce a resume after it."""
+        self.queue.appendleft(Segment(chain_id=None, plan_version=self.plan_version, line=line, gesture=True))
 
     def stop_lesson(self) -> None:
         self.lesson_backlog.clear()
