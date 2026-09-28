@@ -249,6 +249,23 @@ or the student forwards themselves. Note on the sibling's new device-time field:
 events on one stream span GPU idle gaps as well, so gpu == wall (as measured) does not separate
 device time from launch overhead; a profiler trace or an unsynchronized CPU launch timer is needed.
 
+Persona-length state after the sibling's text buckets and encoder graphs (its measurement, 12:30,
+31 requests, 332-340 tokens, update every request): 5.05 s per request, real-time factor 1.02;
+re-encode 0.048 s per update from the graph. The remaining gap is dominated by 0.045 s per phase
+(0.18 s per request) between the end of a phase and the next preparation. Root cause found by
+code reading: in step execution the worker packs each phase's 42 MB of uint8 frames into a fresh
+POSIX shared-memory segment on the step thread (`vllm_omni/diffusion/ipc.py`, `_array_to_shm`:
+segment creation, first-touch page faults, memcpy). A background packing thread with a side-stream
+D2H path exists (`diffusion_worker.py` `_async_output_loop`) but both its creation and
+`_return_result` are gated on `not step_execution`, and the engine awaits `OUTPUT_READY` futures
+only for finished requests, not for streamed chunks. Scoped fix (this session's lever, not
+implemented): (1) create the packing thread in step mode too and let `_return_result` take the
+async path for chunk-bearing `BatchRunnerOutput`s; (2) executor: propagate per-request
+`async_output_id`s as `execute_model_batch` already does; (3) engine chunk streaming: await the
+chunk's future before emitting it, and drop pending ids on abort. Expected gain 0.15-0.18 s per
+request (estimate), enough for real-time factor 1.0 at persona length; risk is in ordering and
+abort handling of shared infrastructure, and it needs GPU validation.
+
 Status: **real time on two GPUs for short prompts only** (real-time factor 1.00 with a
 constant 3-60 word prompt, 1.03 with a short prompt change every request, 1.06 with
 persona-length prompts), code and CPU tests done (35 tests), recipe
