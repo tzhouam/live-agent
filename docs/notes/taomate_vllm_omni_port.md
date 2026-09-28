@@ -301,3 +301,21 @@ decode (noise-level), `step_async_output` (-0.18 s: inter-phase gap and the foll
 host side). Measured and dropped: student CUDA graphs (device-bound forwards), decode on a
 second stream (no gain). Margin is 2%; the remaining device-time lever if more margin is wanted
 is the LoRA delta (0.2-0.3 s per request, a merged FP8 student weight set, twin's item).
+
+## Quality finding: the 480 px decoder tile (2026-09-28/29)
+
+The owner reported blurred, low-quality video from the two-GPU server. Frames extracted from the
+captured streams (PyAV) and reviewed independently by a second model show a uniform 16 px
+lattice over the whole frame, deformed faces and smeared texture in every run that used
+`taomate_h3_vae_decoder_tile_size: 480`, from the first chunk on, while the eager BF16 baseline
+and the release runtime are clean. Four isolation runs on one persona prompt (measured locally):
+BF16 without the tile clean; BF16 with the tile lattice; per-channel FP8 (50 blocks, boundary
+projections in BF16) without the tile clean and sharp; the same with the tile lattice. The
+lattice has the VAE's 16 px stride: the checkpoint's decoder cannot be tiled at 480 px (its own
+256 px tiles are correct; `klvae.py` `split_tiles` itself is sound, the mechanism is deeper in
+the decoder and was not traced). Fix: the deploy config drops the tile knob and uses per-channel
+FP8 (worktree ef8dc3f8b, factory builder 843551b6b). Consequence: every two-GPU real-time figure
+of D-036 (4.87-5.05 s per request) was measured on the broken decode; with the correct decode the
+VAE costs 0.36 s per 34-frame phase again and a persona-length request takes about 5.4 s
+(real-time factor 1.09). D-036 is therefore back to "not met for persona prompts"; the next lever
+must be a correct VAE speedup. Comparison page: https://claude.ai/artifact/Q8C5SAv4Ricd5EYbREokht
