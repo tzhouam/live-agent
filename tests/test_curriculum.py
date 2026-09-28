@@ -64,3 +64,16 @@ def test_the_planner_gets_the_curriculum_and_a_grade_role(tmp_path):
     asyncio.run(LessonPlanner(llm, name="林老师", bio="", curriculum=c).outline("勾股定理", profile=p))
     prompt = llm.calls[0][-1]["content"]
     assert prompt.startswith("你是小学老师") and "课程标准参考" in prompt and "一般在初二学" in prompt
+
+
+def test_the_locator_maps_a_topic_to_a_chapter_and_drops_invented_ones(tmp_path):
+    c = kb(tmp_path)
+    replies = iter([json.dumps({"matches": [{"subject": "数学", "grade": 8, "topic": "二次根式"},
+                                            {"subject": "数学", "grade": 8, "topic": "不存在的章节"}]}, ensure_ascii=False)])
+    llm = ScriptedLLM(lambda m: next(replies))
+    ms = asyncio.run(c.locate(llm, "根号的化简", 8))
+    assert [m.topic for m in ms] == ["二次根式"]  # the invented chapter is dropped
+    assert "数学|8|勾股定理；二次根式" in llm.calls[0][-1]["content"]
+    assert [m.topic for m in asyncio.run(c.locate(llm, "根号的化简", 8))] == ["二次根式"]  # cached: no second call
+    assert len(llm.calls) == 1
+    assert asyncio.run(c.locate(llm, "勾股定理", 8))[0].topic == "勾股定理" and len(llm.calls) == 1  # exact: no model

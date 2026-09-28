@@ -268,20 +268,26 @@ class LessonPlanner:
         g = self._grade(profile)
         return "小学老师" if g is not None and g <= 6 else "高中老师" if g is not None and g >= 10 else "中学老师"
 
-    def _curriculum_block(self, topic: str, profile) -> str:
+    async def _curriculum_block(self, topic: str, profile) -> str:
         if not self.curriculum:
             return ""
         g = self._grade(profile)
-        parts = [self.curriculum.topic_context(topic, g), self.curriculum.teaching_context(g)]
+        try:
+            where = await self.curriculum.topic_context_async(self.llm, topic, g)
+        except Exception:  # noqa: BLE001 - the locator failed: plan without the curriculum reference
+            where = self.curriculum.topic_context(topic, g)
+        parts = [where, self.curriculum.teaching_context(g)]
         text = "\n".join(x for x in parts if x)
         return (text + "\n") if text else ""
 
     async def outline(self, topic: str, context: str = "", profile=None) -> Outline:
         """``profile``: a student.StudentProfile (None: no saved profile, an average student of ``default_grade``)."""
+        curriculum = await self._curriculum_block(topic, profile)
+        self.last_curriculum = curriculum  # for the log
         raw = await self.llm.chat([{"role": "user", "content": OUTLINE_PROMPT.format(
             name=self.name, topic=topic, bio=self.bio, chars=self.chars, context=context or "无", role=self._role(profile),
             profile=profile.summary() if profile is not None else "无（新学生，没有档案）",
-            curriculum=self._curriculum_block(topic, profile),
+            curriculum=curriculum,
             default_grade=(profile.grade if profile is not None and profile.grade else "初中"))}],
             max_tokens=900, temperature=0.4, json_mode=True)
         d = parse_json(raw)

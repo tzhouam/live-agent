@@ -138,7 +138,7 @@ class Curriculum:
                         sim = max(sim, 0.6)  # the unit named inside the question ("圆" in "圆的面积")
                     if sim < 0.5:
                         continue
-                    stage, domain, reqs = self._requirements(subj, g_int, q)
+                    stage, domain, reqs = self._requirements(subj, g_int, q, t)
                     found.append(Match(name, g_int, t, stage, domain, reqs, prereq.get(nt) or prereq.get(q) or [],
                                        (entry or {}).get("basis", ""), score=1.0 + sim, sim=sim))
                     covered.append((g_int or 0, g_int or 0))
@@ -149,7 +149,7 @@ class Curriculum:
                     continue  # a textbook topic in this stage already says it (with its exact grade)
                 for dom in st.get("domains") or []:
                     hits = [r for r in dom.get("requirements") or []
-                            if q in _norm(r) or (not latin and len(qb & _bigrams(_norm(r))) / max(len(qb), 1) >= 0.6)]
+                            if q in _norm(r) or (not latin and len(qb & _bigrams(_norm(r))) / max(len(qb), 1) >= 0.75)]
                     if hits:
                         found.append(Match(name, None, topic, st.get("name", ""), dom.get("name", ""), hits[:3],
                                            prereq.get(q, []), "standard", score=1.6, grades=(lo, hi), sim=0.6))
@@ -166,18 +166,90 @@ class Curriculum:
                 out.append(m)
         return out[:limit]
 
-    def _requirements(self, subj: dict, grade: int | None, q: str) -> tuple[str, str, list[str]]:
-        """The stage containing ``grade`` and its requirements that mention the topic (else the stage's first domain
-        with any requirement mentioning a character of it)."""
+    def _requirements(self, subj: dict, grade: int | None, q: str, also: str = "") -> tuple[str, str, list[str]]:
+        """The stage containing ``grade`` and its requirements most similar to the topic ``q`` (and the chapter name
+        ``also``); none below a similarity floor (a wrong requirement is worse than none)."""
+        keys = [_bigrams(x) for x in (q, _norm(also)) if x]
+        best: tuple[float, str, str, str] = (0.0, "", "", "")
+        stage_name = ""
         for st in subj.get("stages") or []:
             gs = st.get("grades") or []
-            if grade is None or (len(gs) == 2 and gs[0] <= grade <= gs[1]) or grade in gs:
-                for dom in st.get("domains") or []:
-                    hits = [r for r in dom.get("requirements") or [] if q in _norm(r)]
-                    if hits:
-                        return st.get("name", ""), dom.get("name", ""), hits[:3]
-                return st.get("name", ""), "", []
-        return "", "", []
+            if not (grade is None or (len(gs) == 2 and gs[0] <= grade <= gs[1]) or grade in gs):
+                continue
+            stage_name = stage_name or st.get("name", "")
+            for dom in st.get("domains") or []:
+                for r in dom.get("requirements") or []:
+                    rb = _bigrams(_norm(r))
+                    sim = max((len(k & rb) / max(len(k), 1) for k in keys), default=0.0)
+                    nr = _norm(r)
+                    if q and q in nr and re.search(re.escape(q) + r"(之?前|以前|为止)", nr) \
+                            and nr.count(q) == 1:
+                        sim = min(sim, 0.3)  # "至鸦片战争前": a period that ends where the topic starts
+                    elif q and q in nr:
+                        sim = max(sim, 0.95)
+                    if sim > best[0]:
+                        best = (sim, st.get("name", ""), dom.get("name", ""), r)
+        if best[0] >= 0.5:
+            return best[1], best[2], [best[3]]
+        return stage_name, "", []
+
+    # ------------------------------------------------------------ locating a topic with the model
+    def index_text(self) -> str:
+        """The whole curriculum as a compact chapter index (one line per subject and grade), for the locator."""
+        if getattr(self, "_index", None) is None:
+            lines = []
+            for subj in self.subjects:
+                for g, e in sorted((subj.get("grade_topics") or {}).items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 0):
+                    topics = [re.sub(r"[（(][^）)]{0,12}[）)]$", "", str(t)).strip() for t in (e or {}).get("topics") or []]
+                    lines.append(f"{subj.get('subject')}|{g}|" + "；".join(t for t in topics if t))
+            self._index = "\n".join(lines)
+        return self._index
+
+    async def locate(self, llm, topic: str, grade: int | None = None) -> list[Match]:
+        """Where ``topic`` is taught: exact wording by string match, else the model picks chapters from the index
+        (textbooks name chapters, e.g. 运动和力的关系 for 牛顿第二定律). Answers must be copied from the index, so
+        nothing is invented; results are cached per topic."""
+        lexical = self.lookup(topic, grade)
+        if any(m.sim >= 0.9 for m in lexical) or llm is None or not self.subjects:
+            return lexical
+        cache = self.__dict__.setdefault("_located", {})
+        key = _norm(topic)
+        if key not in cache:
+            from live_agent.llm import parse_json
+
+            raw = await llm.chat([{"role": "user", "content": LOCATE_PROMPT.format(
+                topic=topic, index=self.index_text())}], max_tokens=300, temperature=0.0, json_mode=True)
+            try:
+                picks = parse_json(raw).get("matches") or []
+            except ValueError:
+                picks = []
+            cache[key] = [p for p in picks if isinstance(p, dict)][:3]
+        out = []
+        for p in cache[key]:
+            m = self._entry(str(p.get("subject") or ""), p.get("grade"), str(p.get("topic") or ""), topic)
+            if m is not None:
+                out.append(m)
+        if grade is not None:
+            out.sort(key=lambda m: abs((m.grade or grade) - grade))
+        return out or lexical
+
+    def _entry(self, subject: str, grade, chapter: str, topic: str) -> Match | None:
+        """The index entry the locator named (verified: an invented chapter is dropped)."""
+        g = parse_grade(int(grade)) if str(grade).isdigit() else parse_grade(grade)
+        for subj in self.subjects:
+            if subj.get("subject") != subject:
+                continue
+            e = (subj.get("grade_topics") or {}).get(str(g)) or {}
+            for t in e.get("topics") or []:
+                if _norm(t).startswith(_norm(chapter)) and chapter.strip():
+                    stage, domain, reqs = self._requirements(subj, g, _norm(topic), t)
+                    prereq = {(_norm(k)): v for k, v in (subj.get("prerequisites") or {}).items()}
+                    return Match(subject, g, t, stage, domain, reqs, prereq.get(_norm(t)) or [], e.get("basis", ""),
+                                 score=2.0, sim=0.95)
+        return None
+
+    async def topic_context_async(self, llm, topic: str, grade: int | None) -> str:
+        return self._render(topic, await self.locate(llm, topic, grade), grade)
 
     # ------------------------------------------------------------ how to teach a grade
     def profile(self, grade: int | None) -> dict[str, Any]:
@@ -209,7 +281,9 @@ class Curriculum:
     def topic_context(self, topic: str, grade: int | None) -> str:
         """Where the topic may sit in the curriculum, for the planner (candidates from lexical matching: the model
         uses the relevant ones); flags a topic above the student's grade only on a strong match."""
-        ms = self.lookup(topic, grade, limit=4)
+        return self._render(topic, self.lookup(topic, grade, limit=4), grade)
+
+    def _render(self, topic: str, ms: list[Match], grade: int | None) -> str:
         if not ms:
             return ""
         lines = []
@@ -234,7 +308,7 @@ class Curriculum:
                          f"要从学生已有的知识讲起，降低难度，必要时先补前置知识。")
         elif grade is not None and top.grade is not None and top.grade < grade - 2:
             lines.append(f"注意：这是{grade_name(top.grade)}的内容，学生已经{grade_name(grade)}，以复习和提高为主。")
-        return "课程标准参考（按关键词找到的可能相关条目，只采用和本课真正相关的）：\n" + "\n".join(lines)
+        return "课程标准参考（系统检索到的相关条目，只采用和本课真正相关的）：\n" + "\n".join(lines)
 
     def summary(self) -> dict[str, Any]:
         return {"subjects": [{"subject": s.get("subject"), "grades": s.get("grades"),
@@ -244,4 +318,12 @@ class Curriculum:
                 "pedagogy_grades": sorted(int(g) for g in (self.pedagogy.get("grades") or {}) if str(g).isdigit())}
 
 
-__all__ = ["Curriculum", "Match", "grade_name", "parse_grade"]
+LOCATE_PROMPT = """下面是中国中小学课程目录（每行：学科|年级|这个年级的教材章节，章节之间用；分隔）。
+请找出讲「{topic}」这个内容的章节，最多 3 个，最主要的放第一个；同一内容在不同学段都讲的（如初中和高中），各列一个。
+topic 必须从目录里原样复制章节名，不要自己编；目录里没有相关章节就返回空列表。
+只输出 JSON：{{"matches": [{{"subject": 学科（原样）, "grade": 年级数字, "topic": 章节名（原样）}}]}}
+目录：
+{index}"""
+
+
+__all__ = ["Curriculum", "LOCATE_PROMPT", "Match", "grade_name", "parse_grade"]
