@@ -215,7 +215,10 @@ every request at a median of 4.29 s and a maximum of 4.53 s between requests' fi
 Two-GPU persona-length measurement (peer session live-agent-bb, measured locally 11:47-11:51 on
 live-agent-13's USP2 server: FP8, teacher graphs, pad 512, graph range 320-420, hold off):
 330-405-token prompts, 17 updates over 44 requests, median 5.26 s (min 5.15, max 5.35) between
-requests' first chunks, **real-time factor 1.06**, about 0.3 s of drift per request. The extra
+requests' first chunks, **real-time factor 1.06**, about 0.3 s of drift per request. The sibling
+session's own 100-request run on that server (332-340-token prompts, an update every request, AdaLN
+cache off, encoder graphs): 5.31 s per request mean, 5.33 s warm, 37 s of drift over 101 requests,
+real-time factor 1.07, no live captures. The extra
 text rows (about 320 per phase document, plus about 100 pad rows with pad 512) cost the 6% that
 short prompts had left. Next lever under test: the LoRA hooks' launch overhead (about 100
 hooked linears, 3-4 launches each, per forward); if a no-LoRA timing run shows 0.06 s or more
