@@ -345,3 +345,13 @@ over the session, on a host with load average 21; frames at 12, 120, 300 and 480
 deploy config `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml` carries every lever; memory is
 139-143 GB per rank as reported by nvidia-smi (caching allocator included), so a deployment that
 runs short should quantize the text encoder too. D-036 is met with correct output.
+
+Correction (2026-09-29 13:00, session ffe817, from a peer measurement on the deployed server):
+the merged FP8 student weights (`taomate_h3_lora_merge`) blur the video: Laplacian variance
+105-110 against about 1500 for eager BF16 over 25 frames each. The LoRA delta is 0.2-0.7% of
+|W| and 83-98% of it becomes per-channel FP8 rounding error, so the fine-tune is largely lost
+although the merge is unbiased in expectation (the CPU check measured the expectation, not the
+per-frame effect). The two-GPU deploy config now runs with the merge off (worktree 8888c9966,
+demo 14a4fef); the 4.69 s per persona request was measured with the merge on, so expect about
+4.81 s without it (estimate: the merge saved 0.12 s), real-time factor about 0.97, still real
+time with a 3% margin. The BF16 delta on the fused hooks is the exact path.
