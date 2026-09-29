@@ -319,3 +319,29 @@ of D-036 (4.87-5.05 s per request) was measured on the broken decode; with the c
 VAE costs 0.36 s per 34-frame phase again and a persona-length request takes about 5.4 s
 (real-time factor 1.09). D-036 is therefore back to "not met for persona prompts"; the next lever
 must be a correct VAE speedup. Comparison page: https://claude.ai/artifact/Q8C5SAv4Ricd5EYbREokht
+
+## Two GPUs real time with correct output (2026-09-29)
+
+After the tile fix the two-GPU config lost its margin (about 5.4 s per persona-length request).
+Three more levers, each checked on frames (measured locally):
+
+- Merged student weights (`taomate_h3_lora_merge`): the loader quantizes the DiT while loading,
+  so each LoRA target gets a shadow linear built from the dequantized per-channel FP8 base plus
+  the delta, requantized with the same method; the student swaps in those parameters, the
+  teacher swaps the base back. Student forwards 0.69 -> 0.65 s, commit 0.256 -> 0.24 s per phase,
+  0.12 s per request; frames clean.
+- Regional `torch.compile` with the merged weights: inductor fails to build and the teacher
+  graph probe trips; dropped.
+- Decoder tile overlap (`taomate_h3_vae_decoder_tile_overlap_min: 32`): the decoder renders
+  correctly only at its trained 256 px tile, but the checkpoint's 64 px minimum overlap makes 15
+  tiles covering 2.37x the 480x864 canvas; 32 px gives 8 tiles covering 1.26x, decode 0.37 ->
+  0.19 s per phase, 0.6 s per request, and 2x crops of the tile borders are identical to the
+  64 px decode. (384 and 480 px tiles both render a 16 px lattice: the decoder's positional ids
+  are normalized to the tile extent.)
+
+Result: a 100-request session with a different 332-340-token prompt every request averaged
+4.69 s per 4.958 s request (real-time factor 0.945), one request above budget, 25.8 s gained
+over the session, on a host with load average 21; frames at 12, 120, 300 and 480 s clean. The
+deploy config `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml` carries every lever; memory is
+139-143 GB per rank as reported by nvidia-smi (caching allocator included), so a deployment that
+runs short should quantize the text encoder too. D-036 is met with correct output.
