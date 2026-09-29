@@ -29,7 +29,12 @@ export LLM_API_KEY=${LLM_API_KEY:-}
 # no local LLM when the responder is hosted (frees the helper card, e.g. for the board image model)
 [ "$LLM_URL" != "http://127.0.0.1:8101/v1" ] && export SKIP_LLM=1
 # board images (Qwen-Image on the helper card): default on for the teacher persona
-IMAGES=${IMAGES:-$([ "$PERSONA" = "teacher" ] && echo 1 || echo 0)}; export IMAGE=$IMAGES
+# HELPERS=0 (omni mode): no helper GPU; the VLM checks and speech recognition use the hosted API with the LLM key
+# (qwen3.8-flash sees images; qwen-audio-3.0-realtime-plus transcribes), and board illustrations are off
+HELPERS=${HELPERS:-1}
+HOSTED_VLM_URL=${HOSTED_VLM_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
+HOSTED_ASR_URL=${HOSTED_ASR_URL:-wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime}
+IMAGES=${IMAGES:-$([ "$PERSONA" = "teacher" ] && [ "$HELPERS" = "1" ] && echo 1 || echo 0)}; export IMAGE=$IMAGES
 mkdir -p .cache/logs .cache/sessions
 extra=()
 [ -d "configs/persona_$PERSONA" ] || { echo "unknown PERSONA=$PERSONA (no configs/persona_$PERSONA)"; exit 2; }
@@ -135,15 +140,22 @@ case "$mode" in
     OMNI_PORT=${OMNI_PORT:-8191}
     OMNI_MODEL=${OMNI_MODEL:-/data/models/hub/models--MiniMaxAI--MiniMax-H3/snapshots/42ed227ee7df40d41602854ae760620d6eb651fe/FL2VA}
     [ -x "$OMNI_DIR/.venv/bin/vllm" ] || { echo "vLLM-Omni venv not found: $OMNI_DIR/.venv"; exit 1; }
-    for p in 8101 8102 8103 8104 "$OMNI_PORT"; do port_free $p || { echo "port $p already in use (models running?)"; exit 1; }; done
+    ports=("$OMNI_PORT"); [ "$HELPERS" = "1" ] && ports+=(8101 8102 8103 8104)
+    for p in "${ports[@]}"; do port_free $p || { echo "port $p already in use (models running?)"; exit 1; }; done
     : > "$HELPER_LOG"; : > "$OMNI_LOG"; : > "$SERVER_LOG"
     OMNI_GPUS=${OMNI_GPUS:-4}  # 4: USP4 (default); 2: USP2 with FP8 linears and CUDA-graph teacher (D-036)
     case "$OMNI_GPUS" in 2|4) ;; *) echo "OMNI_GPUS must be 2 or 4"; exit 1;; esac
     echo "[run_live] omni: helper models on 1 GPU (log $HELPER_LOG), vLLM-Omni TaoMate-H3 on $OMNI_GPUS GPUs (log $OMNI_LOG) ..."
-    hsel=(--gpus 1); [ -n "${HELPER_GPU:-}" ] && hsel=(--gpu-ids "$HELPER_GPU")
-    gpu run "${hsel[@]}" --timeout "$HOURS" --note "live-agent helper models (run_live.sh)" -- \
-      scripts/serve_models.sh > "$HELPER_LOG" 2>&1 &
-    pids+=($!)
+    if [ "$HELPERS" = "1" ]; then
+      hsel=(--gpus 1); [ -n "${HELPER_GPU:-}" ] && hsel=(--gpu-ids "$HELPER_GPU")
+      gpu run "${hsel[@]}" --timeout "$HOURS" --note "live-agent helper models (run_live.sh)" -- \
+        scripts/serve_models.sh > "$HELPER_LOG" 2>&1 &
+      pids+=($!)
+    else
+      echo "ALL_READY (hosted VLM and ASR)" > "$HELPER_LOG"
+      extra+=(--vlm-url "$HOSTED_VLM_URL" --vlm-model "$LLM_MODEL" --asr-url "$HOSTED_ASR_URL"
+              --asr-model qwen-audio-3.0-realtime-plus)
+    fi
     osel=(--gpus "$OMNI_GPUS"); [ -n "${GPU_IDS:-}" ] && osel=(--gpu-ids "$GPU_IDS")
     repo=$PWD
     gpu run "${osel[@]}" --timeout "$HOURS" --note "live-agent vLLM-Omni TaoMate-H3 USP$OMNI_GPUS (run_live.sh)" -- \

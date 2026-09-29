@@ -45,7 +45,7 @@ class OpenAICompatLLM:
             pass
 
     async def chat(self, messages, *, max_tokens=512, temperature=0.3, json_mode=False) -> str:
-        if "dashscope" in self.base_url:  # hosted Qwen (Model Studio, OpenAI-compatible mode): top-level switch
+        if "dashscope" in self.base_url or "aliyuncs.com" in self.base_url:  # hosted Qwen: top-level switch
             extra: dict[str, Any] = {"enable_thinking": self.enable_thinking}
         else:  # local vLLM: the chat template decides
             extra = {"chat_template_kwargs": {"enable_thinking": self.enable_thinking}}

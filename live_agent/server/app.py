@@ -468,9 +468,16 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             elif args.vlm_url:
                 from live_agent.qc.judge import VLMJudge
 
-                judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model), k=8, contrast=True)
+                hosted = not args.vlm_url.startswith(("http://127.", "http://localhost"))
+                judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model,
+                                                 api_key=llm_api_key(args) if hosted else "EMPTY", timeout_s=60.0),
+                                 k=8, contrast=True)
             asr = None
-            if args.asr_url:
+            if args.asr_url.startswith("wss://"):  # hosted realtime audio model: user speech only (no per-request
+                from live_agent.asr import HostedRealtimeASR  # speech QC: an API call per 5 s line, ~6 s each)
+
+                asr = HostedRealtimeASR(args.asr_url, args.asr_model, llm_api_key(args))
+            elif args.asr_url:
                 from live_agent.asr import OpenAIASR
                 from live_agent.qc.judge import SpeechCheck
 
