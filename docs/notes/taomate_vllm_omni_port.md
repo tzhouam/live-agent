@@ -373,7 +373,12 @@ app-side), and the merged FP8 student weights withdrawn (blur).
 
 Result: with exact output (merge off), persona-length prompts changing every request run at **4.58 s per
 4.958 s request on average over 21 requests, 4.73 s at most, real-time factor 0.92** (was 4.97 s before the
-two fixes, 5.31 s at the start of the day); a 100-request confirmation is running. Per 34-frame phase:
+two fixes, 5.31 s at the start of the day). The 100-request confirmation on the same server (new
+332-340-token prompt every request, host load average about 30) [measured locally]: **mean 4.74 s
+(warm 4.76 s), min 4.38 s, max 4.88 s, 0 of 100 requests over 4.958 s, stream 22 s ahead of real
+time at the end**. The driver's last scheduled prompt update arrived after the stream had finished
+and was rejected ("No active request state for interaction"), a client-side scheduling artifact of
+the server running ahead of the wall clock, not a server fault. Per 34-frame phase:
 teacher 0.37 (request start), student forwards 0.66, commit 0.23, VAE decode 0.20, host gap 0.06.
 
 Demo-paced timing from the demo session (2026-09-29, two GPUs, exact path, 26 lesson requests of
