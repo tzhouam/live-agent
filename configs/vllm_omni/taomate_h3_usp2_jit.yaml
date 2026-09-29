@@ -63,7 +63,9 @@ stages:
       # load-time warmup (3 shapes per token count, about 0.5 s each), so a
       # prompt update never captures inside the stream. Other lengths are
       # captured lazily at the request that first needs them.
-      taomate_h3_teacher_graph_text_lengths: "300-420"
+      # live-agent teacher prompts are 373-444 tokens (1233 prompts, p99 424, measured locally 2026-09-29): a
+      # length outside the captured range is captured mid-stream the first time (a ~2 s stall seen live at 427)
+      taomate_h3_teacher_graph_text_lengths: "360-470"
       # Replay the text-only prompt encode of an update from a CUDA graph too
       # (one graph per token count, captured for the same range at load).
       taomate_h3_text_encoder_cuda_graph: true
