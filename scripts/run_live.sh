@@ -145,7 +145,7 @@ case "$mode" in
     : > "$HELPER_LOG"; : > "$OMNI_LOG"; : > "$SERVER_LOG"
     OMNI_GPUS=${OMNI_GPUS:-4}  # 4: USP4 (default); 2: USP2 with FP8 linears and CUDA-graph teacher (D-036)
     case "$OMNI_GPUS" in 2|4) ;; *) echo "OMNI_GPUS must be 2 or 4"; exit 1;; esac
-    echo "[run_live] omni: helper models on 1 GPU (log $HELPER_LOG), vLLM-Omni TaoMate-H3 on $OMNI_GPUS GPUs (log $OMNI_LOG) ..."
+    echo "[run_live] omni: helper models $([ "$HELPERS" = "1" ] && echo "on 1 GPU (log $HELPER_LOG)" || echo "hosted (API)"), vLLM-Omni TaoMate-H3 on $OMNI_GPUS GPUs (log $OMNI_LOG) ..."
     if [ "$HELPERS" = "1" ]; then
       hsel=(--gpus 1); [ -n "${HELPER_GPU:-}" ] && hsel=(--gpu-ids "$HELPER_GPU")
       gpu run "${hsel[@]}" --timeout "$HOURS" --note "live-agent helper models (run_live.sh)" -- \
@@ -161,6 +161,7 @@ case "$mode" in
     gpu run "${osel[@]}" --timeout "$HOURS" --note "live-agent vLLM-Omni TaoMate-H3 USP$OMNI_GPUS (run_live.sh)" -- \
       env -C "$OMNI_DIR" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/vllm serve "$OMNI_MODEL" --omni \
         --trust-remote-code --deploy-config "$repo/configs/vllm_omni/taomate_h3_usp${OMNI_GPUS}_jit.yaml" \
+        --init-timeout 2400 --stage-init-timeout 2400 \
         --lora-path "$repo/.cache/models/TaoMate-H3" --host 127.0.0.1 --port "$OMNI_PORT" > "$OMNI_LOG" 2>&1 &
     pids+=($!)
     t0=$SECONDS
