@@ -77,7 +77,9 @@ stages:
       # OFF for the demo (worktree default: on). Merging requantizes W + LoRA delta to per-channel FP8, but the
       # delta is 0.2-0.7% of |W|, below FP8's rounding step: 83-98% of it becomes rounding error (cos 0.26-0.62
       # to the true delta, 9 DiT linears checked on CPU, measured locally), the 3-step student loses its LoRA and
-      # the video is ~14x less sharp (Laplacian variance 105-110 vs ~1500 for USP4 BF16 over 25 frames each).
+      # the video is ~4.7x less sharp: frame Laplacian variance (median of 24-25 frames, measured locally) 105-110
+      # merged vs 497 unmerged, and 500-512 for USP4 BF16 (the ~1500 first quoted was a lattice-era recording,
+      # whose 16 px lattice inflates the metric).
       # Unmerged, the FP8 base plus the BF16 LoRA hook costs ~0.12 s per request (worktree note).
       taomate_h3_lora_merge: false
       taomate_h3_hold_for_prompt: true
