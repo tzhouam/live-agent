@@ -297,3 +297,9 @@ def test_latex_with_a_backslash_eaten_by_json_is_repaired_and_commands_are_read_
     assert "<mo>&#x02260;</mo>" in html and "<mi>e</mi>" not in html  # the ≠ sign, no stray "eq"
     assert spoken(broken, 40) == ["a加b的和的平方 不等于 a的平方加b的平方 和 2乘 3"]
     assert spoken("$\\frac{1}{2}$", 22) == ["2分之1"]
+
+
+def test_board_items_numbered_by_the_model_are_not_numbered_twice():
+    # seen live on the two-GPU demo: "1. 1. 因式分解法" (the page's list numbers the points itself)
+    assert render_item("1. 因式分解法").startswith("因式分解法") and render_item("2、配方法") == "配方法"
+    assert render_item("2x+1=0") == "2x+1=0" and render_item("一、定义") == "定义"

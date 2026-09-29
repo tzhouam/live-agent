@@ -188,6 +188,7 @@ def _tex_say(tex: str) -> str:
 def render_item(text: str) -> str:
     """Board text -> safe HTML: plain text escaped, **bold**, $...$ LaTeX as MathML (text fallback)."""
     text = repair_latex(text)
+    text = re.sub(r"^\s*(?:\d{1,2}|[一二三四五六七八九十])\s*[.、．)）]\s*", "", text)  # the board numbers points itself
     out = []
     for i, part in enumerate(re.split(r"\$([^$]+)\$", text)):
         if i % 2:
