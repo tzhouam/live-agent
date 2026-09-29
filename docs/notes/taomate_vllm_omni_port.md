@@ -355,3 +355,21 @@ per-frame effect). The two-GPU deploy config now runs with the merge off (worktr
 demo 14a4fef); the 4.69 s per persona request was measured with the merge on, so expect about
 4.81 s without it (estimate: the merge saved 0.12 s), real-time factor about 0.97, still real
 time with a 3% margin. The BF16 delta on the fused hooks is the exact path.
+
+Round 4 (2026-09-29 evening, session ffe817): "real time without lagging, no quality loss, kernel-level work
+allowed". Findings (measured locally): the DiT's FP8 GEMMs and FlashAttention-3 already run at the cards'
+tensor-core rates (a micro-benchmark at the H3 shapes put vLLM's Cutlass per-token/per-channel GEMM within
+5% of cuBLASLt), and the video VAE decoder is a 2.4 B-parameter 3D ViT whose GEMMs also run at rate, so no
+exact kernel substitution remained there. An on-server phase profile instead exposed exact-numerics
+overhead: the streaming attention concatenated the 120 MB K/V history per layer per forward (about 135 ms
+of cat/stack/gather per 34-frame phase) and the FP8 linears quantized activations through an inductor
+kernel at half the CUDA op's bandwidth (54 ms). Both fixed (worktree b1f16624a, ff406e743): persistent
+per-layer K/V buffers with in-place staging and slice compaction; vLLM's CUDA quantization op. Also:
+stacked VAE tiles (bit-identical, -3 GB per rank), a bounded just-in-time hold with rank agreement and a
+neutral fallback prompt (the demo's 8 s stall was the hold waiting for the LLM's decision; the demo fixed it
+app-side), and the merged FP8 student weights withdrawn (blur).
+
+Result: with exact output (merge off), persona-length prompts changing every request run at **4.58 s per
+4.958 s request on average over 21 requests, 4.73 s at most, real-time factor 0.92** (was 4.97 s before the
+two fixes, 5.31 s at the start of the day); a 100-request confirmation is running. Per 34-frame phase:
+teacher 0.37 (request start), student forwards 0.66, commit 0.23, VAE decode 0.20, host gap 0.06.
