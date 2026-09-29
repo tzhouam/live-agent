@@ -347,8 +347,10 @@ deploy config `vllm_omni/deploy/taomate_h3_usp2_realtime.yaml` carries every lev
 runs short should quantize the text encoder too. D-036 is met with correct output.
 
 Correction (2026-09-29 13:00, session ffe817, from a peer measurement on the deployed server):
-the merged FP8 student weights (`taomate_h3_lora_merge`) blur the video: Laplacian variance
-105-110 against about 1500 for eager BF16 over 25 frames each. The LoRA delta is 0.2-0.7% of
+the merged FP8 student weights (`taomate_h3_lora_merge`) blur the video: median Laplacian
+variance over 24-25 frames 105-110 with the merge against 497 without it and 500-512 for the
+four-GPU BF16 demo (corrected figures from the demo session; the exact path matches BF16, the
+merge cost about 4.7x in sharpness). The LoRA delta is 0.2-0.7% of
 |W| and 83-98% of it becomes per-channel FP8 rounding error, so the fine-tune is largely lost
 although the merge is unbiased in expectation (the CPU check measured the expectation, not the
 per-frame effect). The two-GPU deploy config now runs with the merge off (worktree 8888c9966,
@@ -373,3 +375,10 @@ Result: with exact output (merge off), persona-length prompts changing every req
 4.958 s request on average over 21 requests, 4.73 s at most, real-time factor 0.92** (was 4.97 s before the
 two fixes, 5.31 s at the start of the day); a 100-request confirmation is running. Per 34-frame phase:
 teacher 0.37 (request start), student forwards 0.66, commit 0.23, VAE decode 0.20, host gap 0.06.
+
+Demo-paced timing from the demo session (2026-09-29, two GPUs, exact path, 26 lesson requests of
+373-444-token prompts, just-in-time hold, server started after the two fixes): median 4.905 s, mean
+4.954 s, 7 above 4.958 s; with the hold the app keeps the server at most two requests ahead of
+playback, so this is pacing, not the 4.58 s the unpaced server measures. One 7.3 s gap was a live
+graph capture for a 427-token prompt outside the 300-420 range; the demo and the deploy config now
+use 360-470 (the lesson prompts' p99 is 424 over 1233 prompts).
