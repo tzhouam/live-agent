@@ -2,9 +2,10 @@
 # `OMNI_GPUS=2 scripts/run_live.sh omni`.
 #
 # Same as vllm_omni/deploy/taomate_h3_usp2_realtime.yaml of the vllm-omni worktree
-# (/data/zhoutaichang/worldmodel/vllm-omni-taomate, branch feat/taomate-h3-realtime, d633c7dad; D-036)
-# plus `taomate_h3_hold_for_prompt: true` (just-in-time lock, D-028). Real time for persona-length prompts
-# (4.87-4.99 s per 4.958 s request, measured locally in D-036; margin depends on host load).
+# (/data/zhoutaichang/worldmodel/vllm-omni-taomate, branch feat/taomate-h3-realtime, 19762dbf0; D-036 done:
+# per-channel FP8, merged student weights, 256 px decoder tiles with 32 px overlap = correct frames, 4.69 s per
+# persona request over 100, measured locally) plus `taomate_h3_hold_for_prompt: true` (just-in-time lock, D-028).
+# The earlier copy (c3c8089) used 480 px decoder tiles, which render a 16 px lattice.
 # `devices` maps ranks to the cards of the canhazgpu reservation, not to physical GPU ids.
 pipeline: taomate_h3
 async_chunk: false
@@ -16,9 +17,21 @@ stages:
     devices: "0,1"
     max_num_seqs: 1
     enforce_eager: true
-    # Online FP8 weights and activations for the DiT linears (the LoRA hooks
-    # add their BF16 delta on top; the teacher shares the same weights).
-    quantization: fp8
+    # Online FP8 for the DiT blocks only: per-channel weight scales with
+    # per-token activation scales (validated visually against eager BF16);
+    # the layers that map between pixels, tokens and timesteps and the text
+    # encoder stay in BF16. The LoRA hooks add their BF16 delta on top.
+    quantization:
+      transformer:
+        method: fp8_per_channel
+        ignore:
+          - "*patch_proj*"
+          - "*condition_proj*"
+          - "*time_embedder*"
+          - "*token_refiner*"
+          - "*final_layer*"
+          - "*adaln_proj*"
+      text_encoder: null
     model_class_name: TaoMateH3Pipeline
     engine_backend: vllm_omni.experimental.ar_diffusion.engine.ARDiffusionEngine
     step_execution: true
@@ -40,8 +53,6 @@ stages:
       taomate_h3_height: 864
       taomate_h3_seed: 8301
       taomate_h3_audio_kv_reset_requests: 12
-      # live-agent: hold each request boundary for the director's just-in-time prompt
-      taomate_h3_hold_for_prompt: true
       # One packed length per document kind (prompts up to 256 tokens), so
       # the teacher's graphs are keyed by prompt length only.
       taomate_h3_pad_text_tokens: 512
@@ -59,10 +70,19 @@ stages:
       # The exact AdaLN projection cache keys on a host digest of the timestep
       # embedding (one device-to-host copy per forward); recompute instead.
       taomate_h3_adaln_cache: false
+      # Merge the LoRA delta into a second per-channel FP8 weight set for the
+      # student (8 GB per rank); the base weights serve the audio teacher.
+      taomate_h3_lora_merge: true
+      taomate_h3_hold_for_prompt: true
+      # 256 px decoder tiles (the only tile size the decoder renders correctly)
+      # with a 32 px minimum overlap: 8 tiles covering 1.26x the canvas instead of
+      # the checkpoint's 15 tiles at 64 px overlap covering 2.37x (no seams,
+      # checked at the tile borders); halves the decode time.
+      taomate_h3_vae_decoder_tile_overlap_min: 32
       taomate_h3_cuda_graph_max_entries: 512
-      # One 480x480 decoder tile per column pair (2 tiles = the 2 tile ranks) instead
-      # of the checkpoint's 3x5 grid of 256 px tiles that covers 2.4x the canvas.
-      taomate_h3_vae_decoder_tile_size: 480
+      # Do not set taomate_h3_vae_decoder_tile_size: 480 px decoder tiles render
+      # a uniform 16 px lattice over the frame (isolated 2026-09-28); the
+      # checkpoint's 256 px tiles are the correct decode.
       # Pack each phase's frames into shared memory on the worker's background
       # thread instead of the step thread (about 45 ms per phase at 480x864).
       # Measured locally: 4.98 -> 4.78 s per 4.958 s request with a constant
