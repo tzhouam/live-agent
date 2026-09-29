@@ -491,7 +491,9 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                 speech_check=speech, memory=make_memory(args, hello, session_id, mode),
                                 log=EventLog(log_dir / f"{session_id}.jsonl"),
                                 cfg=OrchestratorConfig(session_id=session_id, scope=mode,
-                                                       correction_mode=CorrectionMode(args.correction_mode)))
+                                                       correction_mode=CorrectionMode(args.correction_mode),
+                                                       # the demo's vLLM-Omni configs hold for every prompt
+                                                       generator_holds=args.generator == "vllm_omni_h3"))
             transport.orchestrator = orch
             if args.image_url:
                 from live_agent.board_images import ImageMaker

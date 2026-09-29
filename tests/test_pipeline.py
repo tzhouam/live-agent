@@ -347,3 +347,49 @@ def test_anthropic_endpoint_gets_the_messages_api_with_system_on_top():
     assert seen["body"]["system"].startswith("S") and "JSON" in seen["body"]["system"]
     assert seen["body"]["messages"] == [{"role": "user", "content": "U"}]
     assert isinstance(make_chat_llm("http://127.0.0.1:8101/v1", "qwen3-8b"), OpenAICompatLLM)
+
+
+def _slow_reply_run(holds: bool):
+    orch, client = build(max_requests=10)
+    orch.cfg.generator_holds = holds
+    orch.cfg.restart_decision_wait_s = 1.5 / SPEED  # both waits at the simulation's time scale
+    orch.cfg.switch_decision_wait_s = 10.0 / SPEED
+    slow = orch.director.llm
+
+    class SlowLLM:
+        calls = slow.calls
+
+        async def chat(self, messages, **kw):
+            await asyncio.sleep(6.0 / SPEED)  # longer than a request
+            return await slow.chat(messages, **kw)
+    orch.director.llm = SlowLLM()
+
+    async def scenario():
+        client.start()
+        await orch.start()
+        await asyncio.sleep(8 / SPEED)
+        await orch.on_speech_start()
+        t_comment = now()
+        await orch.on_user_utterance(Utterance(uid="u1", speaker="user", text="挥挥手", t_end=now()))
+        try:
+            await asyncio.wait_for(orch.wait_done(), timeout=30)
+        finally:
+            await orch.stop()
+            client.close()
+        return t_comment
+
+    t_comment = asyncio.run(scenario())
+    decided = min(e.t for e in events(orch, EventType.UTTERANCE_END) if e.data.get("decision"))
+    locks = [e for e in events(orch, EventType.LOCK) if e.t > t_comment]
+    return [e for e in locks if e.t < decided], [e for e in locks if e.t >= decided]
+
+
+def test_a_holding_generator_is_not_left_waiting_for_a_slow_reply():
+    # seen live: vLLM-Omni holding for every prompt froze 8 s while the hosted LLM decided (the soft switch waited up
+    # to 10 s for the decision, assuming the old video keeps playing, which it does not under a hold)
+    before, after = _slow_reply_run(holds=True)
+    assert before, "a request is locked while the reply is still being decided (no freeze)"
+    assert all("wave" not in (e.data.get("action") or "") for e in before)  # listening, not the reply
+    assert any("wave" in (e.data.get("action") or "") for e in after)  # the reply comes next
+    before_free, _ = _slow_reply_run(holds=False)  # a generator that keeps playing: waiting for the reply is free
+    assert not before_free

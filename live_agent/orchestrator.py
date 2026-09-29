@@ -97,6 +97,10 @@ class OrchestratorConfig:
     attention_nudge_after: int = 2
     attention_cooldown_s: float = 45.0
     switch_decision_wait_s: float = 10.0  # while old video plays, wait this long for the reply decision
+    # the generator waits for every request's prompt (vLLM-Omni taomate_h3_hold_for_prompt): old video does NOT keep
+    # playing while we wait, so a pending switch waits no longer than after an interruption (seen live: an 8 s
+    # freeze while the hosted LLM decided); an undecided reply then gets a listening request first
+    generator_holds: bool = False
     continuity_cooldown: int = 3  # requests between two corrections of the same prop
     continuity_max_fixes: int = 2  # corrections per prop without effect before giving up on it (logged)
     blocklist: tuple[str, ...] = ()  # operator term blocklist for the script audit (no moderation model)
@@ -369,8 +373,8 @@ class Orchestrator:
             if k == self.sched.restart and k > 0:
                 # After an interruption nothing is playing: a short wait for the in-flight decision
                 # avoids spending the first 5-s request on a filler (listen) segment.
-                t_wait = now() + (self.cfg.switch_decision_wait_s if self._switch_pending
-                                  else self.cfg.restart_decision_wait_s)  # old video still plays: waiting is free
+                free = self._switch_pending and not self.cfg.generator_holds  # old video still plays: waiting is free
+                t_wait = now() + (self.cfg.switch_decision_wait_s if free else self.cfg.restart_decision_wait_s)
                 while self._decisions == self._decisions_at_interrupt and now() < t_wait \
                         and not self._stop.is_set():
                     await asyncio.sleep(0.01)
