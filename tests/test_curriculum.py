@@ -251,7 +251,7 @@ def test_the_curriculum_placement_beats_the_models_subject_label(tmp_path):
     assert asyncio.run(planner.outline("量子力学")).subject == ""  # unknown to the curriculum: no master hints
     out["subject"] = "数学"
     assert asyncio.run(planner.outline("量子力学")).subject == "数学"  # no placement: the model's known label
-    assert c.subject_of("勾股", 8) == ""  # a weak lexical hit decides nothing
+    assert c.subject_of("勾股定理的应用", 8) == ""  # a weak lexical hit (similarity 0.6) decides nothing
 
 
 def test_outline_caps_exercises_and_review_sections_get_a_small_board(tmp_path):
