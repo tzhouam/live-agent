@@ -1,0 +1,14 @@
+tag: lipsync2
+date_utc: 2026-09-30T16:19:33Z
+repo_head: 1da3243bdbd78be8ada42b9bd609a67a95798a01
+repo_dirty_files: 31
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.159.2
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/lipsync2_review.md - < docs/reviews/lipsync2_prompt.md
+exit_code: 0
+thread_id: 01a0f313-64c3-7ad0-a235-337fc4f1c46b
+rollout: /home/zhoutaichang/.codex/sessions/2026/10/01/rollout-2026-10-01T00-08-50-01a0f313-64c3-7ad0-a235-337fc4f1c46b.jsonl
+rollout_models:       5 "model":"gpt-6-sol" 
+inlined_files: docs/reviews/lipsync2_page.patch tools/av_sync.py scripts/lipsync_page_check.py tests/test_av_alignment.py docs/reviews/lipsync2_results.md
+prompt_sha256: f4684223e0f5db1cf82f150f25e9b00b56c838ddf5b4140bbf7b95b5db7f861a

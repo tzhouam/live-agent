@@ -34,6 +34,10 @@ for the director's just-in-time prompt. Start-up takes about 6 min (4 x 87 GiB l
 The web demo page shows:
 - **Stage:** the persona video (portrait) and its spoken line.
 - **Controls:** text or push-to-talk input, plus one-click example prompts.
+- **Lip sync (音画同步):** each frame is drawn for the sound the listener hears when it reaches the screen (the output
+  delay the browser reports plus one display refresh). If a device adds more delay than it reports (Bluetooth
+  headsets often do), open **音画同步**, press the beep-and-flash test and move **画面延后** until they coincide; the
+  setting is kept in that browser only (D-044).
 - **Director panel:**
   - intent chains with their status (in progress, verified, failed, skipped);
   - a live timeline of every locked 5 s request, judge verdict, forward repair and completion claim;
@@ -62,7 +66,11 @@ Requirements:
 ```bash
 python3 -m pytest                      # CPU test suite
 scripts/server_check.sh                # full-stack scripted session (run under `gpu run --gpus 6`, helper models up)
+python3 scripts/lipsync_page_check.py http://127.0.0.1:8200   # page clock: frames vs heard audio (headless Chromium)
 ```
+
+Lip sync of a recording (`.cache/sessions/<session>.mp4`) is measured with `tools/av_sync.py` (MediaPipe jawOpen vs
+the audio level; it needs mediapipe in a separate venv and the Face Landmarker model file, see the tool's docstring).
 
 ## Evaluate
 
