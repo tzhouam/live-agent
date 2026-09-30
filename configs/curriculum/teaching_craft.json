@@ -1,0 +1,3433 @@
+{
+ "sources": [
+  {
+   "id": "c1",
+   "title": "233网校《2019下半年教师资格笔试科目二 教育教学知识与能力（小学）》考点（教学原则、导入、提问、板书、课堂总结）",
+   "url": "https://img3.233.com/2019-07/26/156412076595801.pdf",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c2",
+   "title": "教育部师范教育司、教育部考试中心《中小学和幼儿园教师资格考试标准（试行）》2011",
+   "url": "https://www.wic.edu.cn/upload/20260521/9d99b67b3edce71df4045951441c7d30.pdf",
+   "kind": "standard",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c3",
+   "title": "华立学院教师发展中心《备课、说课、上课、评课、听课诀窍大全》",
+   "url": "https://www.hualixy.edu.cn/jsfzzx/xxzy/content_66135",
+   "kind": "school",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c4",
+   "title": "黑龙江职业学院课程思政教学研究中心《教学设计｜十种导入法》",
+   "url": "https://www.hljp.edu.cn/kcszjxyj/info/1041/1574.htm",
+   "kind": "school",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c5",
+   "title": "上海师范大学心理学院《教师课堂教学行为规范》",
+   "url": "https://psy.shnu.edu.cn/46/54/c30437a804436/page.htm",
+   "kind": "school",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c6",
+   "title": "《礼记·学记》全文（维基文库）",
+   "url": "https://zh.wikisource.org/wiki/%E7%A6%AE%E8%A8%98/%E5%AD%B8%E8%A8%98",
+   "kind": "book",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c7",
+   "title": "邱学华《上好一堂课的十二个诀窍》（西北农林科技大学附中转载）",
+   "url": "https://fuzhong.nwafu.edu.cn/tzgg/292524.htm",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c8",
+   "title": "《尝试教学的理论探索与实践创新——专访尝试教学法创始人邱学华》教师教育学报 2023",
+   "url": "https://xbgjxt.swu.edu.cn/article/doi/10.13718/j.cnki.jsjy.2023.04.001?viewType=HTML",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c9",
+   "title": "邱学华《尝试教学法ABC》黑龙江教育 1998(5)",
+   "url": "https://hllj.cbpt.cnki.net/portal/journal/portal/client/paper/6c2d0b09ea389899269149743a14d63d",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c10",
+   "title": "《有效教学应该从洋思中学学什么》中国教育和科研计算机网 2006-03-23",
+   "url": "https://www.cernet.edu.cn/xxh/fei/xin_xi_zi_xun/importantnews/200603/t20060323_158424.shtml",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c11",
+   "title": "曹伟林（洋思中学校长）《洋思模式如何保持定力与创新》中国教育报 2022-02-09",
+   "url": "http://www.jyb.cn/rmtzgjyb/202202/t20220209_678534.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c12",
+   "title": "顾泠沅《学科教学的水平演变与教师学习》WALS 2007 会议报告（青浦实验 1982/2007 观课标准、变式、错误资源）",
+   "url": "https://eduhk.hk/wals/conference07/resources/wals07/2_29112007_gu.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c13",
+   "title": "卢仲衡《三十三年自学辅导教学研究的回顾与展望》教育研究 1998(10)",
+   "url": "https://ir.psych.ac.cn/bitstream/311026/9615/2/%E4%B8%89%E5%8D%81%E4%B8%89%E5%B9%B4%E8%87%AA%E5%AD%A6%E8%BE%85%E5%AF%BC%E6%95%99%E5%AD%A6%E7%A0%94%E7%A9%B6%E7%9A%84%E5%9B%9E%E9%A1%BE%E4%B8%8E%E5%B1%95%E6%9C%9B.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c14",
+   "title": "李吉林《谈情境教育的课堂操作要义》教育研究 2002(3)（爱思想转载）",
+   "url": "https://www.aisixiang.com/data/100090.html",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c15",
+   "title": "《课堂提问教学解读与评价》教师培训文档（信阳农林学院）：问题设计、候答3-5秒、助答五法、追问、理答",
+   "url": "https://www.xyafu.edu.cn/__local/A/F4/5A/542638649C0D5860018A98BAA9E_788EA74A_338CA5.pdf",
+   "kind": "school",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c16",
+   "title": "教育部办公厅《关于加强义务教育学校作业管理的通知》教基厅函〔2021〕13号",
+   "url": "http://www.moe.gov.cn/srcsite/A06/s3321/202104/t20210425_528077.html",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c17",
+   "title": "清华大学出版社《教育心理学（第2版）》第二章 心理发展与教育（样章：年龄阶段与思维类型）",
+   "url": "http://www.tup.tsinghua.edu.cn/upload/books/yz/071572-01.pdf",
+   "kind": "textbook",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c18",
+   "title": "华图教师网《中小学学生心理发展的一般特征与阶段特征》",
+   "url": "https://ah.huatu.com/2022/0930/2430122.html",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c19",
+   "title": "《课堂上“导与学”的迭代》中国教师报 2020-06-02（导学案三节点、低起点小跨度上台阶）",
+   "url": "http://www.jyb.cn/rmtzgjsb/202006/t20200602_333838.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c20",
+   "title": "《魏书生 教育更像是一场长跑》中国教师报 2023-07-11",
+   "url": "http://www.jyb.cn/rmtzgjsb/202307/t20230711_2111068301.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c21",
+   "title": "Rosenshine, B. (2012). Principles of Instruction. American Educator 36(1)",
+   "url": "https://www.aft.org/sites/default/files/Rosenshine.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c22",
+   "title": "Lemov, D. Teach Like a Champion Field Guide, sample chapter: Technique 1 No Opt Out",
+   "url": "https://teachlikeachampion.org/wp-content/uploads/Field-Guide-sample-chapter.pdf",
+   "kind": "book",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c23",
+   "title": "Teach Like a Champion blog: TLaC 2.0 Adding Stretch It to No Opt Out",
+   "url": "https://teachlikeachampion.org/blog/tlac-2-0-adding-stretch-it-to-no-opt-out/",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c24",
+   "title": "Teach Like a Champion: Precise Praise (official tag page)",
+   "url": "https://teachlikeachampion.org/tag/precise-praise/",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c25",
+   "title": "Teach Like a Champion blog: Katie McNickle's Show Call",
+   "url": "https://teachlikeachampion.org/blog/katie-mcnickles-show-call/",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c26",
+   "title": "Teach Like a Champion: Free Resources / Grab and Go (Cold Call, Wait Time, Exit Ticket, Do Now)",
+   "url": "https://teachlikeachampion.org/resources/grab-and-go/",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c27",
+   "title": "Teach Like a Champion: Retrieval Practice (official tag page)",
+   "url": "https://teachlikeachampion.org/tag/retrieval-practice/",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c28",
+   "title": "Teach Like a Champion: Everybody Writes (official tag page)",
+   "url": "https://teachlikeachampion.org/tag/everybody-writes/",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c29",
+   "title": "CSUN: Elements of Lesson Design (Madeline Hunter)",
+   "url": "https://csun.edu/science/ref/plans/lesson_design_hunter.html",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c30",
+   "title": "Northern Illinois University CITL: Gagné's Nine Events of Instruction",
+   "url": "https://www.niu.edu/citl/resources/guides/instructional-guide/gagnes-nine-events-of-instruction.shtml",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c31",
+   "title": "McTighe, J. & Wiggins, G. (2012). Understanding by Design Framework (ASCD white paper)",
+   "url": "https://files.ascd.org/staticfiles/ascd/pdf/siteASCD/publications/UbD_WhitePaper0312.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c32",
+   "title": "Black, P. & Wiliam, D. (1998). Inside the Black Box. Phi Delta Kappan 80(2)",
+   "url": "https://kappanonline.org/inside-the-black-box-raising-standards-through-classroom-assessment/",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c33",
+   "title": "Wiliam, D. (2015). Designing Great Hinge Questions. Educational Leadership 73(1)",
+   "url": "https://www.ascd.org/el/articles/designing-great-hinge-questions",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c34",
+   "title": "Wiliam, D. Assessment for Learning: why, what and how? (Cambridge AfL keynote)",
+   "url": "https://www.dylanwiliam.org/Dylan_Wiliams_website/Papers_files/Cambridge%20AfL%20keynote.doc",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c35",
+   "title": "Wiliam, D. (2004). Keeping learning on track: integrating assessment with instruction (IAEA)",
+   "url": "https://www.dylanwiliam.org/Dylan_Wiliams_website/Papers_files/IAEA%2004%20paper.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c36",
+   "title": "Hattie, J. & Timperley, H. (2007). The Power of Feedback. Review of Educational Research 77(1)",
+   "url": "https://www.uky.edu/~gmswan3/575/Hattie_Timperly_2007.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c37",
+   "title": "Coe, R., Aloisi, C., Higgins, S. & Major, L. E. (2014). What makes great teaching? Sutton Trust",
+   "url": "https://www.suttontrust.com/wp-content/uploads/2014/10/What-Makes-Great-Teaching-REPORT.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c38",
+   "title": "Young-Jones, A. (2013). Review of Willingham, Why Don't Students Like School? Education Research and Perspectives 40",
+   "url": "https://www.erpjournal.net/wp-content/uploads/2020/01/ERPV40_Young-Jones_2013_Willingham_Book_Review.pdf",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c39",
+   "title": "APA Blog (2020). Takeaways from Make It Stick: The Science of Successful Learning",
+   "url": "https://blog.apaonline.org/2020/02/19/takeaways-from-make-it-stick-the-science-of-successful-learning/",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c40",
+   "title": "Russell, D. (2019). Cognitive load theory: teaching strategies (interview with John Sweller), Teacher magazine",
+   "url": "https://www.teachermagazine.com/au_en/articles/cognitive-load-theory-teaching-strategies",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c41",
+   "title": "educationaltechnology.net: Mayer's principles of multimedia learning (Mayer 2009)",
+   "url": "https://educationaltechnology.net/?p=1878",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c42",
+   "title": "Structural Learning research briefing: Wait time — three seconds (Rowe 1986)",
+   "url": "https://www.structural-learning.com/research-briefings/wait-time-three-seconds",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c43",
+   "title": "教育部关于批准2014年国家级教学成果奖获奖项目的决定 教师〔2014〕8号",
+   "url": "http://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_jsgz/jsgz_sdjs/sdjs_yxjs/201409/t20140905_174749.html",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c44",
+   "title": "澎湃新闻（转教育部）2018年国家级教学成果奖获奖项目揭晓（上海市教委教研室 数学 特等奖）",
+   "url": "https://www.thepaper.cn/newsDetail_forward_2808246",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c45",
+   "title": "教育部（转光明日报）“全国教书育人楷模”于漪：教师是教育的希望 2010-10-20",
+   "url": "http://www.moe.gov.cn/jyb_xwfb/xw_zt/moe_357/s3582/s4672/s4728/s4729/201010/t20101028_110449.html",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c46",
+   "title": "教育部 人民教育家先进事迹——于漪 2021-05-11",
+   "url": "http://www.moe.gov.cn/jyb_xwfb/moe_2082/2021/2021_zl37/shideshiji/202105/t20210511_530839.html",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c47",
+   "title": "光明日报 全国教书育人楷模候选人简介 2010-08-08（吴正宪）",
+   "url": "https://epaper.gmw.cn/gmrb/html/2010-08/08/nw.D110000gmrb_20100808_1-06.htm",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c48",
+   "title": "新华网 2024年度全国教书育人楷模名单公布 2024-09-06（俞正强）",
+   "url": "https://www.news.cn/edu/20240906/ff95f1b23d804466983309609ecf0b47/c.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c49",
+   "title": "光明日报 2015年度全国教书育人楷模候选人简介 2015-07-28（李庾南）",
+   "url": "http://epaper.gmw.cn/gmrb/html/2015-07/28/nw.D110000gmrb_20150728_1-15.htm",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c50",
+   "title": "澎湃新闻 中国名校访谈④｜清华附小校长窦桂梅：让教师退居后台还课堂给学生 2016-04-14",
+   "url": "https://m.thepaper.cn/newsDetail_forward_1456211",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c51",
+   "title": "清华大学新闻 超越·主题·整合——窦桂梅教育教学实践研讨会 2013-10-18",
+   "url": "https://www.tsinghua.edu.cn/info/1181/53722.htm",
+   "kind": "school",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c52",
+   "title": "澎湃新闻 “最美奋斗者”斯霞老师事迹报告会在南京举行 2019-11-15",
+   "url": "https://www.thepaper.cn/newsDetail_forward_4959458",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c53",
+   "title": "澎湃号·政务 于永正：做一个学生喜欢的老师",
+   "url": "https://www.thepaper.cn/newsDetail_forward_28485552",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c54",
+   "title": "李虹霞 于永正：不要忘记自己曾经也是孩子 中国教师报 2024-04-17",
+   "url": "http://www.jyb.cn/rmtzgjsb/202404/t20240416_2111181994.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c55",
+   "title": "浙江在线 他曾是杭州小学语文教育的标杆 特级教师王崧舟重出江湖 2017-07-31",
+   "url": "https://zjnews.zjol.com.cn/zjnews/hznews/201707/t20170731_4682424.shtml",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c56",
+   "title": "王崧舟 诗意语文，境界为上 当代教育家 2025-06（网易转载）",
+   "url": "https://m.163.com/dy/article/K2DJ2PO00516DKF5.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c57",
+   "title": "薛法根 从“教课文”到“学语文”——小学阅读教学内容的组块策略 福建教育 2015(1/2)",
+   "url": "https://www.aisixiang.com/data/91299.html",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c58",
+   "title": "扬子晚报 星光好老师②金陵中学附属小学孙双金 2025-09-30",
+   "url": "https://www.yzwb.net/news/yysp/202509/t20250930_271296.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c59",
+   "title": "华应龙 有“化错”，才有真正的学习 光明日报 2015-01-13",
+   "url": "https://epaper.gmw.cn/gmrb/html/2015-01/13/nw.D110000gmrb_20150113_1-15.htm",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c60",
+   "title": "人民日报 “错不起的学生，对不了”（在一线）2019-07-21（华应龙课例）",
+   "url": "http://society.people.com.cn/n1/2019/0721/c1008-31246394.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c61",
+   "title": "孙敬彬 华应龙老师的“求化” 中国教师报 2024-06-19",
+   "url": "http://www.jyb.cn/rmtzgjsb/202406/t20240618_2111211310.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c62",
+   "title": "禹跃昆 华应龙：把立德树人写到数学课中 中国教育报 2025-04-08",
+   "url": "http://paper.jyb.cn/zgjyb/h5/html5/2025-04/08/content_144742_18418009.htm",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c63",
+   "title": "张兴华口述 穷尽一生探寻贝壳里的世界 中国教师报 2020-12-16",
+   "url": "http://www.jyb.cn/rmtzgjsb/202012/t20201215_382756.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c64",
+   "title": "澎湃新闻 “上好课、教好书、管好学校、带好学生”，俞正强老师这样说 2024-09-21",
+   "url": "https://m.thepaper.cn/newsDetail_forward_28814093",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c65",
+   "title": "中国教育新闻网 2024年度全国教书育人楷模俞正强：为师生寻找幸福 2024-09-06",
+   "url": "http://www.jyb.cn/rmtzcg/xwy/wzxw/202409/t20240906_2111242258.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c66",
+   "title": "双流县实验小学 校本培训简讯 2016（黄爱华《倒数的认识》大问题课例，摘要）",
+   "url": "https://slypzx.com/uploadFolder/mystudio/2016/12/19/校本培训简讯_57002.doc",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c67",
+   "title": "小花生网（澎湃号）专访全国特级教师刘善娜：一二年级娃这么“搞”数学，后劲才足 2024-02-27",
+   "url": "https://m.thepaper.cn/newsDetail_forward_26476895",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c68",
+   "title": "王咏梅 在教学四“变”中走向新我 中国教育报 2022-06-07",
+   "url": "http://www.jyb.cn/rmtzgjyb/202206/t20220607_696175.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c69",
+   "title": "光明网·教育家 魏书生：为“教书”而生 2019-07-04",
+   "url": "https://jyj.gmw.cn/2019-07/04/content_32973748.htm",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c70",
+   "title": "林志芳 寻找幸福教育的符码 中国教育报 2022-03-23（魏书生六步教学法）",
+   "url": "http://www.jyb.cn/rmtzgjyb/202203/t20220323_685920.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c71",
+   "title": "陈文 寻找语文教育的“魂”——读钱梦龙《教师的价值》中国教育报 2024-06-05",
+   "url": "http://www.jyb.cn/rmtzgjyb/202406/t20240605_2111205162.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c72",
+   "title": "胡立根 钱梦龙专业成长的三点启示 中国教师报 2024-05-29",
+   "url": "http://www.jyb.cn/rmtzgjsb/202405/t20240528_2111201569.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c73",
+   "title": "澎湃新闻 悲痛，钱梦龙老师去世 2024-05",
+   "url": "https://m.thepaper.cn/newsDetail_forward_27485079",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c74",
+   "title": "搜狐 教学流派｜余映潮：我与“板块式”教学思路的创立（摘要）",
+   "url": "https://www.sohu.com/a/128642576_549584",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c75",
+   "title": "褚清源 李庾南：教学实践的三重境界 中国教师报 2023-03-14",
+   "url": "http://www.jyb.cn/rmtzgjsb/202303/t20230314_2111014383.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c76",
+   "title": "李庾南 弘扬教育家精神 长出精神和本领来 人民教育（中国教育新闻网）2024-09-13",
+   "url": "http://www.jyb.cn/rmtzcg/xwy/wzxw/202409/t20240913_2111245227.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c77",
+   "title": "人民网 躬耕三尺讲台58载——记江苏省南通市启秀中学教师李庾南 2015-09-12",
+   "url": "http://edu.people.com.cn/n/2015/0912/c1053-27575628.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c78",
+   "title": "温丹丹 如何训练发达的大脑 中国教育报（人民网转载）2015-08-13（孙维刚）",
+   "url": "http://edu.people.com.cn/n/2015/0813/c1053-27455474.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c79",
+   "title": "顾泠沅 45年：一项数学教改实验 华东师范大学学报（教育科学版）2022,40(4)",
+   "url": "https://xbjk.ecnu.edu.cn/CN/Y2022/V40/I4/103",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c80",
+   "title": "新民晚报 2021-07-14 青浦实验报道（1992年国家教委定为基础教育改革重大成果，摘要）",
+   "url": "https://img1.xinmin.cn/xmwb/2021-07-14/50714.pdf",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c81",
+   "title": "程翔 教者与编者 中华读书报 2020-09-23（中国教育新闻网转载）",
+   "url": "http://www.jyb.cn/rmtzcg/xwy/wzxw/202011/t20201116_373898.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c82",
+   "title": "北京师范大学数学科学学院 章建跃讲座：核心素养统领下的高中数学教育变革 2017-06-02",
+   "url": "https://math.bnu.edu.cn/xzbg/jcxylt/218849.htm",
+   "kind": "school",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c83",
+   "title": "中国教育新闻网 任勇：努力用“数学砖瓦”筑起思维“游乐场” 2025-04-30",
+   "url": "http://www.jyb.cn/rmtzcg/xwy/wzxw/202504/t20250430_2111339397.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c84",
+   "title": "李惠军 灵魂的追问（8）——谨防“泛方法论” 历史教学 2015(10)（搜狐转载）",
+   "url": "https://m.sohu.com/a/128183340_629818",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c85",
+   "title": "解放网（人民网上海）国家级基础教育教学成果奖揭晓 2024-01-24（顾雨薇 画兔点睛 课例）",
+   "url": "http://sh.people.com.cn/n2/2024/0124/c138654-40724477.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c86",
+   "title": "袁小梅、孙建 道德与法治教育跨学科融合的意义、方法与策略 中国民族教育 2025-05-09",
+   "url": "http://www.jyb.cn/rmtzcg/xwy/wzxw/202505/t20250509_2111341552.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c87",
+   "title": "孙振坤 建设适性课堂 培育栋梁之材——南京市竹山中学 中国教育报 2025-03-16",
+   "url": "http://paper.jyb.cn/zgjyb/h5/html5/2025-03/16/content_144743_18349092.htm",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c88",
+   "title": "楚得群 高中化学课堂如何做到守正创新 中国教育报 2023-06-30",
+   "url": "http://www.jyb.cn/rmtzgjyb/202306/t20230630_2111062695.html",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c89",
+   "title": "Nancie Atwell (Wikipedia)",
+   "url": "https://en.wikipedia.org/wiki/Nancie_Atwell",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c90",
+   "title": "Andria Zafirakou (Wikipedia)",
+   "url": "https://en.wikipedia.org/wiki/Andria_Zafirakou",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c91",
+   "title": "Varkey Foundation: Global Teacher Prize winners page",
+   "url": "https://varkeyfoundation.org/global-teacher-prize",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c92",
+   "title": "NCETM/Maths Hubs, Shanghai Teachers: mid exchange report, Nov 2014 (NRICH copy)",
+   "url": "https://nrich.maths.org/content/id/10757/Shanghai_teachers_special_report_Nov_2014.pdf",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c93",
+   "title": "NCETM: Five Big Ideas in Teaching for Mastery",
+   "url": "https://www.ncetm.org.uk/teaching-for-mastery/mastery-explained/five-big-ideas-in-teaching-for-mastery/",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c94",
+   "title": "NCETM: Teaching mathematics for mastery at secondary school (2015 Shanghai exchange)",
+   "url": "https://www.ncetm.org.uk/features/teaching-mathematics-for-mastery-at-secondary-school",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c95",
+   "title": "Boylan et al. (2019). Longitudinal evaluation of the Mathematics Teacher Exchange: China-England, DfE RR902",
+   "url": "https://assets.publishing.service.gov.uk/media/5c49b38340f0b61717193d2d/MTE_main_report.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c96",
+   "title": "NCES (1999). The TIMSS Videotape Classroom Study",
+   "url": "https://nces.ed.gov/pubs99/timssvid/index.asp",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c97",
+   "title": "Takahashi, A. (2006). Characteristics of Japanese mathematics lessons, APEC Tsukuba slides",
+   "url": "https://www.criced.tsukuba.ac.jp/math/apec/apec2006/pdf/takahashi_ppt_1.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c98",
+   "title": "Takahashi, A. (2008). Beyond show and tell: neriage for teaching through problem-solving, ICME-11",
+   "url": "https://lessonresearch.net/wp-content/uploads/2020/07/Characteristics-of-Japanese-Mathematics-Lessons-2.pdf",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c99",
+   "title": "Batteau, Miyakawa & Ryu (2025). Collective problem-solving in Japanese primary mathematics lessons, Educational Studies in Mathematics",
+   "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12145323/",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c100",
+   "title": "Athabasca University: Engelmann's Direct Instruction (method)",
+   "url": "https://psyc.athabascau.ca/open/engelmann/direct.php",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c101",
+   "title": "Athabasca University: Direct Instruction evidence, Project Follow Through",
+   "url": "https://psyc.athabascau.ca/open/engelmann/direct-evid.php",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c102",
+   "title": "Stein & Rolf, The case for Direct Instruction, Chartered College Impact",
+   "url": "https://my.chartered.college/impact_article/the-case-for-direct-instruction/",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c103",
+   "title": "Direct instruction (Wikipedia): I do / We do / You do; 90% review",
+   "url": "https://en.wikipedia.org/wiki/Direct_instruction",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c104",
+   "title": "TES: 10 new teaching techniques Doug Lemov wants you to know (TLAC 3.0)",
+   "url": "https://www.tes.com/magazine/teaching-learning/general/10-new-teaching-techniques-doug-lemov-wants-you-know",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c105",
+   "title": "华容县教育体育局、华容县总工会 第一届中小学青年教师教学竞赛通知及评分表 2019",
+   "url": "https://huarong.gov.cn/uploadfiles/201903/20190313153918233.docx",
+   "kind": "rubric",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c106",
+   "title": "岳阳市 第四届全市中小学青年教师教学竞赛实施方案及评分表 2025",
+   "url": "https://edu.yueyang.gov.cn/uploadfiles/202512/2025120109155930581.doc",
+   "kind": "rubric",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c107",
+   "title": "中国教育电视协会、中央电化教育馆 中教电〔2016〕35号 2017全国教育电视优秀教学课例 评审标准（试行）",
+   "url": "https://fz.sjtu.edu.cn/__local/3/36/71/8E261F07E250ED1650065D334EB_97D74B7F_D2A8B.pdf",
+   "kind": "rubric",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c108",
+   "title": "教师资格证面试大纲-小学（233网校转载，教学设计/实施/评价要求与试讲要求）",
+   "url": "https://img3.233.com/2019-11/21/157430425098861.doc",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c109",
+   "title": "中等职业学校教师资格考试面试大纲评分标准表（新东方转载；教学实施 35 分含板书 8 分）",
+   "url": "https://file.koolearn.com/20211211/16392008171758.doc",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c110",
+   "title": "杨艳、杨六兰《英语教学中的板书艺术》西昌学院学报（社会科学版）2012(1)（正/副板书、板书类型与要求）",
+   "url": "https://xbsk.xcc.edu.cn/xcxyxbsk/article/pdf/20120146",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c111",
+   "title": "陕西师范大学历史文化学院 说课简介（含高中历史说课示例）",
+   "url": "https://his.snnu.edu.cn/__local/C/88/76/867429B3AF5DD1B914C5E12036A_D35D8845_9400.doc",
+   "kind": "school",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c112",
+   "title": "陕西师范大学研究生院 说课·评课材料（目标全面/适当/具体/明确）",
+   "url": "https://newyjs.snnu.edu.cn/__local/4/C0/56/B72A430A93B0783AB77C1B8FC1B_09E184DB_F400.doc",
+   "kind": "school",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c113",
+   "title": "教育部关于大力推进幼儿园与小学科学衔接的指导意见 2021",
+   "url": "http://www.moe.gov.cn/srcsite/A06/s3327/202104/t20210408_525137.html",
+   "kind": "official",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c114",
+   "title": "中国新闻网 2022-04-21 义务教育课程方案和课程标准（2022年版）发布会报道（一至二年级活动化、游戏化、生活化）",
+   "url": "https://www.chinanews.com.cn/gn/2022/04-21/9734982.shtml",
+   "kind": "press",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c115",
+   "title": "亿图 初中英语 教学设计模板（45分钟：导入5/新授20/巩固练习15/总结作业5）",
+   "url": "https://mm.edrawsoft.cn/template/193411",
+   "kind": "secondary",
+   "accessed": "2026-09-30"
+  },
+  {
+   "id": "c116",
+   "title": "丁昱雯《小学英语教学游戏化的理念与策略》当代教育理论与实践 2016(7)",
+   "url": "https://ddjy.hnust.edu.cn/ddjyllysj/article/pdf/6a",
+   "kind": "paper",
+   "accessed": "2026-09-30"
+  }
+ ],
+ "notes": [
+  "本文件是教学法知识库（teaching_craft.json），由五份研究笔记（docs/notes/research_notes/Teaching craft for the teacher agent/）整理而成：zh_textbooks.md、intl_textbooks.md、zh_master_teachers.md、intl_master_teachers.md、zh_rubrics_templates.md。整理日期 2026-09-30，来源访问日期均为 2026-09-30。",
+  "出处标记：文本内的「（cN）」为来源编号，供审计用，程序在生成提示词时会去掉；每个条目的 sources 列出全部依据。",
+  "哪些是引用、哪些是意译：环节规则、教师做法（moves）、板书规则和检查表的措辞都是编辑意译，不是原文；其依据是笔记中标为 cited 或 secondary 的材料（教育学与教学技能教材的考点条文、教育部标准与通知、竞赛评分表、Rosenshine/Wiliam/Hattie & Timperley 等原文、名师本人文章和主流媒体课例报道）。名师的姓名、学校、荣誉和方法只采用笔记标为 cited 或 secondary 的内容。",
+  "数字的性质：候答 3-5 秒、教师讲话不超过 10 分钟、练习正确率约八成、洋思最后 15 分钟、Engelmann 每分钟 10-14 次齐答、Atwell 每年约 40 本、TIMSS 53% 等为引用（标「引用」或来自笔记的 cited 项）；各环节分钟数、各学段的互动频率、例题数、句长和「每条不超过 12 字」为估计（标「（估计）」）。作业时间限制引自教育部 2021 年作业管理通知（一二年级不布置书面家庭作业，小学其他年级每天不超 60 分钟，初中不超 90 分钟）。",
+  "已排除的未核实内容：斯霞的特级教师称号、王崧舟的六字诀（举象、造境、入情、会意、求气、寻根）、吴正宪的八种课型、黄爱华的六步法、徐斌无痕教育的阶段名、张齐华社会化学习的课堂流程、章建跃的「三个理解」、东庐讲学稿、衡水双向六环节的环节名、张思明、刘德武、支玉恒、彭梦华、翟厚岚、黎世法、青浦四原理原文、魏书生六步的逐步内容（只保留中国教育报确认的六个步骤名）、李吉林六种创设情境途径之外的「形真情切意远理蕴」、洋思的逐环节分钟数、全国青教赛国家级评分权重、一师一优课评审指标、NTCE 小学/中学面试评分表权重（只引用已核实的中职表：教学实施 35 分含板书 8 分）。这些均未写入。",
+  "荣誉栏说明：孙维刚（中国教育报 2015 只记载其实验班成绩，未核实特级教师称号）、邱学华（笔记未核实其荣誉与学校）、顾泠沅（青浦实验 1992 年由国家教委推广，摘要级来源）、章建跃（编审、教材主编为职务）、顾雨薇（只有课例报道，未核实获奖等级）、系统条目（日本课例研究、Engelmann 直接教学）的 honours 写的是笔记中有据的成就或职务，不是称号。刘善娜、邱学华的学校笔记未核实，school 留空。化学、生物学、地理、信息科技、科学以及初中历史、高中英语、高中物理未收录名师：笔记中没有达到做法层面且有可核实荣誉的人选（楚得群的化学课堂建议已并入「学生动手」做法）。",
+  "笔记之间的差异：于永正五重教学法研讨会的年份，中国教师报记 1999 年、搜狐摘要记 1992 年，按笔记建议采用中国教师报，本文件未写年份。Project Follow Through 的规模两个来源不一致，本文件不写规模。Hattie 效应量各版本不同且受统计学批评，本文件不引用效应量数字。",
+  "本文件不重复 pedagogy.json 的学段画像（学习者特点、教法、语气、句长、练习形式）；这里补充的是课的结构、可执行的教师做法、名师课例、板书规则和分节自检表。",
+  "检查表的 scope：默认 section（对一节生成的板书和讲稿打分）；praise_correct 的 scope 是 feedback（只在批改反馈时适用，讲稿里学生还没有作答），分节自检不列出它。"
+ ],
+ "lesson_model": {
+  "stages": [
+   {
+    "id": "hook",
+    "name": "导入",
+    "minutes": "2-5（估计）",
+    "rules": [
+     "用旧知、情境或问题引入，几分钟内揭示课题",
+     "既引起注意又指向课题，不讲无关的故事",
+     "温故导入要点名新知所依赖的旧知，以旧引新（c9）",
+     "情境里藏一个冲突或悬念，让学生先猜、先试",
+     "导入结束时说出这节课要学什么、能做到什么",
+     "低年级用儿歌、游戏、实物；中学从问题或真实情境开始"
+    ],
+    "sources": [
+     "c1",
+     "c4",
+     "c7",
+     "c9",
+     "c63",
+     "c60",
+     "c21",
+     "c95"
+    ]
+   },
+   {
+    "id": "goal",
+    "name": "明确目标",
+    "minutes": "1（估计）",
+    "rules": [
+     "开课一分钟内写出课题和1-3条可检测的目标",
+     "目标用可检测的动词：能说出、能算出、能写出",
+     "说明为什么学、和已学内容有什么联系",
+     "全课每个环节回到目标，结课逐条回应",
+     "先想好最后要做的练习，再倒推讲解要讲什么（c31）"
+    ],
+    "sources": [
+     "c7",
+     "c10",
+     "c2",
+     "c112",
+     "c31",
+     "c29",
+     "c30"
+    ]
+   },
+   {
+    "id": "explain",
+    "name": "新授",
+    "minutes": "10-20（估计）",
+    "rules": [
+     "小步子：一次一个要点，讲完就问再往下",
+     "先具体后抽象：先例子或图，再规则术语",
+     "例题边做边说，说清每一步的理由（c21）",
+     "从学生已有知识出发，用观察、类比、归纳引出新知（c12）",
+     "教师连续讲话不超过10分钟（估计），讲解结束在一个问题上而不是结论上",
+     "指出易错点，给一个反例，说明什么不算",
+     "术语第一次出现就用规范说法，之后坚持用",
+     "板书只写关键词和图，讲图时指图说，不读板书"
+    ],
+    "sources": [
+     "c21",
+     "c12",
+     "c7",
+     "c1",
+     "c6",
+     "c38",
+     "c40",
+     "c102",
+     "c92",
+     "c41"
+    ]
+   },
+   {
+    "id": "check",
+    "name": "提问与检查理解",
+    "minutes": "贯穿全课（估计）",
+    "rules": [
+     "每个要点提一个要思考的问题，不做填空式问答",
+     "答错先提示不给答案，答对追问为什么",
+     "问后等3-5秒再说话；不问「懂了吗」，让学生复述或举例（c15）",
+     "答错时依次：重复题意、分解难点、换角度、提示、补充修正",
+     "一节课2-3个核心问题，放在重点、难点和新旧知识衔接处",
+     "评价具体：说清对在哪、缺什么；弱答也肯定认真"
+    ],
+    "sources": [
+     "c15",
+     "c21",
+     "c22",
+     "c23",
+     "c34",
+     "c42",
+     "c32"
+    ]
+   },
+   {
+    "id": "practice",
+    "name": "练习",
+    "minutes": "10-15（估计）",
+    "rules": [
+     "练在当堂：每个要点后一题，变式不重复",
+     "正确率约八成（引用）：连错两题退一步重教",
+     "先模仿练习，再独立完成的达标检测（c10）",
+     "练习是例题的变式：换表面特征，留解法结构",
+     "题不在多：一道好题胜过十道马虎题，按层次给题",
+     "一二年级不留书面家庭作业；小学每天作业不超60分钟，初中不超90分钟（c16）"
+    ],
+    "sources": [
+     "c7",
+     "c10",
+     "c13",
+     "c12",
+     "c21",
+     "c16",
+     "c78",
+     "c92"
+    ]
+   },
+   {
+    "id": "feedback",
+    "name": "反馈与纠错",
+    "minutes": "贯穿全课（估计）",
+    "rules": [
+     "纠错先肯定再指错，表扬具体不滥用",
+     "缺前置知识时重教一个例题，而不是多写评语",
+     "把错误当资源：先让学生自己找原因再一起改（c59）",
+     "反馈说任务和过程：哪里错、检查哪一步、下次怎么自查（c36）",
+     "先说对在哪，再说错误类型和改的一步",
+     "新技能学习时立即纠正，熟练练习时做完再评",
+     "不做比较和排名式评价；不「一棒子打死」"
+    ],
+    "sources": [
+     "c36",
+     "c37",
+     "c24",
+     "c59",
+     "c60",
+     "c15",
+     "c1",
+     "c6"
+    ]
+   },
+   {
+    "id": "close",
+    "name": "小结与结课",
+    "minutes": "2-5（估计）",
+    "rules": [
+     "小结回应目标，学生先说收获，再留出门题",
+     "按板书顺序归纳要点，点出重点和易错点",
+     "留一道出门题检查本课核心，错点记下作下次导入",
+     "可留一个延伸问题或下一课的悬念",
+     "结课留一句习惯或感受，不只是结论（c53）"
+    ],
+    "sources": [
+     "c1",
+     "c2",
+     "c70",
+     "c35",
+     "c26",
+     "c53",
+     "c62"
+    ]
+   }
+  ]
+ },
+ "bands": [
+  {
+   "id": "primary_low",
+   "name": "小学低年级",
+   "grades": [
+    1,
+    2
+   ],
+   "plan": [
+    "一课一得：一节课只教一个新点，每节一个新元素",
+    "用儿歌、游戏、实物或图画导入，一分钟内进入活动",
+    "每2-3分钟一次互动：说、指、画、动手",
+    "1道例题、3-5道口头或看图小练习；不留书面家庭作业"
+   ],
+   "section": [
+    "称呼小朋友或名字，句子短，一句一事，语气温暖",
+    "先图或实物再符号；字不离词，词不离句",
+    "表扬立即、具体；纠错说「再看看这里」",
+    "老师先示范，孩子跟着做，节奏快、动作多"
+   ],
+   "stage_notes": {
+    "hook": "用儿歌、游戏、实物或故事导入",
+    "check": "抢答、齐答，一问一答",
+    "practice": "口头、看图、动手，不留书面作业",
+    "feedback": "表扬可公开、频繁"
+   },
+   "masters_note": "借鉴斯霞、李吉林、于永正、刘善娜的低年级做法",
+   "sources": [
+    "c16",
+    "c113",
+    "c114",
+    "c52",
+    "c14",
+    "c67",
+    "c36",
+    "c100",
+    "c18",
+    "c116"
+   ]
+  },
+  {
+   "id": "primary_mid",
+   "name": "小学中年级",
+   "grades": [
+    3,
+    4
+   ],
+   "plan": [
+    "一课一得；每个抽象说法配一个具体例子和图",
+    "用复习、问题或生活情境导入，3-5分钟（估计）",
+    "每1-2分钟一次互动；1-2道例题、3-5道短练习",
+    "开始教学法：怎么检查自己的答案；加简单变式"
+   ],
+   "section": [
+    "称呼同学们或名字，句子约15字，先例后理",
+    "先具体再抽象，板书配图，新词配例子",
+    "表扬具体到做法；纠错先肯定再指出，让学生自己改",
+    "每节一个动手或说思路的活动"
+   ],
+   "stage_notes": {
+    "hook": "情境里藏一个能感受到的冲突，让学生先试",
+    "close": "学生先说本节学到什么，再对照板书"
+   },
+   "masters_note": "借鉴华应龙、张兴华、窦桂梅、薛法根的做法",
+   "sources": [
+    "c17",
+    "c18",
+    "c63",
+    "c60",
+    "c115",
+    "c16",
+    "c13"
+   ]
+  },
+  {
+   "id": "primary_high",
+   "name": "小学高年级",
+   "grades": [
+    5,
+    6
+   ],
+   "plan": [
+    "一课一得；具体例子后可给符号化的规则和小结",
+    "用问题、情境或复习导入，学生先独立尝试再讲",
+    "1-2道例题、3-5道练习，含一道变式和一道迁移题",
+    "练习分基础、提高两层；每天书面作业不超60分钟"
+   ],
+   "section": [
+    "称呼同学们或名字，句子15-18字，术语配例子",
+    "先让学生试，再讲没做出来的地方；追问为什么",
+    "表扬具体；纠错先肯定再说错误类型，让学生自查",
+    "每节一个大问题、一个学生活动，避免连串小问题"
+   ],
+   "stage_notes": {
+    "hook": "情境或大问题导入，让学生先提出自己的问题",
+    "check": "追问为什么，开始让学生自检"
+   },
+   "masters_note": "借鉴华应龙、黄爱华、俞正强、窦桂梅、王崧舟的做法",
+   "sources": [
+    "c17",
+    "c13",
+    "c66",
+    "c60",
+    "c16",
+    "c7",
+    "c19"
+   ]
+  },
+  {
+   "id": "junior",
+   "name": "初中",
+   "grades": [
+    7,
+    9
+   ],
+   "plan": [
+    "一节课2-4个板块，每板块一个主问题、一个活动",
+    "问题或情境导入3-5分钟（估计），从感性到理性",
+    "先学后教：学生先做2-3分钟，再讲没做出的地方",
+    "2-3道例题、3-4道练习，当堂检测；每天作业不超90分钟"
+   ],
+   "section": [
+    "称呼同学们或名字，句子约20字，商量的语气",
+    "从例子推出规则，让学生说出并论证，点明易错点",
+    "纠错先肯定，再说错误类型（概念、计算、审题）",
+    "表扬简短具体、针对方法不夸能力；反馈平和"
+   ],
+   "stage_notes": {
+    "hook": "用问题或认知冲突导入，不从定义开始",
+    "check": "让学生用自己的话教回一步再进下一节",
+    "close": "学生自结，再写一道自测题"
+   },
+   "masters_note": "借鉴魏书生、钱梦龙、余映潮、李庾南、洋思中学的做法",
+   "sources": [
+    "c11",
+    "c69",
+    "c70",
+    "c74",
+    "c75",
+    "c16",
+    "c36",
+    "c111",
+    "c18",
+    "c12"
+   ]
+  },
+  {
+   "id": "senior",
+   "name": "高中",
+   "grades": [
+    10,
+    12
+   ],
+   "plan": [
+    "专题式：定义→定理或规则→论证→应用，一课一主线",
+    "从问题或猜想导入，让学生先提出问题再解决",
+    "2-3道例题带变式、2-3道练习；一题多解再归一",
+    "留研究性延伸问题而不是更多题；作业分层弹性"
+   ],
+   "section": [
+    "称呼同学们或名字，句子20-25字，理性平等，可幽默",
+    "让学生选方法并辩护，多问分析、综合、评价的问题",
+    "反馈简洁准确，指向严谨；表扬针对策略不针对人",
+    "给较长的独立思考时间，等待后再点拨，不代说结论"
+   ],
+   "stage_notes": {
+    "hook": "用谜题、悖论或真实问题导入，事后说出思维方法",
+    "explain": "板书上把结论一般化成规律或公式",
+    "close": "留一个可记录的研究性问题"
+   },
+   "masters_note": "借鉴于漪、孙维刚、章建跃、任勇、李惠军的做法",
+   "sources": [
+    "c111",
+    "c18",
+    "c78",
+    "c82",
+    "c83",
+    "c84",
+    "c94",
+    "c46",
+    "c36",
+    "c40"
+   ]
+  }
+ ],
+ "moves": [
+  {
+   "id": "situation_conflict",
+   "name": "情境冲突导入",
+   "stages": [
+    "hook"
+   ],
+   "what": "用生活情境藏一个矛盾，让学生先判断再试",
+   "example": "8寸加4寸等于12寸，对吗？",
+   "subjects": [
+    "*"
+   ],
+   "origin": "张兴华 认知冲突；华应龙 课例",
+   "rank": 1,
+   "sources": [
+    "c63",
+    "c60",
+    "c4"
+   ]
+  },
+  {
+   "id": "review_hook",
+   "name": "温故导入",
+   "stages": [
+    "hook"
+   ],
+   "what": "先做2-3道旧知小题，点名新知要用到的旧知",
+   "example": "上节课的方法还记得吗？",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Rosenshine 2012；邱学华 以旧引新",
+   "rank": 1,
+   "sources": [
+    "c21",
+    "c9",
+    "c4"
+   ]
+  },
+  {
+   "id": "game_song_hook",
+   "name": "儿歌游戏导入",
+   "stages": [
+    "hook"
+   ],
+   "what": "用儿歌、口诀、拍手游戏、图画或实物引出课题",
+   "example": "我们先来拍手数数：二、四、六……",
+   "grades": [
+    1,
+    3
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "幼小衔接·游戏化；李吉林 实物演示",
+   "rank": 1,
+   "sources": [
+    "c113",
+    "c114",
+    "c116",
+    "c14"
+   ]
+  },
+  {
+   "id": "experiment_hook",
+   "name": "实验现象导入",
+   "stages": [
+    "hook"
+   ],
+   "what": "先演示一个现象，再问为什么",
+   "example": "兔子的眼睛怎么变成月牙形了？",
+   "grades": [
+    3,
+    12
+   ],
+   "subjects": [
+    "物理",
+    "化学",
+    "生物学",
+    "科学"
+   ],
+   "origin": "顾雨薇 画兔点睛；十种导入法",
+   "rank": 1,
+   "sources": [
+    "c85",
+    "c4"
+   ]
+  },
+  {
+   "id": "question_hook",
+   "name": "问题悬念导入",
+   "stages": [
+    "hook"
+   ],
+   "what": "提一个学生答不出但想知道的问题",
+   "example": "为什么月亮总跟着我们走？",
+   "subjects": [
+    "*"
+   ],
+   "origin": "微格教学·导入技能（悬念导入）",
+   "rank": 2,
+   "sources": [
+    "c4",
+    "c1"
+   ]
+  },
+  {
+   "id": "story_hook",
+   "name": "故事导入",
+   "stages": [
+    "hook"
+   ],
+   "what": "讲一个与内容有关的短故事或典故引出课题",
+   "grades": [
+    1,
+    9
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "微格教学·故事导入；Willingham 故事结构",
+   "rank": 2,
+   "sources": [
+    "c4",
+    "c1",
+    "c38"
+   ]
+  },
+  {
+   "id": "big_question_hook",
+   "name": "大问题导入",
+   "stages": [
+    "hook"
+   ],
+   "what": "让学生说对课题有什么问题，归成两个大问题",
+   "example": "关于倒数，你有什么问题？",
+   "grades": [
+    4,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "黄爱华 大问题教学",
+   "rank": 2,
+   "sources": [
+    "c66"
+   ]
+  },
+  {
+   "id": "puzzle_hook",
+   "name": "谜题导入",
+   "stages": [
+    "hook"
+   ],
+   "what": "用一个小谜题或悖论开场，试一两次失败后再讲",
+   "example": "不动绳子这端，怎么取出杯子？",
+   "grades": [
+    7,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "任勇 玩中育智",
+   "rank": 2,
+   "sources": [
+    "c83"
+   ]
+  },
+  {
+   "id": "direct_hook",
+   "name": "直接导入",
+   "stages": [
+    "hook"
+   ],
+   "what": "直接说明课题、目标和本课安排，不绕弯",
+   "grades": [
+    5,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "十种导入法·直接导入；邱学华 及早出示课题",
+   "rank": 3,
+   "sources": [
+    "c4",
+    "c7"
+   ]
+  },
+  {
+   "id": "state_goal",
+   "name": "板书目标",
+   "stages": [
+    "goal"
+   ],
+   "what": "写下课题和1-3条能检测的目标，先写好结尾的练习再备讲解",
+   "example": "学完你就能自己求斜边。",
+   "subjects": [
+    "*"
+   ],
+   "origin": "洋思 揭示目标；UbD 逆向设计",
+   "rank": 1,
+   "sources": [
+    "c10",
+    "c7",
+    "c31",
+    "c112"
+   ]
+  },
+  {
+   "id": "small_steps",
+   "name": "限量小步",
+   "stages": [
+    "explain"
+   ],
+   "what": "新内容一次只给一点，一段讲解不超5分钟（估计）就练一题",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Rosenshine 2012；顾泠沅 序进",
+   "rank": 1,
+   "sources": [
+    "c21",
+    "c12"
+   ]
+  },
+  {
+   "id": "model_example",
+   "name": "例题边做边说",
+   "stages": [
+    "explain"
+   ],
+   "what": "示范例题时说出每一步的理由和依据的道理",
+   "grades": [
+    3,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "Rosenshine 2012；认知负荷理论",
+   "rank": 1,
+   "sources": [
+    "c21",
+    "c40",
+    "c76"
+   ]
+  },
+  {
+   "id": "concrete_abstract",
+   "name": "具体到抽象",
+   "stages": [
+    "explain"
+   ],
+   "what": "先实物或图，再示意图，最后给符号和术语",
+   "grades": [
+    1,
+    4
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "直观性原则；NCETM 表征与结构",
+   "rank": 1,
+   "sources": [
+    "c1",
+    "c93",
+    "c38",
+    "c92"
+   ]
+  },
+  {
+   "id": "try_then_teach",
+   "name": "先试后教",
+   "stages": [
+    "explain"
+   ],
+   "what": "先给一道尝试题做2-3分钟，再只讲做错的地方",
+   "grades": [
+    3,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "邱学华 尝试教学；洋思 先学后教",
+   "rank": 1,
+   "sources": [
+    "c8",
+    "c9",
+    "c11",
+    "c75"
+   ]
+  },
+  {
+   "id": "examples_nonexamples",
+   "name": "正例反例",
+   "stages": [
+    "explain"
+   ],
+   "what": "给两个正例一个反例，说清哪个特征不算数",
+   "example": "这个不是，因为少了……",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Engelmann 直接教学；顾泠沅 易错点",
+   "rank": 2,
+   "sources": [
+    "c102",
+    "c100",
+    "c12"
+   ]
+  },
+  {
+   "id": "dual_coding",
+   "name": "图讲结合",
+   "stages": [
+    "explain"
+   ],
+   "what": "讲图时指着图说，板书只写关键词，不读整句",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Mayer 多媒体原则；直观与讲解结合",
+   "rank": 2,
+   "sources": [
+    "c41",
+    "c40",
+    "c1"
+   ]
+  },
+  {
+   "id": "stem_sentence",
+   "name": "句式复述",
+   "stages": [
+    "explain"
+   ],
+   "what": "给一个固定句式，换三个情境让学生套着说",
+   "example": "整体是……，部分是……",
+   "grades": [
+    1,
+    6
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "上海数学 句式（NCETM 交流报告）",
+   "rank": 2,
+   "sources": [
+    "c92"
+   ]
+  },
+  {
+   "id": "structure_map",
+   "name": "知识结构图",
+   "stages": [
+    "explain",
+    "close"
+   ],
+   "what": "在板书上画一张图，把新知和旧知连起来",
+   "grades": [
+    5,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "孙维刚 结构教学；魏书生 知识树",
+   "rank": 2,
+   "sources": [
+    "c78",
+    "c70"
+   ]
+  },
+  {
+   "id": "analogy_transfer",
+   "name": "类比迁移",
+   "stages": [
+    "explain"
+   ],
+   "what": "从旧知类比引出新知，并点明类比失效的地方",
+   "example": "分数分母不为零，分式呢？",
+   "grades": [
+    7,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "顾泠沅 类比迁移",
+   "rank": 2,
+   "sources": [
+    "c12"
+   ]
+  },
+  {
+   "id": "situation_teaching",
+   "name": "情境体验",
+   "stages": [
+    "explain"
+   ],
+   "what": "用表演、音乐、图画或生活场景让孩子进入课文",
+   "grades": [
+    1,
+    6
+   ],
+   "subjects": [
+    "语文",
+    "英语"
+   ],
+   "origin": "李吉林 情境教学；王咏梅 情景剧",
+   "rank": 1,
+   "sources": [
+    "c14",
+    "c68"
+   ]
+  },
+  {
+   "id": "read_aloud_model",
+   "name": "范读跟读",
+   "stages": [
+    "explain",
+    "practice"
+   ],
+   "what": "老师先有感情地范读一句，学生跟读再表演",
+   "example": "听老师读，再你来读。",
+   "grades": [
+    1,
+    6
+   ],
+   "subjects": [
+    "语文",
+    "英语"
+   ],
+   "origin": "于永正 范读、以情带声",
+   "rank": 1,
+   "sources": [
+    "c53",
+    "c54"
+   ]
+  },
+  {
+   "id": "char_in_sentence",
+   "name": "字不离句",
+   "stages": [
+    "explain"
+   ],
+   "what": "生字放在词里、词放在课文句子里教，不列生字表",
+   "grades": [
+    1,
+    3
+   ],
+   "subjects": [
+    "语文"
+   ],
+   "origin": "斯霞 随课文分散识字",
+   "rank": 2,
+   "sources": [
+    "c52"
+   ]
+  },
+  {
+   "id": "guess_prove",
+   "name": "猜想再证明",
+   "stages": [
+    "explain"
+   ],
+   "what": "让学生先猜结论，再一起证明或验证",
+   "example": "先猜猜内角和是多少？",
+   "grades": [
+    7,
+    12
+   ],
+   "subjects": [
+    "数学",
+    "物理"
+   ],
+   "origin": "孙维刚；章建跃 提出问题",
+   "rank": 2,
+   "sources": [
+    "c78",
+    "c82"
+   ]
+  },
+  {
+   "id": "person_plot",
+   "name": "人物情节",
+   "stages": [
+    "explain"
+   ],
+   "what": "每段讲一个人、一件事、一个动机，配一手材料",
+   "grades": [
+    7,
+    12
+   ],
+   "subjects": [
+    "历史",
+    "道德与法治/思想政治"
+   ],
+   "origin": "李惠军 谨防泛方法论",
+   "rank": 1,
+   "sources": [
+    "c84"
+   ]
+  },
+  {
+   "id": "student_experiment",
+   "name": "学生动手",
+   "stages": [
+    "explain",
+    "practice"
+   ],
+   "what": "让学生自己做实验或观察，不是老师做学生看",
+   "grades": [
+    3,
+    12
+   ],
+   "subjects": [
+    "物理",
+    "化学",
+    "生物学",
+    "科学"
+   ],
+   "origin": "楚得群；竹山中学 实验导入",
+   "rank": 2,
+   "sources": [
+    "c88",
+    "c87"
+   ]
+  },
+  {
+   "id": "wait_time",
+   "name": "候答等待",
+   "stages": [
+    "check"
+   ],
+   "what": "提问后等3-5秒再说话，学生答后再停一停再评价",
+   "subjects": [
+    "*"
+   ],
+   "origin": "微格教学·提问技能；Rowe 1986",
+   "rank": 1,
+   "sources": [
+    "c15",
+    "c42",
+    "c34",
+    "c62"
+   ]
+  },
+  {
+   "id": "no_opt_out",
+   "name": "不放过",
+   "stages": [
+    "check"
+   ],
+   "what": "答不出就给提示或拆小问题，再回到原题直到答对",
+   "example": "先想想第一步该做什么？",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Lemov No Opt Out；助答五法",
+   "rank": 1,
+   "sources": [
+    "c22",
+    "c15"
+   ]
+  },
+  {
+   "id": "restate_check",
+   "name": "复述检查",
+   "stages": [
+    "check"
+   ],
+   "what": "让学生用自己的话复述要点或步骤，不问懂了吗",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Rosenshine 2012；洋思 兵教兵",
+   "rank": 1,
+   "sources": [
+    "c21",
+    "c11"
+   ]
+  },
+  {
+   "id": "probe_why",
+   "name": "追问为什么",
+   "stages": [
+    "check"
+   ],
+   "what": "答对后追问为什么或怎么知道的，重难点处必追问",
+   "example": "为什么是这个？",
+   "subjects": [
+    "*"
+   ],
+   "origin": "微格教学·追问；华应龙 装傻；Lemov Stretch It",
+   "rank": 2,
+   "sources": [
+    "c15",
+    "c62",
+    "c23"
+   ]
+  },
+  {
+   "id": "name_call",
+   "name": "点名回答",
+   "stages": [
+    "check"
+   ],
+   "what": "叫名字提问，不问「谁会」，每节至少叫一次",
+   "example": "小明，你来说。",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Lemov Cold Call；华应龙 记名字",
+   "rank": 2,
+   "sources": [
+    "c26",
+    "c62"
+   ]
+  },
+  {
+   "id": "choral_response",
+   "name": "齐答抢答",
+   "stages": [
+    "check"
+   ],
+   "what": "口令后一起答或抢答，一分钟多次，错了立即纠",
+   "example": "预备——答！",
+   "grades": [
+    1,
+    4
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "Engelmann 直接教学；邱学华 抢答",
+   "rank": 2,
+   "sources": [
+    "c100",
+    "c7",
+    "c21"
+   ]
+  },
+  {
+   "id": "everybody_writes",
+   "name": "先写再说",
+   "stages": [
+    "check"
+   ],
+   "what": "先让学生写下答案，再把答案放到板书上一起看",
+   "example": "先写下来，写完给我看。",
+   "grades": [
+    3,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "Lemov Everybody Writes、Show Call",
+   "rank": 2,
+   "sources": [
+    "c28",
+    "c25"
+   ]
+  },
+  {
+   "id": "hinge_question",
+   "name": "诊断题",
+   "stages": [
+    "check",
+    "practice"
+   ],
+   "what": "出一道选择题，每个错项对应一种典型误解",
+   "grades": [
+    5,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "Wiliam hinge question",
+   "rank": 2,
+   "sources": [
+    "c33",
+    "c35"
+   ]
+  },
+  {
+   "id": "immediate_practice",
+   "name": "当堂练当堂改",
+   "stages": [
+    "practice"
+   ],
+   "what": "学生做完立即订正，错的当堂改对再往下",
+   "subjects": [
+    "*"
+   ],
+   "origin": "邱学华 练在当堂；洋思 当堂训练",
+   "rank": 1,
+   "sources": [
+    "c7",
+    "c10"
+   ]
+  },
+  {
+   "id": "variation",
+   "name": "变式练习",
+   "stages": [
+    "practice",
+    "explain"
+   ],
+   "what": "改情境或数字，保留解法结构；再加一道迁移题",
+   "grades": [
+    3,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "顾泠沅 变式；卢仲衡；NCETM 小变化",
+   "rank": 1,
+   "sources": [
+    "c12",
+    "c13",
+    "c93",
+    "c79"
+   ]
+  },
+  {
+   "id": "two_round",
+   "name": "模仿后独立",
+   "stages": [
+    "practice"
+   ],
+   "what": "先一道可看例题的模仿题，再一道独立的达标题",
+   "subjects": [
+    "*"
+   ],
+   "origin": "洋思 当堂训练两次",
+   "rank": 1,
+   "sources": [
+    "c10",
+    "c11"
+   ]
+  },
+  {
+   "id": "hands_on_practice",
+   "name": "动手练习",
+   "stages": [
+    "practice"
+   ],
+   "what": "用摆、画、折、连线、指读代替书面题",
+   "example": "读一句，画一步。",
+   "grades": [
+    1,
+    3
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "刘善娜 画数学、做数学；直观性原则",
+   "rank": 1,
+   "sources": [
+    "c67",
+    "c1"
+   ]
+  },
+  {
+   "id": "retrieval_practice",
+   "name": "检索练习",
+   "stages": [
+    "practice"
+   ],
+   "what": "练习里混入前几课的题，让学生回忆而不是翻看",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Make It Stick；Rosenshine 周复习",
+   "rank": 2,
+   "sources": [
+    "c39",
+    "c21",
+    "c27"
+   ]
+  },
+  {
+   "id": "fading",
+   "name": "逐步撤支架",
+   "stages": [
+    "practice"
+   ],
+   "what": "完整例题→填空题→独立题，做对两题就少给一步提示",
+   "grades": [
+    3,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "认知负荷理论 guidance fading",
+   "rank": 2,
+   "sources": [
+    "c40",
+    "c21"
+   ]
+  },
+  {
+   "id": "tiered_practice",
+   "name": "分层练习",
+   "stages": [
+    "practice"
+   ],
+   "what": "基础题必做、提高题选做；强生加难，弱生减量",
+   "subjects": [
+    "*"
+   ],
+   "origin": "邱学华 分层教学；双减 分层作业",
+   "rank": 2,
+   "sources": [
+    "c7",
+    "c16"
+   ]
+  },
+  {
+   "id": "multi_solution",
+   "name": "一题多解",
+   "stages": [
+    "practice"
+   ],
+   "what": "求第二种解法，再问两种方法的共同点",
+   "example": "还有别的算法吗？",
+   "grades": [
+    5,
+    12
+   ],
+   "subjects": [
+    "数学",
+    "物理"
+   ],
+   "origin": "孙维刚 一题多解、多解归一；吴正宪",
+   "rank": 2,
+   "sources": [
+    "c78",
+    "c47"
+   ]
+  },
+  {
+   "id": "write_practice",
+   "name": "读写练习",
+   "stages": [
+    "practice"
+   ],
+   "what": "读一段、仿写一句或复述一段，当堂读出来",
+   "subjects": [
+    "语文",
+    "英语"
+   ],
+   "origin": "钱梦龙 读写听说训练；于永正 多读多写",
+   "rank": 2,
+   "sources": [
+    "c71",
+    "c53"
+   ]
+  },
+  {
+   "id": "self_test_item",
+   "name": "学生出题",
+   "stages": [
+    "practice",
+    "close"
+   ],
+   "what": "让学生按本课目标自己出一道题并解答",
+   "grades": [
+    5,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "魏书生 自测；Wiliam 学生出题",
+   "rank": 3,
+   "sources": [
+    "c70",
+    "c34"
+   ]
+  },
+  {
+   "id": "affirm_then_correct",
+   "name": "先肯定再纠错",
+   "stages": [
+    "feedback"
+   ],
+   "what": "先说对在哪，再说错误类型和改的一步",
+   "example": "思路对，单位漏了。",
+   "subjects": [
+    "*"
+   ],
+   "origin": "疏导原则；Hattie & Timperley 2007",
+   "rank": 1,
+   "sources": [
+    "c1",
+    "c36",
+    "c15"
+   ]
+  },
+  {
+   "id": "precise_praise",
+   "name": "具体表扬",
+   "stages": [
+    "feedback"
+   ],
+   "what": "表扬具体到做法或努力，不夸聪明",
+   "example": "你想到画图，好办法！",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Lemov Precise Praise；Sutton Trust 2014",
+   "rank": 1,
+   "sources": [
+    "c24",
+    "c37",
+    "c36"
+   ]
+  },
+  {
+   "id": "error_resource",
+   "name": "错误资源化",
+   "stages": [
+    "feedback"
+   ],
+   "what": "把错答说出来，先找对的部分，再问改哪一步",
+   "example": "错得好，我们来欣赏一下。",
+   "subjects": [
+    "*"
+   ],
+   "origin": "华应龙 化错教学",
+   "rank": 1,
+   "sources": [
+    "c59",
+    "c60"
+   ]
+  },
+  {
+   "id": "find_and_fix",
+   "name": "找错自改",
+   "stages": [
+    "feedback"
+   ],
+   "what": "只说有几处错，让学生自己找出来改；弱生给位置",
+   "example": "有两处错，找找看。",
+   "grades": [
+    3,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "Wiliam 评语式反馈；卢仲衡 自检",
+   "rank": 2,
+   "sources": [
+    "c34",
+    "c13",
+    "c5"
+   ]
+  },
+  {
+   "id": "reteach_gap",
+   "name": "缺前置就重教",
+   "stages": [
+    "feedback"
+   ],
+   "what": "缺前置知识时重讲一个例题，不多写评语",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Hattie & Timperley 2007",
+   "rank": 2,
+   "sources": [
+    "c36",
+    "c21"
+   ]
+  },
+  {
+   "id": "private_correction",
+   "name": "私下纠正",
+   "stages": [
+    "feedback"
+   ],
+   "what": "对青春期学生表扬和纠错都简短、对事不对人",
+   "grades": [
+    7,
+    12
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "Hattie & Timperley（年龄差异）；Lemov",
+   "rank": 2,
+   "sources": [
+    "c36",
+    "c104"
+   ]
+  },
+  {
+   "id": "walk_error",
+   "name": "错步上板",
+   "stages": [
+    "feedback"
+   ],
+   "what": "把学生的错步骤写到板书上一步步走到矛盾处",
+   "grades": [
+    3,
+    12
+   ],
+   "subjects": [
+    "数学",
+    "物理",
+    "化学"
+   ],
+   "origin": "上海数学 4−4+4 课例（NCETM）；顾泠沅",
+   "rank": 2,
+   "sources": [
+    "c92",
+    "c12"
+   ]
+  },
+  {
+   "id": "student_summary",
+   "name": "学生自结",
+   "stages": [
+    "close"
+   ],
+   "what": "学生先说学到了什么，再对照板书补全",
+   "subjects": [
+    "*"
+   ],
+   "origin": "魏书生 自结；于永正 把根留住",
+   "rank": 1,
+   "sources": [
+    "c70",
+    "c53"
+   ]
+  },
+  {
+   "id": "back_to_goal",
+   "name": "回应目标",
+   "stages": [
+    "close"
+   ],
+   "what": "逐条对照开课目标，说哪条做到了",
+   "subjects": [
+    "*"
+   ],
+   "origin": "回应式结尾；顾泠沅 目标意识",
+   "rank": 1,
+   "sources": [
+    "c1",
+    "c2",
+    "c63"
+   ]
+  },
+  {
+   "id": "exit_ticket",
+   "name": "出门题",
+   "stages": [
+    "close"
+   ],
+   "what": "结课前一道核心题，错点留给下次导入",
+   "subjects": [
+    "*"
+   ],
+   "origin": "Lemov Exit Ticket；Wiliam exit pass",
+   "rank": 1,
+   "sources": [
+    "c26",
+    "c35"
+   ]
+  },
+  {
+   "id": "extend_hook",
+   "name": "悬念延伸",
+   "stages": [
+    "close"
+   ],
+   "what": "留一个延伸问题或下一课的悬念",
+   "example": "下次去，你怎么点餐？",
+   "subjects": [
+    "*"
+   ],
+   "origin": "开放型总结；华应龙 课例",
+   "rank": 2,
+   "sources": [
+    "c1",
+    "c62"
+   ]
+  },
+  {
+   "id": "rule_repeat",
+   "name": "齐读结论",
+   "stages": [
+    "close"
+   ],
+   "what": "把本节结论写成一句话放在板书上，学生读一遍",
+   "grades": [
+    1,
+    6
+   ],
+   "subjects": [
+    "*"
+   ],
+   "origin": "上海数学 规则复述；日本课例 まとめ",
+   "rank": 2,
+   "sources": [
+    "c92",
+    "c99"
+   ]
+  }
+ ],
+ "masters": [
+  {
+   "id": "li_jilin",
+   "name": "李吉林",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    1,
+    4
+   ],
+   "school": "江苏省南通师范第二附属小学",
+   "honours": [
+    "特级教师",
+    "国家级教学成果奖特等奖 2014"
+   ],
+   "method": "情境教学",
+   "moves": [
+    "用图画、音乐、表演、实物或语言描绘创设情境",
+    "以美为突破口，以情为纽带，以思为核心",
+    "让儿童在角色扮演和活动中学",
+    "用周围世界作教材的源泉"
+   ],
+   "rank": 1,
+   "sources": [
+    "c14",
+    "c43"
+   ]
+  },
+  {
+   "id": "yu_yongzheng",
+   "name": "于永正",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    1,
+    6
+   ],
+   "school": "江苏省徐州市大马路小学",
+   "honours": [
+    "江苏省特级教师 1985",
+    "教育部“跨世纪名师工程”首位推出的名师"
+   ],
+   "method": "五重教学",
+   "moves": [
+    "先有感情地范读，再让学生跟读、表演",
+    "朗读一个字、一个词、一个标点都不放过",
+    "板书配简笔画",
+    "为一次勇敢的尝试鼓掌",
+    "布置作文前老师先写下水文"
+   ],
+   "example": "把语文的根留住",
+   "rank": 1,
+   "sources": [
+    "c53",
+    "c54"
+   ]
+  },
+  {
+   "id": "si_xia",
+   "name": "斯霞",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    1,
+    2
+   ],
+   "school": "南京师范大学附属小学",
+   "honours": [
+    "最美奋斗者 2019"
+   ],
+   "method": "随课文分散识字",
+   "moves": [
+    "字不离词，词不离句：生字在课文句子里教",
+    "童心母爱：具体关心加严格纠错",
+    "检查后排能不能看清板书"
+   ],
+   "rank": 2,
+   "sources": [
+    "c52"
+   ]
+  },
+  {
+   "id": "dou_guimei",
+   "name": "窦桂梅",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    3,
+    6
+   ],
+   "school": "清华大学附属小学",
+   "honours": [
+    "特级教师",
+    "国家级教学成果奖一等奖 2014"
+   ],
+   "method": "主题教学",
+   "moves": [
+    "用一个主题词串起两三篇课文",
+    "老师退居后台，把说话机会还给学生",
+    "用思维导图、卡片等看得见的工具",
+    "六步备课：提炼主题、定目标、重组内容、活动、支架、评价"
+   ],
+   "rank": 1,
+   "sources": [
+    "c50",
+    "c51",
+    "c43"
+   ]
+  },
+  {
+   "id": "xue_fagen",
+   "name": "薛法根",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    3,
+    6
+   ],
+   "school": "江苏省苏州市吴江区盛泽实验小学",
+   "honours": [
+    "特级教师"
+   ],
+   "method": "组块教学",
+   "moves": [
+    "一节课教一个组块：字族、词串或句群",
+    "阅读从段起步，因文而异",
+    "教表达先呈现结构，再用结构，再化结构"
+   ],
+   "rank": 2,
+   "sources": [
+    "c57"
+   ]
+  },
+  {
+   "id": "wang_songzhou",
+   "name": "王崧舟",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    3,
+    6
+   ],
+   "school": "杭州市拱宸桥小学（现杭州师范大学）",
+   "honours": [
+    "特级教师",
+    "全国劳动模范"
+   ],
+   "method": "诗意语文",
+   "moves": [
+    "从一个意象出发：造境、入情、会意",
+    "多篇课文围绕一个意象比较着读",
+    "读出文化意味，如《梅花魂》"
+   ],
+   "rank": 2,
+   "sources": [
+    "c55",
+    "c56"
+   ]
+  },
+  {
+   "id": "sun_shuangjin",
+   "name": "孙双金",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    1,
+    6
+   ],
+   "school": "南京市金陵中学附属小学",
+   "honours": [
+    "江苏省特级教师",
+    "正高级教师"
+   ],
+   "method": "情智语文",
+   "moves": [
+    "看学生状态：小脸通红、小眼发光、小手直举、小嘴常开",
+    "披文入情，和作者共鸣",
+    "生活化情境、分层任务单"
+   ],
+   "rank": 3,
+   "sources": [
+    "c58"
+   ]
+  },
+  {
+   "id": "wei_shusheng",
+   "name": "魏书生",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    7,
+    9
+   ],
+   "school": "辽宁省盘锦市实验中学",
+   "honours": [
+    "特级教师 1984",
+    "全国劳动模范"
+   ],
+   "method": "六步课堂教学法",
+   "moves": [
+    "定向：先说清本课的重点",
+    "自学：学生先自读，留下不懂的",
+    "答疑只讲学生自己解决不了的",
+    "自测：学生自己出题自测",
+    "自结：下课前学生说收获"
+   ],
+   "rank": 1,
+   "sources": [
+    "c69",
+    "c70",
+    "c20"
+   ]
+  },
+  {
+   "id": "qian_menglong",
+   "name": "钱梦龙",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    7,
+    12
+   ],
+   "school": "上海市嘉定二中",
+   "honours": [
+    "上海市首批特级教师"
+   ],
+   "method": "三主导读法",
+   "moves": [
+    "让学生先读课文写下问题，从问题建课",
+    "老师点拨三言两语，不串讲",
+    "读书在文章里走几个来回：语言→内容→为什么这样写",
+    "由扶到放"
+   ],
+   "rank": 2,
+   "sources": [
+    "c71",
+    "c72",
+    "c73"
+   ]
+  },
+  {
+   "id": "yu_yingchao",
+   "name": "余映潮",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    7,
+    9
+   ],
+   "school": "湖北省荆州市教科院",
+   "honours": [
+    "特级教师"
+   ],
+   "method": "板块式思路",
+   "moves": [
+    "一课分2-4个板块，每块一个主问题",
+    "提问精粹实在，学生活动充分",
+    "品读细腻深入，课堂积累丰富"
+   ],
+   "rank": 2,
+   "sources": [
+    "c74"
+   ]
+  },
+  {
+   "id": "yu_yi",
+   "name": "于漪",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    10,
+    12
+   ],
+   "school": "上海市杨浦高级中学",
+   "honours": [
+    "首批特级教师 1978",
+    "全国教书育人楷模 2010",
+    "人民教育家 2019"
+   ],
+   "method": "教文育人",
+   "moves": [
+    "每句讲解先写出来、删改、背熟再口语化",
+    "不抄教学参考书，自己读透课文",
+    "用学生熟悉的歌曲、时事作教材",
+    "认真倾听学生，师生平等对话"
+   ],
+   "example": "时代的活水要在课堂上流淌",
+   "rank": 1,
+   "sources": [
+    "c45",
+    "c46"
+   ]
+  },
+  {
+   "id": "cheng_xiang",
+   "name": "程翔",
+   "subjects": [
+    "语文"
+   ],
+   "grades": [
+    10,
+    12
+   ],
+   "school": "北京一〇一中学（曾任北大附中副校长）",
+   "honours": [
+    "特级教师",
+    "国家“万人计划”教学名师"
+   ],
+   "method": "用教材教",
+   "moves": [
+    "课文是例子：由此及彼、举一反三",
+    "教读课和自读课分轻重",
+    "不把课文掰碎讲透、面面俱到"
+   ],
+   "rank": 2,
+   "sources": [
+    "c81"
+   ]
+  },
+  {
+   "id": "hua_yinglong",
+   "name": "华应龙",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    1,
+    6
+   ],
+   "school": "北京第二实验小学",
+   "honours": [
+    "特级教师",
+    "正高级教师",
+    "首都基础教育名家",
+    "明远教育奖"
+   ],
+   "method": "化错教学",
+   "moves": [
+    "用生活情境藏一个错误开场，让学生判断",
+    "把错答当资源：容错、融错、荣错",
+    "刻意等待，多数学生举手了再叫答",
+    "不停问为什么，老师学会装傻",
+    "叫名字，为勇敢的错答鼓掌"
+   ],
+   "example": "错得好！我们来欣赏一下。",
+   "rank": 1,
+   "sources": [
+    "c59",
+    "c60",
+    "c61",
+    "c62"
+   ]
+  },
+  {
+   "id": "yu_zhengqiang",
+   "name": "俞正强",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    1,
+    6
+   ],
+   "school": "浙江省金华师范学校附属小学",
+   "honours": [
+    "浙江省特级教师 2002",
+    "国家级教学成果奖一等奖",
+    "全国教书育人楷模 2024"
+   ],
+   "method": "种子课",
+   "moves": [
+    "把课上对：种子课慢慢教透",
+    "用比分、汇率、米水比等生活中的比引入",
+    "上课要有乐趣，学生才主动学",
+    "不设名额的达标式表扬"
+   ],
+   "rank": 1,
+   "sources": [
+    "c48",
+    "c64",
+    "c65"
+   ]
+  },
+  {
+   "id": "liu_shanna",
+   "name": "刘善娜",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    1,
+    2
+   ],
+   "school": "",
+   "honours": [
+    "特级教师"
+   ],
+   "method": "画数学",
+   "moves": [
+    "应用题读一句画一步，读完题图也画完",
+    "一二年级多动手操作，不刷题",
+    "用积木、香蕉、折纸做几何"
+   ],
+   "rank": 1,
+   "sources": [
+    "c67"
+   ]
+  },
+  {
+   "id": "zhang_xinghua",
+   "name": "张兴华",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    1,
+    6
+   ],
+   "school": "江苏省海门实验小学",
+   "honours": [
+    "江苏省特级教师 1984",
+    "全国优秀教师"
+   ],
+   "method": "认知冲突",
+   "moves": [
+    "让旧工具不够用：用平方厘米量课桌",
+    "舍得让儿童在思考中浪费时间",
+    "把新知之舟停在旧知锚桩上，为迁移而教"
+   ],
+   "rank": 2,
+   "sources": [
+    "c63"
+   ]
+  },
+  {
+   "id": "wu_zhengxian",
+   "name": "吴正宪",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    1,
+    6
+   ],
+   "school": "北京教育科学研究院",
+   "honours": [
+    "特级教师",
+    "国务院政府特殊津贴",
+    "全国教书育人楷模候选人 2010"
+   ],
+   "method": "儿童数学教育",
+   "moves": [
+    "一题多解的题老师先自己做一遍",
+    "传授知识、启迪智慧、完善人格三者结合",
+    "编小题库、难题辨析、趣味数学"
+   ],
+   "rank": 2,
+   "sources": [
+    "c47"
+   ]
+  },
+  {
+   "id": "huang_aihua",
+   "name": "黄爱华",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    3,
+    6
+   ],
+   "school": "广东省（深圳）",
+   "honours": [
+    "特级教师"
+   ],
+   "method": "大问题教学",
+   "moves": [
+    "先问学生对课题有什么问题",
+    "归成两个大问题：是什么、怎么求",
+    "先提问题后解决，一课两段"
+   ],
+   "rank": 2,
+   "sources": [
+    "c66"
+   ]
+  },
+  {
+   "id": "qiu_xuehua",
+   "name": "邱学华",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    1,
+    9
+   ],
+   "school": "",
+   "honours": [
+    "尝试教学法创始人（1980 年起实验，1982 年发表）"
+   ],
+   "method": "尝试教学法",
+   "moves": [
+    "先出尝试题，学生自学课本后先试做",
+    "学生讨论后老师只针对尝试中的问题讲",
+    "第二次尝试练习当堂订正",
+    "教师讲话不超过10分钟，留30分钟给学生"
+   ],
+   "example": "请不要告诉我，让我先试一试",
+   "rank": 3,
+   "sources": [
+    "c8",
+    "c9",
+    "c7"
+   ]
+  },
+  {
+   "id": "li_yunan",
+   "name": "李庾南",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    7,
+    9
+   ],
+   "school": "江苏省南通市启秀中学",
+   "honours": [
+    "特级教师",
+    "国家“万人计划”教学名师",
+    "全国教书育人楷模",
+    "国家级教学成果奖一等奖 2014、2022",
+    "苏步青数学教育奖"
+   ],
+   "method": "自学·议论·引导",
+   "moves": [
+    "独立自学→群体议论→相机引导",
+    "点拨为什么，不告诉是什么",
+    "每句教学语言推敲到准确、清晰、简洁",
+    "例题分析力求透彻到位",
+    "允许学生犯错，帮助学生纠错"
+   ],
+   "rank": 1,
+   "sources": [
+    "c75",
+    "c76",
+    "c77",
+    "c49"
+   ]
+  },
+  {
+   "id": "sun_weigang",
+   "name": "孙维刚",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    7,
+    12
+   ],
+   "school": "北京市第二十二中学",
+   "honours": [
+    "三轮初一带到高三的实验班：第三轮 22 人考入北大清华（中国教育报 2015）"
+   ],
+   "method": "结构教学法",
+   "moves": [
+    "一题多解→多解归一→多题归一",
+    "让学生先猜想定理再证明",
+    "画知识结构图，八方联系",
+    "题不在多但求精彩：每题先解十道选最好的"
+   ],
+   "example": "题海战术是覆舟之术",
+   "rank": 1,
+   "sources": [
+    "c78"
+   ]
+  },
+  {
+   "id": "gu_lingyuan",
+   "name": "顾泠沅（青浦实验）",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    7,
+    9
+   ],
+   "school": "上海市青浦区（教研员）",
+   "honours": [
+    "青浦实验 1992 年被国家教委定为基础教育改革重大成果向全国推广"
+   ],
+   "method": "尝试指导·效果回授",
+   "moves": [
+    "从学生原有知识出发，用观察、类比、归纳形成概念",
+    "变式训练，避免大运动量重复",
+    "从旧知引发冲突：两种方法答案为什么不一样",
+    "根据学生反应随时调节节奏"
+   ],
+   "rank": 2,
+   "sources": [
+    "c12",
+    "c79",
+    "c80"
+   ]
+  },
+  {
+   "id": "zhang_jianyue",
+   "name": "章建跃",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    10,
+    12
+   ],
+   "school": "人民教育出版社",
+   "honours": [
+    "人民教育出版社编审、人教A版高中数学教材主编"
+   ],
+   "method": "用数学的方式育人",
+   "moves": [
+    "让学生自己发现数学对象、提出问题",
+    "推理是命根子，运算是童子功",
+    "先讲道理再练，不先教技巧",
+    "路径：抽象对象→研究路径→发现问题→探索→结论→建模"
+   ],
+   "rank": 2,
+   "sources": [
+    "c82"
+   ]
+  },
+  {
+   "id": "ren_yong",
+   "name": "任勇",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    7,
+    12
+   ],
+   "school": "福建省厦门一中（原校长）",
+   "honours": [
+    "特级教师"
+   ],
+   "method": "玩中育智",
+   "moves": [
+    "用绳子穿杯、扑克周期等谜题开场，试过失败后再讲",
+    "事后说出思维方法，如逆向思维",
+    "一题多解与变式探究"
+   ],
+   "rank": 3,
+   "sources": [
+    "c83"
+   ]
+  },
+  {
+   "id": "wang_yongmei",
+   "name": "王咏梅",
+   "subjects": [
+    "英语"
+   ],
+   "grades": [
+    1,
+    6
+   ],
+   "school": "江苏省盐城市第一小学",
+   "honours": [
+    "正高级教师",
+    "江苏省特级教师"
+   ],
+   "method": "情境·内容·阅读圈",
+   "moves": [
+    "用道具、服装把课文变成情景剧",
+    "形式之后回到文本和语言内容",
+    "阅读圈六个角色，老师退到一旁观察"
+   ],
+   "rank": 1,
+   "sources": [
+    "c68"
+   ]
+  },
+  {
+   "id": "gu_yuwei",
+   "name": "顾雨薇",
+   "subjects": [
+    "物理"
+   ],
+   "grades": [
+    7,
+    9
+   ],
+   "school": "上海市奉贤区崇实中学",
+   "honours": [
+    "课例载于国家级教学成果奖报道（解放网 2024）"
+   ],
+   "method": "认知冲突情境",
+   "moves": [
+    "一个道具两种现象：兔影与月牙形的眼睛",
+    "用水透镜当晶状体讲凸透镜成像",
+    "课后带学生到社区做科普"
+   ],
+   "rank": 1,
+   "sources": [
+    "c85"
+   ]
+  },
+  {
+   "id": "li_huijun",
+   "name": "李惠军",
+   "subjects": [
+    "历史"
+   ],
+   "grades": [
+    10,
+    12
+   ],
+   "school": "上海市晋元高级中学",
+   "honours": [
+    "中学历史特级教师 1994"
+   ],
+   "method": "问题驱动的历史课",
+   "moves": [
+    "每课保留人物、情节和心态",
+    "围绕一个人物设计层层递进的问题",
+    "要求一手材料印证，不套用泛方法论"
+   ],
+   "example": "没有好的问题就没有探索的活水源泉",
+   "rank": 1,
+   "sources": [
+    "c84"
+   ]
+  },
+  {
+   "id": "yuan_xiaomei",
+   "name": "袁小梅",
+   "subjects": [
+    "道德与法治/思想政治"
+   ],
+   "grades": [
+    7,
+    9
+   ],
+   "school": "重庆市长寿区（初中政治教研员）",
+   "honours": [
+    "特级教师"
+   ],
+   "method": "主题学习·行为体验",
+   "moves": [
+    "单元四步：回顾知识—集思广益—问题解决—能力提升",
+    "行为体验：读《背影》后写自己的父母再分享",
+    "主题概念辨析"
+   ],
+   "rank": 1,
+   "sources": [
+    "c86"
+   ]
+  },
+  {
+   "id": "yangsi",
+   "name": "洋思中学",
+   "subjects": [
+    "*"
+   ],
+   "grades": [
+    7,
+    9
+   ],
+   "school": "江苏省泰兴市洋思中学",
+   "honours": [
+    "国家级教学成果奖一等奖 2014"
+   ],
+   "method": "先学后教、当堂训练",
+   "moves": [
+    "揭示目标后学生先自学",
+    "只讲学生自学后不会的",
+    "最后15分钟当堂作业，堂堂清",
+    "兵教兵：会的教不会的"
+   ],
+   "rank": 2,
+   "sources": [
+    "c11",
+    "c10",
+    "c43"
+   ]
+  },
+  {
+   "id": "shanghai_mastery",
+   "name": "上海数学掌握教学",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    1,
+    9
+   ],
+   "school": "上海市教委教研室（NCETM 中英交流记录）",
+   "honours": [
+    "国家级教学成果奖特等奖 2018（上海市教委教研室《走向世界的中国数学教育》）"
+   ],
+   "method": "小步变式·句式",
+   "moves": [
+    "每个问题和追问都提前设计",
+    "具体和抽象同时呈现在板书上",
+    "一个句式换三个情境让学生说",
+    "每步小变化，规则学生复述",
+    "做得快的给深一层题，当天补差"
+   ],
+   "rank": 2,
+   "sources": [
+    "c92",
+    "c94",
+    "c95",
+    "c44"
+   ]
+  },
+  {
+   "id": "japan_lesson_study",
+   "name": "日本课例研究",
+   "subjects": [
+    "数学"
+   ],
+   "grades": [
+    1,
+    9
+   ],
+   "school": "日本小学数学问题解决课（课例研究）",
+   "honours": [
+    "TIMSS 1995 录像研究：日本八年级 53% 的课含证明（引用）"
+   ],
+   "method": "一题一课·练り上げ",
+   "moves": [
+    "一节课一道题一个目标，老师不先示范",
+    "学生先独立做，老师记下各人方法",
+    "多种解法从最常见到最不同依次比较",
+    "板书从左到右不擦，全课过程留在黑板上",
+    "老师最后总结（まとめ）"
+   ],
+   "rank": 3,
+   "sources": [
+    "c97",
+    "c98",
+    "c99",
+    "c96"
+   ]
+  },
+  {
+   "id": "engelmann_di",
+   "name": "Engelmann 直接教学",
+   "subjects": [
+    "*"
+   ],
+   "grades": [
+    1,
+    3
+   ],
+   "school": "美国 Direct Instruction（Project Follow Through）",
+   "honours": [
+    "Project Follow Through 阅读、数学、拼写、语言四项第一（引用）"
+   ],
+   "method": "正例反例·齐答",
+   "moves": [
+    "正例反例并列，只剩一种解释",
+    "口令齐答，每分钟10-14次（引用）",
+    "错了立即纠正",
+    "九成复习、一成新内容"
+   ],
+   "rank": 2,
+   "sources": [
+    "c100",
+    "c101",
+    "c102",
+    "c103"
+   ]
+  },
+  {
+   "id": "atwell",
+   "name": "Nancie Atwell",
+   "subjects": [
+    "语文",
+    "英语"
+   ],
+   "grades": [
+    5,
+    9
+   ],
+   "school": "Center for Teaching and Learning, Maine",
+   "honours": [
+    "Global Teacher Prize 2015"
+   ],
+   "method": "读写工作坊",
+   "moves": [
+    "学生自选书，一年约40本（引用）",
+    "短小的专题课加一对一写作面谈",
+    "大量写作"
+   ],
+   "rank": 3,
+   "sources": [
+    "c89",
+    "c91"
+   ]
+  },
+  {
+   "id": "zafirakou",
+   "name": "Andria Zafirakou",
+   "subjects": [
+    "*"
+   ],
+   "grades": [
+    7,
+    9
+   ],
+   "school": "Alperton Community School, London",
+   "honours": [
+    "Global Teacher Prize 2018"
+   ],
+   "method": "先建立关系",
+   "moves": [
+    "用学生的母语打招呼建立信任",
+    "先建立关系再教内容",
+    "从学生自己文化的作品入门"
+   ],
+   "rank": 3,
+   "sources": [
+    "c90",
+    "c91"
+   ]
+  }
+ ],
+ "board": {
+  "rules": [
+   "提纲式关键词，不写整句",
+   "3-6条要点，与讲稿对应，边讲边写",
+   "用箭头、对比或表格显示知识关系",
+   "重点、公式和关键术语必须上板书并突出",
+   "主板书不擦，副板书随用随清",
+   "每条不超过12字（估计）；总量适中，不是教案缩写",
+   "顺序与讲解顺序一致，先讲后写，不边写边擦",
+   "图要有标注；讲图时指图说，不读板书整句",
+   "板书是学生看的提纲，结课按板书回顾",
+   "无错别字，术语规范，公式写法标准",
+   "四边留白，不写到边缘",
+   "开课先写课题；学生的错答可先上板书再改正",
+   "板书类型按内容选：提纲、对比、图示、表格、设问"
+  ],
+  "sources": [
+   "c110",
+   "c105",
+   "c109",
+   "c1",
+   "c3",
+   "c5",
+   "c99",
+   "c41",
+   "c60",
+   "c92"
+  ]
+ },
+ "checklist": [
+  {
+   "id": "goal_focus",
+   "item": "讲解围绕本课目标和本节标题，没有跑题",
+   "weight": "教学过程与方法策略 25/80（岳阳 2025）",
+   "sources": [
+    "c106",
+    "c12"
+   ]
+  },
+  {
+   "id": "accuracy",
+   "item": "知识、术语和结论准确，没有科学性错误",
+   "weight": "教学内容表述准确 10/35（教师资格面试）",
+   "sources": [
+    "c109",
+    "c108"
+   ]
+  },
+  {
+   "id": "point_reason_example",
+   "item": "每条要点有解释原因和一个例子或小例题",
+   "weight": "讲授精当、富有启发性 20/70（华容 2019）",
+   "sources": [
+    "c105",
+    "c21"
+   ]
+  },
+  {
+   "id": "small_steps",
+   "item": "一次讲一个要点，讲完一条再讲下一条，由浅入深",
+   "sources": [
+    "c21",
+    "c1"
+   ]
+  },
+  {
+   "id": "concrete_first",
+   "item": "抽象说法前有具体例子、图或情境",
+   "sources": [
+    "c1",
+    "c38",
+    "c92"
+   ]
+  },
+  {
+   "id": "question",
+   "item": "有启发性提问，并给出答案或引导，不连着问",
+   "weight": "提出的问题富有启发性 4/35（教师资格面试）",
+   "sources": [
+    "c109",
+    "c15"
+   ]
+  },
+  {
+   "id": "key_difficulty",
+   "item": "重点难点处有例题、变式或常见错误提醒",
+   "weight": "突出重点、突破难点 20/70（华容 2019）",
+   "sources": [
+    "c105",
+    "c12"
+   ]
+  },
+  {
+   "id": "board_outline",
+   "item": "板书是提纲式关键词，3-6条，与讲稿一一对应",
+   "weight": "板书设计突出主题、层次分明 8/35（教师资格面试）",
+   "sources": [
+    "c109",
+    "c110"
+   ]
+  },
+  {
+   "id": "board_key",
+   "item": "重点、公式或关键术语出现在板书上",
+   "sources": [
+    "c110",
+    "c105"
+   ]
+  },
+  {
+   "id": "grade_language",
+   "item": "语言符合年级：称呼、句长、用词，新词有例子解释",
+   "weight": "学情分析 15/80（岳阳 2025）",
+   "sources": [
+    "c106",
+    "c2"
+   ]
+  },
+  {
+   "id": "praise_correct",
+   "item": "表扬具体到做法；指出错误先肯定再说错误类型",
+   "weight": "评价与激励简单有效（电教馆 2016）",
+   "sources": [
+    "c107",
+    "c36",
+    "c24"
+   ],
+   "scope": "feedback"
+  },
+  {
+   "id": "student_action",
+   "item": "学生在本节有事可做：回答、复述、试做或练习",
+   "weight": "学生主体、自主合作探究 20/70（华容 2019）",
+   "sources": [
+    "c105",
+    "c108"
+   ]
+  },
+  {
+   "id": "exercise_match",
+   "item": "练习紧扣本节要点，是例题的变式而不是重复",
+   "sources": [
+    "c12",
+    "c21",
+    "c13"
+   ]
+  },
+  {
+   "id": "summary_goal",
+   "item": "小结回到本节要点或本课目标，不引入新内容",
+   "sources": [
+    "c1",
+    "c112"
+   ]
+  },
+  {
+   "id": "no_filler",
+   "item": "没有无关闲话、重复的开场白或空泛口号",
+   "sources": [
+    "c41",
+    "c5"
+   ]
+  },
+  {
+   "id": "link_prior",
+   "item": "新知从学生已有知识或前一节内容引出",
+   "sources": [
+    "c12",
+    "c63"
+   ]
+  },
+  {
+   "id": "low_grade_play",
+   "item": "一二年级有儿歌、游戏、实物或图画的元素",
+   "grades": [
+    1,
+    2
+   ],
+   "sources": [
+    "c113",
+    "c114"
+   ]
+  },
+  {
+   "id": "secondary_reason",
+   "item": "初高中让学生说出理由或规则并论证",
+   "grades": [
+    7,
+    12
+   ],
+   "sources": [
+    "c18",
+    "c94"
+   ]
+  }
+ ]
+}

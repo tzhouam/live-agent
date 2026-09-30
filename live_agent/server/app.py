@@ -493,7 +493,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                 cfg=OrchestratorConfig(session_id=session_id, scope=mode,
                                                        correction_mode=CorrectionMode(args.correction_mode),
                                                        # the demo's vLLM-Omni configs hold for every prompt
-                                                       generator_holds=args.generator == "vllm_omni_h3"))
+                                                       generator_holds=args.generator == "vllm_omni_h3",
+                                                       lesson_self_check=args.lesson_self_check))
             transport.orchestrator = orch
             if args.image_url:
                 from live_agent.board_images import ImageMaker
@@ -720,6 +721,9 @@ def main() -> None:
     p.add_argument("--student", default="demo", help="student profile id for private sessions (the page may pick one)")
     p.add_argument("--students", default="", help="comma-separated profile ids the page may pick (default: only --student)")
     p.add_argument("--student-store", default=str(BOARD_IMAGES.parent / "students"), help="saved student profiles (personal data)")
+    p.add_argument("--lesson-self-check", default="log", choices=["off", "log", "revise"],
+                   help="judge every lesson section against the lesson-quality checklist: log only, or rewrite "
+                        "a failing section once before it plays (sections after the first)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8200)
     # Generator options (--taomate-*, --omni-*) are parsed by the adapters (taomate_h3.py, vllm_omni_h3.py).

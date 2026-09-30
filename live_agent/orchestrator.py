@@ -93,6 +93,11 @@ class OrchestratorConfig:
     # player switches to the reply at the moment the reply's first chunk is ready (erasure still cuts at once)
     soft_switch: bool = True
     lesson_lookahead: int = 6  # generate the next lesson section once fewer lines than this are waiting (~30 s)
+    # self-check of every generated section against the lesson-quality checklist (configs/curriculum/teaching_craft
+    # .json): "off"; "log" (judged in the background, logged only); "revise" (sections after the first are judged
+    # before they play and rewritten once with the judge's problems when they fail; the first section is logged
+    # only, so the lesson still starts as soon as its outline is ready)
+    lesson_self_check: str = "log"
     # student attention (opt-in camera): nudge during a lesson after this many consecutive distracted/absent checks
     attention_nudge_after: int = 2
     attention_cooldown_s: float = 45.0
@@ -1090,8 +1095,10 @@ class Orchestrator:
             if self.curriculum.exercise_style(g):
                 profile += f"\n这个年级的练习形式：{self.curriculum.exercise_style(g)}"
         try:
+            craft = self.curriculum.practice_craft(g, self.curriculum.subject_of(topic, g)) \
+                if self.curriculum and self.student is not None else ""
             ex = await make_exercise(d.llm, name=d.persona_name, topic=topic, profile=profile,
-                                     key=f"q{self._exercises}")
+                                     key=f"q{self._exercises}", craft=craft)
         except Exception as e:  # noqa: BLE001
             self.log.emit(EventType.LESSON, now(), stage="exercise_failed", topic=topic, error=str(e)[:160])
             d.say_verified("抱歉，这道题我没出好，你可以换个问法。")
@@ -1229,8 +1236,10 @@ class Orchestrator:
         covered: list[str] = []
         waiting_for = None  # the previous section's exercise: its result shapes the next section
         for i in range(len(outline.sections)):
+            # a judged-and-rewritten section takes about twice as long to produce: start it earlier
+            lookahead = self.cfg.lesson_lookahead * (2 if self.cfg.lesson_self_check == "revise" and i > 0 else 1)
             while not self._stop.is_set() and (
-                    len(d.lesson_backlog) >= self.cfg.lesson_lookahead
+                    len(d.lesson_backlog) >= lookahead
                     or (waiting_for is not None and (d.exercise is waiting_for
                                                      or any(x.exercise is waiting_for for x in d.lesson_backlog)))
                     or (self.student is not None and d.exercise is not None)):
@@ -1245,7 +1254,11 @@ class Orchestrator:
                 except Exception as e:  # noqa: BLE001 - retry once, then skip the section
                     self.log.emit(EventType.LESSON, now(), stage="section_failed", section=i, attempt=attempt,
                                   error=str(e)[:160])
+            if lines and self.cfg.lesson_self_check == "revise" and i > 0:
+                lines = await self._revise_section(planner, outline, i, covered, lines)
             if lines:
+                if self.cfg.lesson_self_check == "log" or (self.cfg.lesson_self_check == "revise" and i == 0):
+                    self._spawn(self._check_section(planner, outline, i, lines), "lesson_check")
                 self._lesson_mistakes.clear()  # addressed by this section
                 d.add_lesson_lines(lines)
                 if self.student is not None and outline.sections[i].get("concepts"):
@@ -1261,6 +1274,35 @@ class Orchestrator:
                               exercise=(ex.question if ex is not None else None))
             covered.append(outline.sections[i]["title"])
         self.log.emit(EventType.LESSON, now(), stage="planned", title=outline.title)
+
+    async def _check_section(self, planner, outline, i: int, lines, *, revised: bool = False) -> dict:
+        """Judge a section against the lesson-quality checklist and log the verdict (never raises)."""
+        try:
+            v = await planner.check_section(outline, i, lines, profile=self.student)
+        except Exception as e:  # noqa: BLE001 - the check is advisory
+            self.log.emit(EventType.LESSON, now(), stage="check_failed", section=i, error=str(e)[:160])
+            return {}
+        if v:
+            self.log.emit(EventType.LESSON, now(), stage="check", section=i, title=outline.sections[i]["title"],
+                          passed=v["pass"], scores=v["scores"], problems=v["problems"], fix=v["fix"], revised=revised)
+        return v
+
+    async def _revise_section(self, planner, outline, i: int, covered: list[str], lines):
+        """Self-check before the section plays; on a fail, one rewrite with the judge's problems (kept even if the
+        judge would still object: a second opinion is logged, not enforced)."""
+        v = await self._check_section(planner, outline, i, lines)
+        if not v or v["pass"]:
+            return lines
+        feedback = "；".join(v["problems"]) + (f"；改法：{v['fix']}" if v["fix"] else "")
+        try:
+            new = await planner.section(outline, i, covered, profile=self.student,
+                                        mistakes=list(self._lesson_mistakes), feedback=feedback)
+        except Exception as e:  # noqa: BLE001 - keep the first version
+            self.log.emit(EventType.LESSON, now(), stage="revise_failed", section=i, error=str(e)[:160])
+            return lines
+        self.log.emit(EventType.LESSON, now(), stage="revised", section=i, feedback=feedback[:200], lines=len(new))
+        self._spawn(self._check_section(planner, outline, i, new, revised=True), "lesson_check")
+        return new
 
     async def _switch_to(self, target: int) -> None:
         """The reply's first chunk is ready: drop what was generated before it and not yet fully shown, stop

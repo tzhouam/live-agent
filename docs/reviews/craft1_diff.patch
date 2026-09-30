@@ -1,0 +1,254 @@
+diff --git a/docs/implementation.md b/docs/implementation.md
+index 381341e..ba111b8 100644
+--- a/docs/implementation.md
++++ b/docs/implementation.md
+@@ -24,6 +24,10 @@ verified. Every number is labelled *measured locally*, *cited*, *estimate* or *t
+ | `live_agent/asr.py` | — | Qwen3-ASR client (vLLM transcription API) and audio decoding |
+ | `live_agent/eval/` | §7, §14, §15 | Evaluation: SCHEMA.md log format, scoring (intent chains, D table, outcome rules), stats (Wilson, Clopper–Pearson, KM, clustered bootstrap, Holm, κ, power), 30-task suite, simulated user, runner, report |
+ | `configs/persona_hanfu/` | §3 | Persona canon and capability manifest (24 actions covering the E2 suite; `documented` until E1 executes them) |
++| `configs/persona_teacher/` | demo | Teacher persona (林老师): canon, responder rules for answers with a board, lessons, exercises and profile updates |
++| `live_agent/lesson.py` | D-038, D-043 | Lesson planner: outline (subject, objectives, key point, difficulty, hook type, sections with depth and exercises), one section at a time (board points with the spoken lines under each, a guided question per section, a closing that returns to the objectives), figure judgement, and the rubric self-check of a section (`check_section`, rewrite with `feedback`) |
++| `live_agent/exercise.py`, `live_agent/student.py` | D-038, D-039 | Exercises (choice / short answer, rule or LLM grading, practice-design rules from the craft data) and the student profile store |
++| `live_agent/curriculum.py`, `configs/curriculum/` | D-040, D-043 | Course knowledge base: the national curriculum per subject and grade, the per-grade teaching profile (`pedagogy.json`) and the teaching craft (`teaching_craft.json`: lesson stages, teacher moves, grade bands, master teachers, board rules, quality checklist), rendered into the planner, section, exercise and self-check prompts by grade and subject; `tools/check_curriculum.py` validates the files |
+ | `live_agent/generator/base.py` `SessionView` | — | One live session on a long-lived shared generator: reset per session, local request numbering, stale chunks dropped (D-022) |
+ | `live_agent/sim.py` `Recorder` | — | MP4 of the *presented* stream (background-thread encoding), used for adjudication and E1 clips |
+ | `live_agent/eval/adjudicate.py` | §14, D-014 | Blinded human adjudication: shuffled items, random ids and media names, key kept apart; labels merged back as `source: adjudicated` verdicts with video→session time mapping (D-024) |
+diff --git a/live_agent/exercise.py b/live_agent/exercise.py
+index 4d3ca86..439ef1d 100644
+--- a/live_agent/exercise.py
++++ b/live_agent/exercise.py
+@@ -23,7 +23,7 @@ EXERCISE_PROMPT = """你是中学老师「{name}」。请给学生出一道关
+ 学生档案：
+ {profile}
+ 难度按学生情况定：这个知识点薄弱就出基础题（直接用定义或公式一步能做），基本理解出中等题，已掌握出稍有变化的题；按学生年级出题。
+-{exercise_spec}"""
++{craft}{exercise_spec}"""
+ 
+ EXERCISE_SPEC = """练习题格式（只输出 JSON）：
+ {{"exercise": {{"concept": 考查的概念（用档案里已有的概念名，没有就写一个不超过 8 字的名称）, "subject": 学科,
+@@ -176,9 +176,11 @@ def feedback_lines(ex: Exercise, r: dict, chars: int, llm_lines: list[str] | Non
+ 
+ 
+ async def make_exercise(llm: ChatLLM, *, name: str, topic: str, profile: str, key: str, chars: int = 22,
+-                        source: str = "asked") -> Exercise:
++                        source: str = "asked", craft: str = "") -> Exercise:
++    """``craft``: the curriculum's practice-design rules for the student's grade ("" without craft data)."""
+     raw = await llm.chat([{"role": "user", "content": EXERCISE_PROMPT.format(
+-        name=name, topic=topic, profile=profile, exercise_spec=EXERCISE_SPEC.format(chars=chars, q_chars=60))}],
++        name=name, topic=topic, profile=profile, craft=(craft + "\n") if craft else "",
++        exercise_spec=EXERCISE_SPEC.format(chars=chars, q_chars=60))}],
+         max_tokens=600, temperature=0.5, json_mode=True)
+     d = parse_json(raw)
+     ex = Exercise.from_dict(d.get("exercise", d), key=key, source=source)
+diff --git a/live_agent/orchestrator.py b/live_agent/orchestrator.py
+index a957579..4aacfd0 100644
+--- a/live_agent/orchestrator.py
++++ b/live_agent/orchestrator.py
+@@ -93,6 +93,11 @@ class OrchestratorConfig:
+     # player switches to the reply at the moment the reply's first chunk is ready (erasure still cuts at once)
+     soft_switch: bool = True
+     lesson_lookahead: int = 6  # generate the next lesson section once fewer lines than this are waiting (~30 s)
++    # self-check of every generated section against the lesson-quality checklist (configs/curriculum/teaching_craft
++    # .json): "off"; "log" (judged in the background, logged only); "revise" (sections after the first are judged
++    # before they play and rewritten once with the judge's problems when they fail; the first section is logged
++    # only, so the lesson still starts as soon as its outline is ready)
++    lesson_self_check: str = "log"
+     # student attention (opt-in camera): nudge during a lesson after this many consecutive distracted/absent checks
+     attention_nudge_after: int = 2
+     attention_cooldown_s: float = 45.0
+@@ -1090,8 +1095,10 @@ class Orchestrator:
+             if self.curriculum.exercise_style(g):
+                 profile += f"\n这个年级的练习形式：{self.curriculum.exercise_style(g)}"
+         try:
++            craft = self.curriculum.practice_craft(g, self.curriculum.subject_of(topic, g)) \
++                if self.curriculum and self.student is not None else ""
+             ex = await make_exercise(d.llm, name=d.persona_name, topic=topic, profile=profile,
+-                                     key=f"q{self._exercises}")
++                                     key=f"q{self._exercises}", craft=craft)
+         except Exception as e:  # noqa: BLE001
+             self.log.emit(EventType.LESSON, now(), stage="exercise_failed", topic=topic, error=str(e)[:160])
+             d.say_verified("抱歉，这道题我没出好，你可以换个问法。")
+@@ -1229,8 +1236,10 @@ class Orchestrator:
+         covered: list[str] = []
+         waiting_for = None  # the previous section's exercise: its result shapes the next section
+         for i in range(len(outline.sections)):
++            # a judged-and-rewritten section takes about twice as long to produce: start it earlier
++            lookahead = self.cfg.lesson_lookahead * (2 if self.cfg.lesson_self_check == "revise" and i > 0 else 1)
+             while not self._stop.is_set() and (
+-                    len(d.lesson_backlog) >= self.cfg.lesson_lookahead
++                    len(d.lesson_backlog) >= lookahead
+                     or (waiting_for is not None and (d.exercise is waiting_for
+                                                      or any(x.exercise is waiting_for for x in d.lesson_backlog)))
+                     or (self.student is not None and d.exercise is not None)):
+@@ -1245,7 +1254,11 @@ class Orchestrator:
+                 except Exception as e:  # noqa: BLE001 - retry once, then skip the section
+                     self.log.emit(EventType.LESSON, now(), stage="section_failed", section=i, attempt=attempt,
+                                   error=str(e)[:160])
++            if lines and self.cfg.lesson_self_check == "revise" and i > 0:
++                lines = await self._revise_section(planner, outline, i, covered, lines)
+             if lines:
++                if self.cfg.lesson_self_check == "log" or (self.cfg.lesson_self_check == "revise" and i == 0):
++                    self._spawn(self._check_section(planner, outline, i, lines), "lesson_check")
+                 self._lesson_mistakes.clear()  # addressed by this section
+                 d.add_lesson_lines(lines)
+                 if self.student is not None and outline.sections[i].get("concepts"):
+@@ -1262,6 +1275,35 @@ class Orchestrator:
+             covered.append(outline.sections[i]["title"])
+         self.log.emit(EventType.LESSON, now(), stage="planned", title=outline.title)
+ 
++    async def _check_section(self, planner, outline, i: int, lines, *, revised: bool = False) -> dict:
++        """Judge a section against the lesson-quality checklist and log the verdict (never raises)."""
++        try:
++            v = await planner.check_section(outline, i, lines, profile=self.student)
++        except Exception as e:  # noqa: BLE001 - the check is advisory
++            self.log.emit(EventType.LESSON, now(), stage="check_failed", section=i, error=str(e)[:160])
++            return {}
++        if v:
++            self.log.emit(EventType.LESSON, now(), stage="check", section=i, title=outline.sections[i]["title"],
++                          passed=v["pass"], scores=v["scores"], problems=v["problems"], fix=v["fix"], revised=revised)
++        return v
++
++    async def _revise_section(self, planner, outline, i: int, covered: list[str], lines):
++        """Self-check before the section plays; on a fail, one rewrite with the judge's problems (kept even if the
++        judge would still object: a second opinion is logged, not enforced)."""
++        v = await self._check_section(planner, outline, i, lines)
++        if not v or v["pass"]:
++            return lines
++        feedback = "；".join(v["problems"]) + (f"；改法：{v['fix']}" if v["fix"] else "")
++        try:
++            new = await planner.section(outline, i, covered, profile=self.student,
++                                        mistakes=list(self._lesson_mistakes), feedback=feedback)
++        except Exception as e:  # noqa: BLE001 - keep the first version
++            self.log.emit(EventType.LESSON, now(), stage="revise_failed", section=i, error=str(e)[:160])
++            return lines
++        self.log.emit(EventType.LESSON, now(), stage="revised", section=i, feedback=feedback[:200], lines=len(new))
++        self._spawn(self._check_section(planner, outline, i, new, revised=True), "lesson_check")
++        return new
++
+     async def _switch_to(self, target: int) -> None:
+         """The reply's first chunk is ready: drop what was generated before it and not yet fully shown, stop
+         the player (it cuts at the current frame) and let the reply play next."""
+diff --git a/live_agent/server/app.py b/live_agent/server/app.py
+index 9b57149..642acd7 100644
+--- a/live_agent/server/app.py
++++ b/live_agent/server/app.py
+@@ -493,7 +493,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
+                                 cfg=OrchestratorConfig(session_id=session_id, scope=mode,
+                                                        correction_mode=CorrectionMode(args.correction_mode),
+                                                        # the demo's vLLM-Omni configs hold for every prompt
+-                                                       generator_holds=args.generator == "vllm_omni_h3"))
++                                                       generator_holds=args.generator == "vllm_omni_h3",
++                                                       lesson_self_check=args.lesson_self_check))
+             transport.orchestrator = orch
+             if args.image_url:
+                 from live_agent.board_images import ImageMaker
+@@ -720,6 +721,9 @@ def main() -> None:
+     p.add_argument("--student", default="demo", help="student profile id for private sessions (the page may pick one)")
+     p.add_argument("--students", default="", help="comma-separated profile ids the page may pick (default: only --student)")
+     p.add_argument("--student-store", default=str(BOARD_IMAGES.parent / "students"), help="saved student profiles (personal data)")
++    p.add_argument("--lesson-self-check", default="log", choices=["off", "log", "revise"],
++                   help="judge every lesson section against the lesson-quality checklist: log only, or rewrite "
++                        "a failing section once before it plays (sections after the first)")
+     p.add_argument("--host", default="127.0.0.1")
+     p.add_argument("--port", type=int, default=8200)
+     # Generator options (--taomate-*, --omni-*) are parsed by the adapters (taomate_h3.py, vllm_omni_h3.py).
+diff --git a/tools/check_curriculum.py b/tools/check_curriculum.py
+index 6a40275..5c4baa0 100644
+--- a/tools/check_curriculum.py
++++ b/tools/check_curriculum.py
+@@ -57,6 +57,79 @@ def check_subject(d: dict, name: str) -> tuple[list[str], list[str]]:
+     return errors, warnings
+ 
+ 
++def check_craft(d: dict) -> tuple[list[str], list[str]]:
++    """teaching_craft.json: sources with URLs; every citation resolves; bands cover grades 1-12 without overlap;
++    moves name known stages; masters and moves have grades within 1-12 and at least one source."""
++    errors, warnings = [], []
++    ids = {s.get("id") for s in d.get("sources") or []}
++    for s in d.get("sources") or []:
++        if not str(s.get("url") or "").startswith("http"):
++            errors.append(f"teaching_craft: source {s.get('id')} has no URL")
++        if not s.get("accessed"):
++            warnings.append(f"teaching_craft: source {s.get('id')} has no access date")
++
++    def cites(item: dict, what: str, required: bool = True) -> None:
++        srcs = item.get("sources") or []
++        if required and not srcs:
++            errors.append(f"teaching_craft: {what} has no sources")
++        for x in srcs:
++            if x not in ids:
++                errors.append(f"teaching_craft: {what} cites unknown source {x}")
++
++    def grades_ok(item: dict, what: str) -> None:
++        gs = item.get("grades")
++        if gs is not None and (len(gs) != 2 or not all(isinstance(g, int) and 1 <= g <= 12 for g in gs) or gs[0] > gs[1]):
++            errors.append(f"teaching_craft: {what} has grades {gs}")
++
++    stages = [st.get("id") for st in (d.get("lesson_model") or {}).get("stages") or []]
++    if not stages:
++        errors.append("teaching_craft: lesson_model has no stages")
++    for st in (d.get("lesson_model") or {}).get("stages") or []:
++        if not st.get("rules"):
++            errors.append(f"teaching_craft: stage {st.get('id')} has no rules")
++        cites(st, f"stage {st.get('id')}")
++    covered = Counter()
++    for b in d.get("bands") or []:
++        grades_ok(b, f"band {b.get('id')}")
++        cites(b, f"band {b.get('id')}")
++        lo, hi = (b.get("grades") or [0, -1])[:2]
++        for g in range(lo, hi + 1) if isinstance(lo, int) and isinstance(hi, int) else []:
++            covered[g] += 1
++        for sid in (b.get("stage_notes") or {}):
++            if sid not in stages:
++                errors.append(f"teaching_craft: band {b.get('id')} notes unknown stage {sid}")
++    for g in range(1, 13):
++        if covered[g] != 1:
++            errors.append(f"teaching_craft: grade {g} is in {covered[g]} bands (must be exactly one)")
++    for m in d.get("moves") or []:
++        for sid in m.get("stages") or []:
++            if sid not in stages:
++                errors.append(f"teaching_craft: move {m.get('id')} names unknown stage {sid}")
++        if not m.get("stages"):
++            errors.append(f"teaching_craft: move {m.get('id')} has no stages")
++        if not m.get("what"):
++            errors.append(f"teaching_craft: move {m.get('id')} has no 'what'")
++        grades_ok(m, f"move {m.get('id')}")
++        cites(m, f"move {m.get('id')}")
++    for m in d.get("masters") or []:
++        for key in ("name", "subjects", "method", "moves"):
++            if not m.get(key):
++                errors.append(f"teaching_craft: master {m.get('id')} has no '{key}'")
++        grades_ok(m, f"master {m.get('id')}")
++        cites(m, f"master {m.get('id')}")
++        if not m.get("honours"):
++            warnings.append(f"teaching_craft: master {m.get('id')} lists no honours (why outstanding?)")
++    cites(d.get("board") or {}, "board", required=bool((d.get("board") or {}).get("rules")))
++    for c in d.get("checklist") or []:
++        if not c.get("item"):
++            errors.append(f"teaching_craft: checklist entry {c.get('id')} has no item")
++        if c.get("scope") not in (None, "section", "feedback"):
++            errors.append(f"teaching_craft: checklist entry {c.get('id')} has scope {c.get('scope')!r}")
++        grades_ok(c, f"checklist {c.get('id')}")
++        cites(c, f"checklist {c.get('id')}")
++    return errors, warnings
++
++
+ def main(directory: str = "configs/curriculum") -> int:
+     d = Path(directory)
+     errors, warnings = [], []
+@@ -66,6 +139,15 @@ def main(directory: str = "configs/curriculum") -> int:
+         except ValueError as e:
+             errors.append(f"{f.name}: invalid JSON ({e})")
+             continue
++        if f.stem == "teaching_craft":
++            e, w = check_craft(data)
++            errors += e
++            warnings += w
++            print(f"teaching_craft: stages {len((data.get('lesson_model') or {}).get('stages') or [])}, "
++                  f"moves {len(data.get('moves') or [])}, masters {len(data.get('masters') or [])}, "
++                  f"bands {len(data.get('bands') or [])}, board rules {len((data.get('board') or {}).get('rules') or [])}, "
++                  f"checklist {len(data.get('checklist') or [])}, sources {len(data.get('sources') or [])}")
++            continue
+         if f.stem == "pedagogy":
+             ids = {s.get("id") for s in data.get("sources") or []}
+             grades = data.get("grades") or {}

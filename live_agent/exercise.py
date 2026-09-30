@@ -23,7 +23,7 @@ EXERCISE_PROMPT = """你是中学老师「{name}」。请给学生出一道关�
 学生档案：
 {profile}
 难度按学生情况定：这个知识点薄弱就出基础题（直接用定义或公式一步能做），基本理解出中等题，已掌握出稍有变化的题；按学生年级出题。
-{exercise_spec}"""
+{craft}{exercise_spec}"""
 
 EXERCISE_SPEC = """练习题格式（只输出 JSON）：
 {{"exercise": {{"concept": 考查的概念（用档案里已有的概念名，没有就写一个不超过 8 字的名称）, "subject": 学科,
@@ -176,9 +176,11 @@ def feedback_lines(ex: Exercise, r: dict, chars: int, llm_lines: list[str] | Non
 
 
 async def make_exercise(llm: ChatLLM, *, name: str, topic: str, profile: str, key: str, chars: int = 22,
-                        source: str = "asked") -> Exercise:
+                        source: str = "asked", craft: str = "") -> Exercise:
+    """``craft``: the curriculum's practice-design rules for the student's grade ("" without craft data)."""
     raw = await llm.chat([{"role": "user", "content": EXERCISE_PROMPT.format(
-        name=name, topic=topic, profile=profile, exercise_spec=EXERCISE_SPEC.format(chars=chars, q_chars=60))}],
+        name=name, topic=topic, profile=profile, craft=(craft + "\n") if craft else "",
+        exercise_spec=EXERCISE_SPEC.format(chars=chars, q_chars=60))}],
         max_tokens=600, temperature=0.5, json_mode=True)
     d = parse_json(raw)
     ex = Exercise.from_dict(d.get("exercise", d), key=key, source=source)

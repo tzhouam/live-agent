@@ -40,6 +40,12 @@ def test_spoken_lines_carry_no_latex_and_fit_one_request():
     assert all(len(p) <= 22 for p in parts) and len(parts) == 2
 
 
+def test_a_closing_quote_stays_with_its_sentence_when_lines_are_split():
+    parts = spoken("老师说：“鲸很大，最大的有一百吨，比大象重得多。”用了什么方法？", 22)
+    assert parts == ["老师说：“鲸很大，最大的有一百吨，", "比大象重得多。”用了什么方法？"]  # no line starts with ”
+    assert spoken("他问：「为什么？」我答：「不知道。」", 22) == ["他问：「为什么？」我答：「不知道。」"]
+
+
 def test_board_items_are_escaped_and_formulas_become_mathml():
     html = render_item("<script>x</script> **重点** $x^2$")
     assert "&lt;script&gt;" in html and "<b>重点</b>" in html and "<math" in html

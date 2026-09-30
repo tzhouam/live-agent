@@ -1,10 +1,12 @@
 """Course knowledge base: the national curriculum (grades 1-12) and a teaching profile per grade.
 
-Data lives in ``configs/curriculum/*.json`` (one file per subject, plus ``pedagogy.json``), researched from the 2022
-compulsory-education standards and the 2017/2020 senior-high standards, with per-grade topics from the textbook
-tables of contents; every file lists its sources and which parts are estimates. This module finds where a lesson
-topic sits in the curriculum (subject, grade, the standard's requirements, prerequisites) and how a teacher should
-teach a given grade (methods, amount of content, tone), and renders both as prompt context.
+Data lives in ``configs/curriculum/*.json`` (one file per subject, plus ``pedagogy.json`` and
+``teaching_craft.json``), researched from the 2022 compulsory-education standards and the 2017/2020 senior-high
+standards, with per-grade topics from the textbook tables of contents; every file lists its sources and which parts
+are estimates. This module finds where a lesson topic sits in the curriculum (subject, grade, the standard's
+requirements, prerequisites), how a teacher should teach a given grade (methods, amount of content, tone) and how
+a lesson is built and judged (the teaching craft: lesson stages, teacher moves, board rules, master teachers'
+methods, a lesson-quality checklist), and renders all of it as prompt context.
 """
 
 from __future__ import annotations
@@ -49,11 +51,12 @@ def grade_name(g: int) -> str:
     return ("初" if g <= 9 else "高") + "一二三"[(g - 7) % 3]
 
 
-_CITE = re.compile(r"[（(]\s*s\d+(?:[、,，\s]*s?\d+)*(?:第\S{1,6}页)?\s*[）)]")
+_CITE = re.compile(r"[（(]\s*[a-z]{1,2}\d+(?:[、,，\s]*[a-z]{0,2}\d+)*(?:第\S{1,6}页)?\s*[）)]")
 
 
 def clean(text: Any) -> str:
-    """Prompt text without the data's source tags ("（s2、s7）"): those are for audit, not for the teacher to say."""
+    """Prompt text without the data's source tags ("（s2、s7）", "（c12）"): those are for audit, not for the teacher
+    to say."""
     return _CITE.sub("", str(text)).strip()
 
 
@@ -95,25 +98,45 @@ class Match:
 
 
 class Curriculum:
-    def __init__(self, subjects: list[dict], pedagogy: dict | None = None):
+    def __init__(self, subjects: list[dict], pedagogy: dict | None = None, craft: dict | None = None):
         self.subjects = subjects
         self.pedagogy = pedagogy or {}
+        self.craft = craft or {}  # teaching_craft.json: lesson stages, moves, bands, masters, board, checklist
 
     @classmethod
     def load(cls, directory: str | Path) -> Curriculum:
         d = Path(directory)
-        subjects, pedagogy = [], {}
+        subjects, pedagogy, craft = [], {}, {}
         if d.is_dir():
             for f in sorted(d.glob("*.json")):
                 data = json.loads(f.read_text(encoding="utf-8"))
                 if f.stem == "pedagogy":
                     pedagogy = data
+                elif f.stem == "teaching_craft":
+                    craft = data
                 elif isinstance(data, dict) and data.get("subject"):
                     subjects.append(data)
-        return cls(subjects, pedagogy)
+        return cls(subjects, pedagogy, craft)
 
     def __bool__(self) -> bool:
-        return bool(self.subjects or self.pedagogy)
+        return bool(self.subjects or self.pedagogy or self.craft)
+
+    def subject_names(self) -> list[str]:
+        return [str(s.get("subject")) for s in self.subjects if s.get("subject")]
+
+    def subject_of(self, topic: str, grade: int | None = None) -> str:
+        """The subject the curriculum files place ``topic`` in (the lexical match, else a cached locator pick),
+        "" when unknown. No model call: ``locate`` must have run first for chapter-named topics."""
+        topic = clean_topic(topic)
+        ms = self.lookup(topic, grade, limit=1)
+        if ms:
+            return ms[0].subject
+        picks = (self.__dict__.get("_located") or {}).get(_norm(topic))
+        for p in picks if isinstance(picks, list) else []:
+            m = self._entry(str(p.get("subject") or ""), p.get("grade"), str(p.get("topic") or ""), topic)
+            if m is not None:
+                return m.subject
+        return ""
 
     # ------------------------------------------------------------ where does a topic sit
     def lookup(self, topic: str, grade: int | None = None, limit: int = 3) -> list[Match]:
@@ -318,6 +341,148 @@ class Curriculum:
     def exercise_style(self, grade: int | None) -> str:
         return clean(self.profile(grade).get("exercise_style") or "")
 
+    # ------------------------------------------------------------ teaching craft (lesson stages, moves, masters)
+    CRAFT_HEADER = "教学法参考（从教学法教材、教学竞赛评价标准和名师课例整理的做法建议，编辑意译，不是原文；数字为估计）："
+
+    def band(self, grade: int | None) -> dict[str, Any]:
+        """The grade band (小学低/中/高年级, 初中, 高中) of ``grade`` in the craft data."""
+        if grade is None:
+            return {}
+        for b in self.craft.get("bands") or []:
+            lo, hi = (b.get("grades") or [0, 0])[:2]
+            if lo <= grade <= hi:
+                return b
+        return {}
+
+    def _in_grade(self, item: dict, grade: int | None) -> bool:
+        if grade is None:
+            return True
+        lo, hi = (item.get("grades") or [1, 12])[:2]
+        return lo <= grade <= hi
+
+    def moves(self, stage: str | None = None, grade: int | None = None, subject: str = "", limit: int | None = None
+              ) -> list[dict]:
+        """Teacher moves for a lesson stage (hook / explain / check / practice / close / feedback), the grade and
+        the subject ("*" or no subject list matches every subject), best-ranked first."""
+        out = []
+        for m in self.craft.get("moves") or []:
+            if stage and stage not in (m.get("stages") or []):
+                continue
+            if not self._in_grade(m, grade):
+                continue
+            subs = m.get("subjects") or ["*"]
+            if subject and "*" not in subs and subject not in subs:
+                continue
+            if not subject and "*" not in subs:
+                continue
+            out.append(m)
+        out.sort(key=lambda m: (m.get("rank", 99), m.get("id", "")))
+        return out[:limit] if limit else out
+
+    def masters(self, subject: str = "", grade: int | None = None, limit: int = 2) -> list[dict]:
+        """Master teachers whose documented practice fits the subject and grade (the subject must match when
+        given; without a subject only cross-subject entries)."""
+        out = []
+        for m in self.craft.get("masters") or []:
+            if not self._in_grade(m, grade):
+                continue
+            subs = m.get("subjects") or []
+            if subject and subject not in subs and "*" not in subs:
+                continue
+            if not subject and "*" not in subs:
+                continue
+            out.append(m)
+        out.sort(key=lambda m: (m.get("rank", 99), m.get("id", "")))
+        return out[:limit]
+
+    def stage(self, stage_id: str) -> dict[str, Any]:
+        for st in (self.craft.get("lesson_model") or {}).get("stages") or []:
+            if st.get("id") == stage_id:
+                return st
+        return {}
+
+    def _stage_rules(self, stage_id: str, grade: int | None, n: int) -> list[str]:
+        st = self.stage(stage_id)
+        rules = [clean(r) for r in (st.get("rules") or [])][:n]
+        band = self.band(grade)
+        extra = (band.get("stage_notes") or {}).get(stage_id) if band else None
+        if extra:
+            rules.append(clean(extra))
+        return rules
+
+    def _move_lines(self, stage_id: str, grade: int | None, subject: str, n: int) -> list[str]:
+        lines = []
+        for m in self.moves(stage_id, grade, subject, limit=n):
+            ex = clean(m.get("example") or "")
+            lines.append(f"{clean(m.get('name'))}：{clean(m.get('what'))}" + (f"（如「{ex}」）" if ex else ""))
+        return lines
+
+    def _master_lines(self, subject: str, grade: int | None, n: int = 2, moves_each: int = 3) -> list[str]:
+        lines = []
+        for m in self.masters(subject, grade, limit=n):
+            mv = "；".join(clean(x) for x in (m.get("moves") or [])[:moves_each])
+            lines.append(f"借鉴{clean(m.get('name'))}老师（{clean(m.get('method') or '')}）的做法：{mv}")
+        return lines
+
+    def plan_craft(self, grade: int | None, subject: str = "") -> str:
+        """For the outline prompt: how a lesson is built (stages, one rule each), the band's opening and pacing,
+        the masters whose lesson design fits."""
+        if not self.craft:
+            return ""
+        parts = [self.CRAFT_HEADER]
+        stages = (self.craft.get("lesson_model") or {}).get("stages") or []
+        if stages:
+            parts.append("一节课的环节：" + "；".join(
+                f"{clean(st.get('name'))}（{clean((st.get('rules') or [''])[0])}）" for st in stages))
+        band = self.band(grade)
+        if band:
+            parts.append(f"{clean(band.get('name'))}的课：" + "；".join(clean(x) for x in (band.get("plan") or [])[:4]))
+        hooks = self._move_lines("hook", grade, subject, 3)
+        if hooks:
+            parts.append("导入的做法：" + "；".join(hooks))
+        parts += self._master_lines(subject, grade, n=2, moves_each=2)
+        return "\n".join(parts)
+
+    def section_craft(self, grade: int | None, subject: str = "", last: bool = False) -> str:
+        """For a section prompt: explanation, questioning, practice (and closing on the last section) moves for
+        the grade and subject, the band's notes, the masters' moves, the board rules."""
+        if not self.craft:
+            return ""
+        parts = [self.CRAFT_HEADER]
+        for sid, label in (("explain", "讲解"), ("check", "提问与检查理解"), ("practice", "练习"),
+                           ("feedback", "反馈")) + ((("close", "结课"),) if last else ()):
+            rules = self._stage_rules(sid, grade, 2) + self._move_lines(sid, grade, subject, 3)
+            if rules:
+                parts.append(f"{label}：" + "；".join(rules))
+        band = self.band(grade)
+        if band and band.get("section"):
+            parts.append(f"{clean(band.get('name'))}：" + "；".join(clean(x) for x in band["section"][:4]))
+        parts += self._master_lines(subject, grade, n=2, moves_each=3)
+        board = self.board_rules(4)
+        if board:
+            parts.append("板书：" + "；".join(board))
+        return "\n".join(parts)
+
+    def practice_craft(self, grade: int | None, subject: str = "") -> str:
+        """For the exercise prompt: how to design a practice question for the grade (rules and moves)."""
+        if not self.craft:
+            return ""
+        rules = self._stage_rules("practice", grade, 3) + self._move_lines("practice", grade, subject, 3)
+        return (self.CRAFT_HEADER + "\n练习：" + "；".join(rules)) if rules else ""
+
+    def board_rules(self, n: int | None = None) -> list[str]:
+        rules = [clean(r) for r in (self.craft.get("board") or {}).get("rules") or []]
+        return rules[:n] if n else rules
+
+    def checklist(self, grade: int | None = None, scope: str = "section") -> list[str]:
+        """Lesson-quality checklist items (from competition rubrics and the textbooks) for the grade and ``scope``:
+        "section" (a generated section: board + script, the default) or "feedback" (grading feedback)."""
+        out = []
+        for c in self.craft.get("checklist") or []:
+            if self._in_grade(c, grade) and (c.get("scope") or "section") == scope:
+                out.append(clean(c.get("item")))
+        return out
+
     def topic_context(self, topic: str, grade: int | None) -> str:
         """Where the topic may sit in the curriculum, for the planner (candidates from lexical matching: the model
         uses the relevant ones); flags a topic above the student's grade only on a strong match."""
@@ -377,7 +542,9 @@ class Curriculum:
                               "sources": len(s.get("sources") or []),
                               "topics": sum(len((e or {}).get("topics") or []) for e in (s.get("grade_topics") or {}).values())}
                              for s in self.subjects],
-                "pedagogy_grades": sorted(int(g) for g in (self.pedagogy.get("grades") or {}) if str(g).isdigit())}
+                "pedagogy_grades": sorted(int(g) for g in (self.pedagogy.get("grades") or {}) if str(g).isdigit()),
+                "craft": {k: len(self.craft.get(k) or []) for k in ("moves", "masters", "bands", "checklist")}
+                if self.craft else {}}
 
 
 LOCATE_PROMPT = """下面是中国中小学课程目录（每行：学科|年级|这个年级的教材章节，章节之间用；分隔）。
