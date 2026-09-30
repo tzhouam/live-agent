@@ -28,12 +28,14 @@ DEPTHS = {
     "core": ("14-20", "这一节是重点，学生这里薄弱或考试失分：放慢，每条要点先讲直观理解，再举一个具体的例子或算一道例题，指出常见错误。"),
     "new": ("10-18", "这一节是新内容，正常讲解。"),
 }
+MIN_ITEMS = {"review": 1, "core": 3, "new": 3}  # board points: a review section is brief by design
+MAX_EXERCISES = 3  # per lesson (the outline prompt asks for 1-3)
 
 OUTLINE_PROMPT = """你是{role}「{name}」，要给学生上一节关于「{topic}」的课。人设：{bio}
 学生档案（年级、考试成绩、各概念的掌握情况）：
 {profile}
 {curriculum}{craft}请按这个学生的情况因材施教，设计课程大纲，只输出 JSON：
-{{"title": 课程标题（不超过 16 字）, "subject": 学科（语文、数学、英语、物理、化学、生物学、历史、地理、道德与法治、科学、信息科技之一）,
+{{"title": 课程标题（不超过 16 字）, "subject": 学科（{subjects}之一，原样写）,
  "plan_note": 一句话说明你根据档案怎么安排的（给老师自己看，不念出来）,
  "objectives": [学习目标 1-3 条，写成学生学完能做什么（「能……」），每条不超过 20 字],
  "key_point": 本课重点（不超过 20 字）, "difficulty": 本课难点（学生最容易卡住的地方，不超过 20 字）,
@@ -60,14 +62,14 @@ SECTION_PROMPT = """你是{role}「{name}」，正在上「{title}」这节课�
 {{"board": {{"title": 小节标题}},
  "points": [{{"text": 一条板书要点, "lines": [讲这条要点时老师说的话，按顺序]}}],
  "summary": [这一节的小结句]}}
-板书要求：3-{max_items} 条要点，每条不超过 {item_chars} 个字，简洁像真正的板书；公式用 LaTeX 写在 $...$ 里（如 $x^2+y^2=r^2$）。
+板书要求：{min_items}-{max_items} 条要点，每条不超过 {item_chars} 个字，简洁像真正的板书；公式用 LaTeX 写在 $...$ 里（如 $x^2+y^2=r^2$）。
 对齐要求：每句讲稿都放在它正在讲的那条要点下面；讲完一条再讲下一条；只属于整节的小结放在 summary 里。
 讲稿要求：
 1. 每条要点讲 2-4 句：先说要点，再解释原因，再举生活中的例子或算一个小例题；重点、难点所在的要点多加一句常见错误或换一个变式。
 2. 每句不超过 {chars} 个汉字，口语化；公式和符号全部用中文读出来（如「a 加 b 的和的平方」「x 的平方」），讲稿里不要出现 $、LaTeX、括号、加减乘除号或等号。
 3. 直接从这一节的内容讲起，不要打招呼，不要重复开场白或前面讲过的话。
    配图由系统按要点另外判断和绘制；讲图形、图像或结构时可以说「看黑板上的图」，但不要描述图里没有的细节。
-4. 每节至少一处启发式提问：先提一个学生能想一想的问题，下一句再给答案（如「你猜猜看，是哪个？」「对，是……」），不要连着问几个问题。
+4. 每节至少一处启发式设问（自问自答）：先提一个学生能想一想的问题，下一句再给答案（如「你猜猜看，是哪个？」「对，是……」），不要连着问几个问题。这是老师连续讲解的视频课，学生只在练习时真正作答，所以讲稿里的提问不等学生回答。
 5. summary 写 1-2 句，简短小结这一节{outro}。
 6. 讲稿总共 {n_lines} 句。{craft}
 因材施教：{adapt}{exercise_req}"""
@@ -338,11 +340,13 @@ class LessonPlanner:
         curriculum = await self._curriculum_block(topic, profile)
         self.last_curriculum = curriculum  # for the log
         g = self._grade(profile)
-        subject = self.curriculum.subject_of(topic, g) if self.curriculum else ""
-        craft = self._craft("plan", g, subject)
+        known = self.curriculum.subject_names() if self.curriculum else []
+        placed = self.curriculum.subject_of(topic, g) if self.curriculum else ""  # the curriculum's own placement
+        craft = self._craft("plan", g, placed)
         raw = await self.llm.chat([{"role": "user", "content": OUTLINE_PROMPT.format(
             name=self.name, topic=topic, bio=self.bio, chars=self.chars, context=context or "无", role=self._role(profile),
             profile=profile.summary() if profile is not None else "无（新学生，没有档案）",
+            subjects="、".join(known) or "语文、数学、英语、物理、化学、生物学、历史、地理、道德与法治、科学、信息科技",
             curriculum=curriculum, craft=(craft + "\n") if craft else "",
             default_grade=(profile.grade if profile is not None and profile.grade else "初中"))}],
             max_tokens=1100, temperature=0.4, json_mode=True)
@@ -366,11 +370,19 @@ class LessonPlanner:
         sections = sections[:6]
         if not sections:
             raise ValueError("lesson outline without sections")
+        n_ex = 0
+        for sec in sections:  # the prompt asks for 1-3 exercises; the plan is capped, not trusted
+            if sec["exercise"]:
+                n_ex += 1
+                if n_ex > MAX_EXERCISES:
+                    sec["exercise"] = False
         intro = [p for x in d.get("intro") or [] for p in spoken(str(x), self.chars)][:6]
-        # the model's subject only when the curriculum knows it (else the curriculum's own placement, or none)
+        # the subject: the curriculum's placement of the topic when it has one (a strong lexical match or a locator
+        # pick), else the model's word if the curriculum knows that subject (a model label never overrides a placement)
         said = str(d.get("subject") or "").strip()
-        known = self.curriculum.subject_names() if self.curriculum else []
-        subject = said if said in known else next((k for k in known if said and (said in k or k in said)), subject)
+        model_subject = said if said in known else next((k for k in known if said and (said in k or k in said)), "")
+        subject = placed or model_subject
+        self.last_subject = {"placed": placed, "model": model_subject}  # for the log (a disagreement is visible)
         objectives = [str(x).strip()[:24] for x in (d.get("objectives") or []) if str(x).strip()][:3]
         return Outline(title=str(d.get("title") or topic)[:24], sections=sections, intro=intro,
                        note=str(d.get("plan_note") or "")[:120], subject=subject, objectives=objectives,
@@ -412,7 +424,7 @@ class LessonPlanner:
         raw = await self.llm.chat([{"role": "user", "content": SECTION_PROMPT.format(
             name=self.name, bio=self.bio, title=outline.title, i=i + 1, n=len(outline.sections), role=self._role(profile),
             section=sec["title"], goal=sec.get("goal", ""), covered="；".join(covered) or "（这是第一节）",
-            focus=outline.focus(), max_items=MAX_ITEMS, item_chars=ITEM_CHARS, chars=self.chars,
+            focus=outline.focus(), min_items=MIN_ITEMS[depth], max_items=MAX_ITEMS, item_chars=ITEM_CHARS, chars=self.chars,
             n_lines=DEPTHS[depth][0], adapt="".join(adapt), exercise_req=ex_req, craft=("\n" + craft) if craft else "",
             outro=("，回到本课目标和重点，用一句话让学生记住最关键的一点，再留一个小延伸或悬念，并告诉学生这节课就讲到这里、有问题随时问"
                    if last else "，并引出下一节"))}],
@@ -478,14 +490,19 @@ class LessonPlanner:
             board_title=board.title, board="\n".join(f"- {x}" for x in board.items), lines=said)}],
             max_tokens=700, temperature=0.1, json_mode=True)
         d = parse_json(raw)
-        scores = d.get("scores") if isinstance(d.get("scores"), dict) else {}
-        scores = {str(k): v for k, v in scores.items() if isinstance(v, (int, float)) and 0 <= v <= 2}
+        raw_scores = d.get("scores") if isinstance(d.get("scores"), dict) else {}
+        scores = {}
+        for k in range(1, len(items) + 1):  # one integer 0-2 per checklist item, nothing else: else no verdict
+            v = raw_scores.get(str(k))
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v not in (0, 1, 2):
+                raise ValueError(f"incomplete self-check verdict: item {k} scored {v!r}")
+            scores[str(k)] = int(v)
         problems = [str(x).strip()[:80] for x in (d.get("problems") or []) if str(x).strip()][:3]
-        ok = d.get("pass")
-        if not isinstance(ok, bool):  # derive it from the scores when the judge did not say
-            ok = bool(scores) and not any(v == 0 for v in scores.values()) and sum(v == 1 for v in scores.values()) <= 3
+        # the pass rule is applied here, whatever the judge wrote in "pass"
+        ok = not any(v == 0 for v in scores.values()) and sum(v == 1 for v in scores.values()) <= 3
         return {"pass": ok, "scores": scores, "problems": problems, "fix": str(d.get("fix") or "").strip()[:120],
                 "items": len(items)}
+
 
     async def judge_figures(self, lines: list[LessonLine], max_figs: int = 3) -> list[dict]:
         """Per board point: is it complex enough to need an explanatory figure? Attaches the figures to the board
@@ -518,4 +535,22 @@ class LessonPlanner:
             [LessonLine(f"今天我们来学{outline.title}。"[: self.chars], board, None)]
 
 
-__all__ = ["Board", "LessonLine", "LessonPlanner", "Outline", "render_item", "spoken"]
+def rewrite_keeps(original: list[LessonLine], new: list[LessonLine], mistakes: list[str] | None = None) -> str:
+    """Why a rewritten section must NOT replace the original ("" when it may): it lost the planned exercise, or it
+    lost the opening correction of the student's last mistake (its concept named in the first point's lines)."""
+    had_ex = any(ln.exercise is not None for ln in original)
+    if had_ex and not any(ln.exercise is not None for ln in new):
+        return "the rewrite lost the planned exercise"
+    if mistakes:
+        term = mistakes[-1].split("（")[0].strip()
+
+        def first_point_mentions(lines):
+            first = [ln.text for ln in lines if ln.item == 0]
+            return bool(term) and any(term in t for t in first)
+
+        if first_point_mentions(original) and not first_point_mentions(new):
+            return f"the rewrite no longer corrects「{term}」in its first point"
+    return ""
+
+
+__all__ = ["Board", "LessonLine", "LessonPlanner", "Outline", "render_item", "rewrite_keeps", "spoken"]

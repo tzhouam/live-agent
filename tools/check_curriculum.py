@@ -10,6 +10,7 @@ or an estimate. Exit code 1 on a structural error (missing fields, dangling sour
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -117,8 +118,34 @@ def check_craft(d: dict) -> tuple[list[str], list[str]]:
                 errors.append(f"teaching_craft: master {m.get('id')} has no '{key}'")
         grades_ok(m, f"master {m.get('id')}")
         cites(m, f"master {m.get('id')}")
-        if not m.get("honours"):
-            warnings.append(f"teaching_craft: master {m.get('id')} lists no honours (why outstanding?)")
+        if m.get("kind") not in (None, "teacher", "school", "system"):
+            errors.append(f"teaching_craft: master {m.get('id')} has kind {m.get('kind')!r}")
+        if not m.get("honours") and not m.get("evidence"):
+            errors.append(f"teaching_craft: master {m.get('id')} lists neither honours nor evidence (why outstanding?)")
+        elif not m.get("honours"):
+            warnings.append(f"teaching_craft: master {m.get('id')} has no verified honour (evidence only)")
+    # every text that can reach a prompt: no control characters, bounded length, numbers labelled
+    def texts():
+        for st in (d.get("lesson_model") or {}).get("stages") or []:
+            yield from ((f"stage {st.get('id')}", r) for r in st.get("rules") or [])
+        for b in d.get("bands") or []:
+            yield from ((f"band {b.get('id')}", r) for r in (b.get("plan") or []) + (b.get("section") or []))
+            yield from ((f"band {b.get('id')}", r) for r in (b.get("stage_notes") or {}).values())
+        for m in d.get("moves") or []:
+            yield from ((f"move {m.get('id')}", m.get(k) or "") for k in ("name", "what"))
+            yield (f"move {m.get('id')} example", m.get("example") or "")
+        for m in d.get("masters") or []:
+            yield from ((f"master {m.get('id')}", x) for x in [m.get("name") or "", m.get("method") or ""] + (m.get("moves") or []))
+        yield from (("board", r) for r in (d.get("board") or {}).get("rules") or [])
+        yield from ((f"checklist {c.get('id')}", c.get("item") or "") for c in d.get("checklist") or [])
+    for what, t in texts():
+        t = str(t)
+        if re.search(r"[\x00-\x1f\x7f]", t):
+            errors.append(f"teaching_craft: {what} contains a control character")
+        if len(t) > 200:
+            errors.append(f"teaching_craft: {what} text is longer than 200 characters")
+        if re.search(r"\d", t) and not what.endswith("example") and not re.search(r"估计|引用|不超|不留|分钟|\$|[a-zA-Z]", t):
+            warnings.append(f"teaching_craft: {what} has a number without an 估计/引用 label: {t[:40]}")
     cites(d.get("board") or {}, "board", required=bool((d.get("board") or {}).get("rules")))
     for c in d.get("checklist") or []:
         if not c.get("item"):

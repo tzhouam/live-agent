@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from live_agent.curriculum import Curriculum, grade_name, parse_grade
 from live_agent.lesson import LessonPlanner
 from live_agent.llm import ScriptedLLM
@@ -216,20 +218,66 @@ def test_the_planner_carries_objectives_focus_and_the_craft_into_every_prompt(tm
     sec_prompt = planner.llm.calls[1][-1]["content"]
     assert "本课目标：能说出勾股定理；能求斜边；重点：a²+b²=c²；难点：分清直角边和斜边。" in sec_prompt
     assert "结课：回到目标" in sec_prompt and "借鉴孙维刚老师（结构教学）的做法：一题多解；知识结构图" in sec_prompt
-    assert "启发式提问" in sec_prompt and "回到本课目标和重点" in sec_prompt  # the last section closes the lesson
+    assert "启发式设问" in sec_prompt and "回到本课目标和重点" in sec_prompt  # the last section closes the lesson
     v = asyncio.run(planner.check_section(outline, 1, lines, profile=p))
-    assert v == {"pass": False, "scores": {"1": 2, "2": 1}, "problems": ["第一条要点没有例子"], "fix": "加一个例子", "items": 1}
+    # one applicable item (grade 8), scored 2: the pass rule is applied in code, not taken from the judge's "pass"
+    assert v == {"pass": True, "scores": {"1": 2}, "problems": ["第一条要点没有例子"], "fix": "加一个例子", "items": 1}
     check_prompt = planner.llm.calls[2][-1]["content"]
     assert "1. 目标明确，讲解围绕目标" in check_prompt and "[要点1] 你猜猜看，哪条边最长？" in check_prompt
+    assert "重点（学生薄弱" not in check_prompt and "新内容（正常讲解）" in check_prompt  # the section's planned depth
+    check["scores"] = {"1": 0}
+    assert asyncio.run(planner.check_section(outline, 1, lines, profile=p))["pass"] is False  # a 0 fails whatever "pass" says
+    check["scores"] = {"2": 2}  # item 1 unscored: no verdict at all
+    with pytest.raises(ValueError):
+        asyncio.run(planner.check_section(outline, 1, lines, profile=p))
+    check["scores"] = {"1": 2}
     lines2 = asyncio.run(planner.section(outline, 1, ["定理"], profile=p, feedback="第一条要点没有例子"))
-    assert "上一版讲稿的评审问题：第一条要点没有例子" in planner.llm.calls[3][-1]["content"] and len(lines2) == len(lines)
+    assert "上一版讲稿的评审问题：第一条要点没有例子" in planner.llm.calls[-1][-1]["content"] and len(lines2) == len(lines)
     assert asyncio.run(LessonPlanner(ScriptedLLM(llm), name="林老师", bio="").check_section(outline, 1, lines)) == {}
 
 
-def test_a_subject_the_curriculum_does_not_know_falls_back_to_its_own_placement(tmp_path):
+def test_the_curriculum_placement_beats_the_models_subject_label(tmp_path):
+    eng = {"subject": "英语", "grades": [3, 12], "sources": [], "stages": [], "grade_topics": {"9": {"topics": ["Art"], "basis": "textbook"}}}
+    (tmp_path / "english.json").write_text(json.dumps(eng, ensure_ascii=False), encoding="utf-8")
     c = kb_craft(tmp_path)
-    out = {"title": "勾股定理", "subject": "算术", "sections": [{"title": "定理"}], "intro": ["开始。"]}
+    out = {"title": "勾股定理", "subject": "英语", "sections": [{"title": "定理"}], "intro": ["开始。"]}
     planner = LessonPlanner(ScriptedLLM(lambda m: json.dumps(out, ensure_ascii=False)), name="林老师", bio="", curriculum=c)
-    assert asyncio.run(planner.outline("勾股定理")).subject == "数学"  # the lexical match, not the model's word
+    assert asyncio.run(planner.outline("勾股定理")).subject == "数学"  # the curriculum's placement, not the model's label
+    assert planner.last_subject == {"placed": "数学", "model": "英语"}  # the disagreement is visible in the log
+    assert "学科（英语、数学之一，原样写）" in planner.llm.calls[0][-1]["content"]  # the curriculum's own subject names (file order)
+    out["subject"] = "语文"  # a label the curriculum does not know is dropped
+    assert asyncio.run(planner.outline("量子力学")).subject == "" and planner.last_subject["model"] == ""
     out["subject"] = "生物"
     assert asyncio.run(planner.outline("量子力学")).subject == ""  # unknown to the curriculum: no master hints
+    out["subject"] = "数学"
+    assert asyncio.run(planner.outline("量子力学")).subject == "数学"  # no placement: the model's known label
+    assert c.subject_of("勾股", 8) == ""  # a weak lexical hit decides nothing
+
+
+def test_outline_caps_exercises_and_review_sections_get_a_small_board(tmp_path):
+    c = kb_craft(tmp_path)
+    out = {"title": "勾股定理", "subject": "数学", "intro": ["开始。"],
+           "sections": [{"title": f"节{i}", "depth": "review" if i == 0 else "new", "exercise": True} for i in range(5)]}
+    sec = {"board": {"title": "t"}, "points": [{"text": "p", "lines": ["讲一句。"]}], "summary": ["完。"]}
+    llm = ScriptedLLM(lambda m: json.dumps(out if "课程大纲" in m[-1]["content"] else sec, ensure_ascii=False))
+    planner = LessonPlanner(llm, name="林老师", bio="", curriculum=c)
+    outline = asyncio.run(planner.outline("勾股定理"))
+    assert [s["exercise"] for s in outline.sections] == [True, True, True, False, False]
+    asyncio.run(planner.section(outline, 0, []))
+    assert "板书要求：1-6 条要点" in llm.calls[1][-1]["content"]
+    asyncio.run(planner.section(outline, 1, ["节0"]))
+    assert "板书要求：3-6 条要点" in llm.calls[2][-1]["content"]
+
+
+def test_a_rewrite_that_loses_the_exercise_or_the_mistake_correction_is_rejected():
+    from live_agent.lesson import Board, LessonLine, rewrite_keeps
+
+    b = Board("s1", "t", ["a", "b"])
+    ex = object()
+    original = [LessonLine("先纠正勾股定理的误解。", b, 0), LessonLine("再讲。", b, 1), LessonLine("练习。", b, None, exercise=ex)]
+    kept = [LessonLine("勾股定理这里刚才错了。", b, 0), LessonLine("改写。", b, 1), LessonLine("练习。", b, None, exercise=ex)]
+    assert rewrite_keeps(original, kept, ["勾股定理（把直角边当斜边）"]) == ""
+    assert "exercise" in rewrite_keeps(original, kept[:2], [])
+    lost = [LessonLine("直接讲。", b, 0), LessonLine("改写。", b, 1), LessonLine("练习。", b, None, exercise=ex)]
+    assert "勾股定理" in rewrite_keeps(original, lost, ["勾股定理（把直角边当斜边）"])
+    assert rewrite_keeps(lost, lost, ["勾股定理"]) == ""  # the original never had it either: nothing lost

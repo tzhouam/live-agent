@@ -98,6 +98,7 @@ class OrchestratorConfig:
     # before they play and rewritten once with the judge's problems when they fail; the first section is logged
     # only, so the lesson still starts as soon as its outline is ready)
     lesson_self_check: str = "log"
+    lesson_revise_deadline_s: float = 30.0  # revise: judge + rewrite must finish within this, else the original plays
     # student attention (opt-in camera): nudge during a lesson after this many consecutive distracted/absent checks
     attention_nudge_after: int = 2
     attention_cooldown_s: float = 45.0
@@ -1232,7 +1233,9 @@ class Orchestrator:
                       sections=[s["title"] for s in outline.sections],
                       plan=[{"title": s["title"], "concepts": s.get("concepts", []), "depth": s.get("depth"),
                              "exercise": s.get("exercise", False)} for s in outline.sections],
-                      note=outline.note, adaptive=self.student is not None)
+                      note=outline.note, adaptive=self.student is not None, subject=outline.subject,
+                      subject_source=getattr(planner, "last_subject", None), objectives=outline.objectives,
+                      key_point=outline.key_point, difficulty=outline.difficulty, hook=outline.hook_type)
         covered: list[str] = []
         waiting_for = None  # the previous section's exercise: its result shapes the next section
         for i in range(len(outline.sections)):
@@ -1288,21 +1291,37 @@ class Orchestrator:
         return v
 
     async def _revise_section(self, planner, outline, i: int, covered: list[str], lines):
-        """Self-check before the section plays; on a fail, one rewrite with the judge's problems (kept even if the
-        judge would still object: a second opinion is logged, not enforced)."""
-        v = await self._check_section(planner, outline, i, lines)
-        if not v or v["pass"]:
-            return lines
-        feedback = "；".join(v["problems"]) + (f"；改法：{v['fix']}" if v["fix"] else "")
+        """Self-check before the section plays; on a fail, one rewrite with the judge's problems. The rewrite is
+        kept only if it keeps the planned exercise and the opening correction of the last mistake, and only if
+        judge and rewrite finish within ``lesson_revise_deadline_s`` (else the original plays: the check is
+        advisory, the lesson's continuity is not). A second opinion on the rewrite is logged, not enforced."""
+        from live_agent.lesson import rewrite_keeps
+
+        async def judge_and_rewrite():
+            v = await self._check_section(planner, outline, i, lines)
+            if not v or v["pass"]:
+                return lines
+            feedback = "；".join(v["problems"]) + (f"；改法：{v['fix']}" if v["fix"] else "")
+            try:
+                new = await planner.section(outline, i, covered, profile=self.student,
+                                            mistakes=list(self._lesson_mistakes), feedback=feedback)
+            except Exception as e:  # noqa: BLE001 - keep the first version
+                self.log.emit(EventType.LESSON, now(), stage="revise_failed", section=i, error=str(e)[:160])
+                return lines
+            lost = rewrite_keeps(lines, new, list(self._lesson_mistakes))
+            if lost:
+                self.log.emit(EventType.LESSON, now(), stage="revise_rejected", section=i, reason=lost)
+                return lines
+            self.log.emit(EventType.LESSON, now(), stage="revised", section=i, feedback=feedback[:200], lines=len(new))
+            self._spawn(self._check_section(planner, outline, i, new, revised=True), "lesson_check")
+            return new
+
         try:
-            new = await planner.section(outline, i, covered, profile=self.student,
-                                        mistakes=list(self._lesson_mistakes), feedback=feedback)
-        except Exception as e:  # noqa: BLE001 - keep the first version
-            self.log.emit(EventType.LESSON, now(), stage="revise_failed", section=i, error=str(e)[:160])
+            return await asyncio.wait_for(judge_and_rewrite(), timeout=self.cfg.lesson_revise_deadline_s)
+        except asyncio.TimeoutError:
+            self.log.emit(EventType.LESSON, now(), stage="revise_timeout", section=i,
+                          deadline_s=self.cfg.lesson_revise_deadline_s)
             return lines
-        self.log.emit(EventType.LESSON, now(), stage="revised", section=i, feedback=feedback[:200], lines=len(new))
-        self._spawn(self._check_section(planner, outline, i, new, revised=True), "lesson_check")
-        return new
 
     async def _switch_to(self, target: int) -> None:
         """The reply's first chunk is ready: drop what was generated before it and not yet fully shown, stop

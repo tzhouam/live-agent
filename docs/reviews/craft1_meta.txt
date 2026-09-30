@@ -1,0 +1,14 @@
+tag: craft1
+date_utc: 2026-09-30T16:50:54Z
+repo_head: f292fd8c104758c741e19957cb93d24981e5d63a
+repo_dirty_files: 35
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.159.2
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/craft1_review.md - < docs/reviews/craft1_prompt.md
+exit_code: 0
+thread_id: 01a0f331-c7f1-70b3-9e55-4f75e658d036
+rollout: /home/zhoutaichang/.codex/sessions/2026/10/01/rollout-2026-10-01T00-42-01-01a0f331-c7f1-70b3-9e55-4f75e658d036.jsonl
+rollout_models:       5 "model":"gpt-6-sol" 
+inlined_files: live_agent/lesson.py live_agent/curriculum.py tests/test_curriculum.py docs/reviews/craft1_diff.patch docs/reviews/craft1_decision.md docs/reviews/craft1_runs.txt configs/curriculum/teaching_craft.json
+prompt_sha256: 1fe26c9504a55b79b90ebaf88d6edb90005de2305992eb032b112a976d8543c9
