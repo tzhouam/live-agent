@@ -387,3 +387,17 @@ Demo-paced timing from the demo session (2026-09-29, two GPUs, exact path, 26 le
 playback, so this is pacing, not the 4.58 s the unpaced server measures. One 7.3 s gap was a live
 graph capture for a 427-token prompt outside the 300-420 range; the demo and the deploy config now
 use 360-470 (the lesson prompts' p99 is 424 over 1233 prompts).
+
+## PR split (2026-09-30)
+
+PR #8268 was reduced to the model scope (D-042): 32 files, all under the TaoMate-H3 model,
+handler, tests, deploy configs and recipe, plus registration and three one-line hooks (MiniMax-H3
+`attention_cls` / `_transformer_cls`, AR-Diffusion `ar_diffusion_warmup_eager`). Separate PRs carry the
+shared infrastructure the two-GPU config uses: #8314 (fMP4 AAC audio track next to the video), #8315
+(quantization factory builds vLLM online quantization such as `fp8_per_channel` with an ignore list),
+and branch `feat/step-async-output` (step-mode chunk media packed on the worker's background thread;
+its PR waits for a free slot under the repo's five-open-PR cap). Each split branch was tested against
+the upstream tests of its area, which found two breakages the combined branch also had (a test's fake
+muxer did not accept the new audio keyword; a `WorkerProc` built without `__init__` lacked the knob
+attribute); both fixed. The complete combined branch remains at `feat/taomate-h3-realtime-full`
+(372f7d2d2) and is what the demo worktree runs.
