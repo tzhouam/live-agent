@@ -121,8 +121,9 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
         if args.llm_url != "scripted":
             await make_chat_llm(args.llm_url, args.llm_model, api_key=llm_api_key(args)).warmup()  # SDK lazy imports
-        # Heavy generators are started once and shared (reset per session); the mock is per session.
-        if args.generator != "mock":
+        # Heavy generators are started once and shared (reset per session); the mock and the CPU
+        # puppet are per session (trivial start-up, no worker processes).
+        if args.generator not in ("mock", "puppet"):
             gen = make_generator(args)
             try:
                 await gen.start()

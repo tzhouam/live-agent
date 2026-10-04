@@ -140,6 +140,36 @@ def test_websocket_keeps_hello_clock_and_binary_media_contract(tmp_path):
             assert binary_frames >= chunk["n_frames"] + 1
 
 
+def test_puppet_backend_streams_skeleton_chunks(tmp_path):
+    """The CPU skeleton backend runs a real session end to end (synth voice, rule responder)."""
+    args = parse_args(["--generator", "puppet", "--puppet-tts", "synth", "--llm-url", "scripted",
+                       "--vlm-url", "mock", "--asr-url", "",
+                       "--memory-db", "", "--student-store", str(tmp_path / "students"),
+                       "--log-dir", str(tmp_path / "logs"), "--dev-allow-uncalibrated"])
+    with TestClient(build_app(args)) as client:
+        assert client.get("/api/health").json() == {"status": "ok", "generator": "puppet", "protocol_version": 1}
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "hello", "mode": "private", "user_id": "test", "video_codecs": []})
+            ws.send_json({"type": "ping", "t": 5.0})
+            status = chunk = None
+            binary_frames = 0
+            for _ in range(400):  # real-time rig: the first request takes a few seconds
+                msg = ws.receive()
+                if "bytes" in msg:
+                    binary_frames += 1
+                else:
+                    data = json.loads(msg["text"])
+                    if data["type"] == "status":
+                        status = data
+                    elif data["type"] == "chunk":
+                        chunk = data
+                if status and chunk and binary_frames >= chunk["n_frames"] + 1:
+                    break
+            assert status["generator"] == "puppet" and status["responder"] == "rules"
+            assert chunk["codec"] == "jpeg" and chunk["sample_rate"] == 32000 and chunk["duration"] > 0
+            assert binary_frames >= chunk["n_frames"] + 1  # JPEG frames + PCM16 audio per chunk
+
+
 def test_old_server_module_is_a_compatibility_entrypoint():
     from live_agent.server.app import WSTransport, build_app as old_build_app
     from live_agent.backend.transport import WSTransport as transport

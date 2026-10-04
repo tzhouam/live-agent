@@ -26,6 +26,10 @@ def make_generator(args: argparse.Namespace):
         from live_agent.generator.vllm_omni_h3 import VllmOmniH3Generator
 
         return VllmOmniH3Generator.from_args(args)
+    if args.generator == "puppet":  # skeleton-controlled cartoon persona on CPU (D-047)
+        from live_agent.generator.puppet import PuppetGenerator
+
+        return PuppetGenerator.from_args(args)
     raise ValueError(args.generator)
 
 

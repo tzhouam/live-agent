@@ -40,7 +40,8 @@ const ENGLISH = {
   "profile.source.exercise": "Based on recorded practice", "profile.source.exam": "Inferred from exam errors",
   "profile.source.none": "No recorded evidence", "profile.attempts": "Recorded practice: ", "profile.correct": " correct",
   "profile.level.mastered": "Mastered", "profile.level.partial": "Partly understood", "profile.level.weak": "Needs work", "profile.level.unknown": "Not assessed",
-  "badge.generator": "Video", "badge.mock": "Mock video (CPU preview)", "badge.director": "Director",
+  "badge.generator": "Video", "badge.mock": "Mock video (CPU preview)", "badge.puppet": "Puppet video (skeleton rig, CPU)",
+  "badge.director": "Director",
   "badge.openLoop": "A1 open loop", "badge.online": "A2 online director", "badge.responder": "Responder",
   "badge.rules": "Rules (preview)", "badge.judge": "Judging", "badge.mockJudge": "Simulated judging (preview)",
   "badge.none": "None", "badge.speech": "Input", "badge.voice": "Voice enabled", "badge.text": "Text only",
@@ -350,7 +351,8 @@ async function onMessage(ev, socket = ws, attempt = connectionAttempt) {
 function renderBadges(m) {
   const b = $("badges"); b.querySelectorAll(".badge:not(#conn)").forEach(x => x.remove());
   const items = [
-    [tr("badge.generator", "生成"), m.generator === "mock" ? tr("badge.mock", "占位视频（CPU 演示）") : m.generator],
+    [tr("badge.generator", "生成"), m.generator === "mock" ? tr("badge.mock", "占位视频（CPU 演示）")
+      : m.generator === "puppet" ? tr("badge.puppet", "木偶视频（骨架动画，CPU）") : m.generator],
     [tr("badge.director", "导演"), m.director === "open_loop" ? tr("badge.openLoop", "A1 开环") : tr("badge.online", "A2 在线导演")],
     [tr("badge.responder", "应答"), m.responder === "rules" ? tr("badge.rules", "规则（演示）") : m.responder],
     [tr("badge.judge", "质检"), {mock: tr("badge.mockJudge", "模拟判定（演示）"), vlm: "VLM", none: tr("badge.none", "无")}[m.judge] || m.judge],

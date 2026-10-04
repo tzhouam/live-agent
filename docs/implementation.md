@@ -20,6 +20,7 @@ verified. Every number is labelled *measured locally*, *cited*, *estimate* or *t
 | `live_agent/memory_bridge.py` | §12 | Adapter from the memory service to the orchestrator |
 | `live_agent/generator/base.py`, `mock.py` | §13 | Generator contract; CPU mock with the TaoMate-H3 chunk layout (39/34/34/17 frames, then 34/34/34/17) |
 | `live_agent/generator/taomate_h3.py`, `taomate_worker/` | §13 (T1–T3) | TaoMate-H3 streaming adapter: mid-session prompt queue, audio-teacher lookahead, per-chunk output. Status is tracked in `docs/m0_measurements.md` |
+| `live_agent/generator/puppet.py`, `live_agent/tts.py`, `live_agent/generator/textdraw.py` | D-047 | CPU skeleton-puppet backend: a 2D rig (keyframed poses per capability intent, mouth from the played audio envelope) plus external TTS clients (`synth` offline pseudo-speech, `url` OpenAI-compatible remote, `edge`, `piper`); peer of the TaoMate backends, per-session like the mock |
 | `live_agent/backend/app.py`, `resources.py`, `config.py`, `runtime.py`, `transport.py` | — | API-only FastAPI backend: resource APIs, configuration, long-lived generator and session orchestration, WebSocket transport, profiles and private media. `live_agent/server/app.py` retains the old import/CLI path as a compatibility entry point |
 | `frontend/server.mjs`, `frontend/public/` | D-045, D-046 | Separate Node frontend server and student classroom, profile editor and recording browser; Chinese primary/secondary and English university/adult interface configurations, actual school-topic navigation, lesson/exercise controls and browser-local notes. Same-origin HTTP/WebSocket proxy; AudioContext remains the playback clock and presentation acknowledgements retain their existing protocol |
 | `live_agent/asr.py` | — | Qwen3-ASR client (vLLM transcription API) and audio decoding |
@@ -179,6 +180,26 @@ alternative remains partially accepted because it provides planned scripts rathe
 or an audio equivalent.
 No GPU/live-LLM teaching, learning efficacy, adult curriculum or physical device lip sync was qualified
 by these checks.
+
+### Puppet backend (2026-10-04, D-047)
+
+`--generator puppet` is a fourth generator backend at the same level as `mock` / `taomate_h3` /
+`vllm_omni_h3`: a CPU skeleton rig instead of video diffusion. The spoken line is synthesized by an
+external TTS (`live_agent/tts.py`: `synth` deterministic pseudo-speech for tests and offline demos —
+not speech; `url` for a remote OpenAI-compatible model; `edge` for Microsoft Edge neural voices;
+`piper` for local voices), and each request's frames are drawn with PIL: capability intents map to
+keyframed poses, and the mouth follows the audio envelope of the exact samples the viewer hears, so
+lip sync holds by construction. `scripts/run_live.sh puppet` runs it CPU-only (no GPUs, no model
+servers; `PUPPET_TTS`, `TTS_URL`/`TTS_MODEL`/`TTS_API_KEY`, and a hosted `LLM_URL` are optional).
+Action compliance on this path is deterministic (the animation plays or the request is dropped);
+the judge still runs so logs stay comparable across arms, but its verdicts are expected to be
+`complied` whenever the frames were painted — this is the A0-baseline direction of
+`docs/notes/cheap_avatar_backbone.md`, **not** a backbone replacement: TaoMate-H3 remains the A2
+generator. Verified locally (2026-10-04): CPU tests for the generator protocol, audio/mouth
+coupling, intent mapping, TTS clients (offline, with injected fakes), the backend API streaming a
+real puppet session, and the launcher's CPU-only puppet mode. Measured TTS and compositing
+latencies on the real voice paths are still open (the E2 runner accepts `--generator puppet`).
+Teacher-capability coverage: all 17 intents map to a performed animation (test-asserted).
 
 ## Verified so far
 

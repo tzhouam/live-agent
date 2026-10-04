@@ -119,68 +119,11 @@ class MockGenerator(Generator):
         return self._next
 
 
-_CJK_FONTS = ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-              "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
-_LATIN_FONTS = ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",)
-_font_cache: dict[tuple[str, int], object] = {}
-
-
-def _font(kind: str, size: int):
-    key = (kind, size)
-    if key not in _font_cache:
-        from PIL import ImageFont
-
-        font = None
-        for path in (_CJK_FONTS if kind == "cjk" else _LATIN_FONTS):
-            try:
-                font = ImageFont.truetype(path, size)
-                break
-            except OSError:
-                continue
-        _font_cache[key] = font or ImageFont.load_default()
-    return _font_cache[key]
-
-
-def _runs(text: str):
-    """Split into (is_ascii, run) pieces: no installed font covers both Latin and CJK here."""
-    out: list[tuple[bool, str]] = []
-    for ch in text:
-        a = ord(ch) < 0x2E80  # Latin, punctuation, symbols -> DejaVu; CJK blocks start at U+2E80
-        if out and out[-1][0] == a:
-            out[-1] = (a, out[-1][1] + ch)
-        else:
-            out.append((a, ch))
-    return out
-
-
-def _width(text: str, size: int) -> float:
-    return sum(_font("latin" if a else "cjk", size).getlength(r) for a, r in _runs(text))
-
-
-def _draw(d, x: float, y: float, text: str, size: int, fill) -> None:
-    for a, r in _runs(text):
-        f = _font("latin" if a else "cjk", size)
-        d.text((x, y), r, fill=fill, font=f)
-        x += f.getlength(r)
-
-
-def _wrap(text: str, size: int, max_w: float) -> list[str]:
-    lines, cur = [], ""
-    for word in re.split(r"(\s+)", text):
-        pieces = [word] if all(ord(c) < 0x2E80 for c in word) else list(word)  # CJK wraps per character
-        for piece in pieces:
-            if cur and _width(cur + piece, size) > max_w:
-                lines.append(cur.rstrip())
-                cur = piece.lstrip()
-            else:
-                cur += piece
-    return lines + ([cur] if cur.strip() else [])
-
-
 def _placeholder_frame(w: int, h: int, k: int, ci: int, prompt: str) -> np.ndarray:
     """A readable stand-in frame for the CPU demo: what the director asked the video model to show."""
     from PIL import Image, ImageDraw
 
+    from live_agent.generator.textdraw import draw as _draw, wrap as _wrap
     from live_agent.prompt.h3_compiler import extract_dialogue
 
     hue = [(58, 74, 64), (74, 58, 48), (48, 60, 78), (70, 52, 70)][k % 4]

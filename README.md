@@ -22,6 +22,13 @@ implemented flows and validation limits are in [docs/student_frontend.md](docs/s
 # CPU only, no GPUs or model servers: mock video, rule-based responder, simulated judge
 scripts/run_live.sh demo
 
+# CPU only: skeleton-controlled cartoon persona (D-047) + TTS voice, rule-based responder.
+# Voice: edge (Microsoft Edge neural voices, needs the network + `pip install edge-tts`),
+#        synth (offline pseudo-speech, no speech content) or piper (local, PUPPET_MODEL=<.onnx>);
+#        TTS_URL + TTS_MODEL + TTS_API_KEY route to a remote OpenAI-compatible TTS instead.
+# A hosted responder works with LLM_URL + LLM_MODEL (+ LLM_API_KEY_FILE), still no GPUs.
+scripts/run_live.sh puppet
+
 # Real language/speech models on 1 GPU (Qwen3-8B responder, Qwen3-ASR), placeholder video: follows free-form
 # commands; use when the 6 video GPUs are busy
 scripts/run_live.sh hybrid

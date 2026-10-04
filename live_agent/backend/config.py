@@ -14,7 +14,8 @@ STUDENT_SEEDS = ROOT / "configs" / "students"
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Live-agent API and streaming backend")
     p.add_argument("--config", default=str(ROOT / "configs" / "persona_hanfu"))
-    p.add_argument("--generator", default="mock", choices=["mock", "taomate_h3", "vllm_omni_h3"])
+    p.add_argument("--generator", default="mock",
+                   choices=["mock", "taomate_h3", "vllm_omni_h3", "puppet"])
     p.add_argument("--llm-url", default="http://127.0.0.1:8101/v1")
     p.add_argument("--llm-model", default="qwen3-8b")
     p.add_argument("--llm-api-key-env", default="LLM_API_KEY",

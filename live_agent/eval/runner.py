@@ -277,9 +277,10 @@ def mock_factory(config_dir: Path, *, speed: float, llm, p_default: float = 0.7)
 
 
 def live_factory(config_dir: Path, *, backend, llm, vlm, record_dir: Path | None = None,
-                 allow_uncalibrated: bool = False):
+                 allow_uncalibrated: bool = False, judge=None):
     """Real stack: shared generator backend (e.g. TaoMate-H3; one session at a time through
-    SessionView), LLM responder, VLM judge, LLM forward corrector. Real time (speed 1)."""
+    SessionView), LLM responder, VLM judge, LLM forward corrector. Real time (speed 1).
+    ``judge`` overrides the default VLM judge (CPU runs pass a MockJudge)."""
     from live_agent.generator.base import SessionView
     from live_agent.qc.judge import ForwardCorrector, VLMJudge
     from live_agent.sim import Recorder
@@ -298,7 +299,8 @@ def live_factory(config_dir: Path, *, backend, llm, vlm, record_dir: Path | None
         sched = LockScheduler(SchedulerConfig(request_s=backend.info.request_seconds))
         rec = Recorder(record_dir / f"session-{next(counter):03d}.mp4") if record_dir else None
         client = SimClient(speed=1.0, recorder=rec)
-        orch = Orchestrator(gen, director, sched, client, judge=VLMJudge(vlm, k=8, contrast=True), corrector=ForwardCorrector(llm),
+        orch = Orchestrator(gen, director, sched, client, judge=judge or VLMJudge(vlm, k=8, contrast=True),
+                            corrector=ForwardCorrector(llm),
                             log=EventLog(), cfg=OrchestratorConfig(correction_mode=cfg["correction"],
                                                                    qc_enabled=cfg["qc"], seed=seed))
         return orch, client
@@ -318,7 +320,7 @@ def main() -> None:
     p.add_argument("--llm-url", default="http://127.0.0.1:8101/v1")
     p.add_argument("--llm-model", default="qwen3-8b")
     p.add_argument("--p-default", type=float, default=0.7, help="mock judge success probability")
-    p.add_argument("--generator", default="mock", choices=["mock", "taomate_h3"])
+    p.add_argument("--generator", default="mock", choices=["mock", "taomate_h3", "puppet"])
     p.add_argument("--vlm-url", default="http://127.0.0.1:8102/v1")
     p.add_argument("--vlm-model", default="qwen3-vl-8b")
     p.add_argument("--allow-uncalibrated", action="store_true",
@@ -342,13 +344,24 @@ async def _main(args) -> None:
         speed = args.speed
         factory = mock_factory(Path(args.config), speed=speed, llm=llm, p_default=args.p_default)
     else:
-        from live_agent.generator.taomate_h3 import TaoMateH3Generator
-
         speed = 1.0
-        backend = TaoMateH3Generator.from_args(args)
+        if args.generator == "puppet":  # CPU skeleton puppet: real orchestrator timing, no GPU
+            from live_agent.generator.puppet import PuppetGenerator
+
+            backend = PuppetGenerator.from_args(args)
+        else:
+            from live_agent.generator.taomate_h3 import TaoMateH3Generator
+
+            backend = TaoMateH3Generator.from_args(args)
         await backend.start()
-        factory = live_factory(Path(args.config), backend=backend, llm=llm,
-                               vlm=OpenAICompatLLM(args.vlm_url, args.vlm_model),
+        judge, vlm = None, None
+        if args.vlm_url == "mock":  # CPU runs: simulated verdicts (never a measurement)
+            from live_agent.qc.judge import MockJudge
+
+            judge = MockJudge(p_default=args.p_default)
+        else:
+            vlm = OpenAICompatLLM(args.vlm_url, args.vlm_model)
+        factory = live_factory(Path(args.config), backend=backend, llm=llm, vlm=vlm, judge=judge,
                                record_dir=out if args.record else None,
                                allow_uncalibrated=args.allow_uncalibrated)
     mode = "simulation" if backend is None else "generator_path"

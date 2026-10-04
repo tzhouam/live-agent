@@ -150,3 +150,41 @@ def test_launcher_default_teacher_and_explicit_persona(launcher_env, tmp_path, p
     args = json.loads(backend_calls.read_text())
     assert args[args.index("--config") + 1] == f"configs/persona_{expected}"
     assert not gpu_calls.exists()
+
+
+@pytest.mark.parametrize(
+    "overrides, expected",
+    [
+        ({"PUPPET_TTS": "synth"}, ["--puppet-tts", "synth"]),
+        ({"TTS_URL": "http://tts.example/v1", "TTS_MODEL": "voice-a", "TTS_VOICE": "bo"},
+         ["--puppet-tts", "url", "--tts-url", "http://tts.example/v1", "--tts-model", "voice-a",
+          "--puppet-tts-voice", "bo"]),
+    ],
+)
+def test_launcher_puppet_mode_is_cpu_only(launcher_env, tmp_path, overrides, expected):
+    env, gpu_calls = launcher_env
+    env = dict(env, **overrides)
+    backend_calls = tmp_path / "backend_args.json"
+    env["FAKE_BACKEND_CALLS"] = str(backend_calls)
+    python = Path(env["PATH"].split(os.pathsep)[0]) / "python3"
+    python.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "if sys.argv[1:3] == ['-m', 'live_agent.backend.app']:\n"
+        "    with open(os.environ['FAKE_BACKEND_CALLS'], 'w') as output:\n"
+        "        json.dump(sys.argv[3:], output)\n"
+        "    sys.exit(17)\n"
+        "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+    )
+    python.chmod(0o755)
+    result = subprocess.run(
+        [str(ROOT / "scripts/run_live.sh"), "puppet"], env=env, cwd=ROOT,
+        text=True, capture_output=True, timeout=15,
+    )
+    assert result.returncode != 0
+    args = json.loads(backend_calls.read_text())
+    assert args[args.index("--generator") + 1] == "puppet"
+    for flag, value in zip(expected[::2], expected[1::2]):
+        assert args[args.index(flag) + 1] == value
+    assert "--llm-url" in args and args[args.index("--llm-url") + 1] == "scripted"  # CPU-only responder
+    assert not gpu_calls.exists(), "puppet mode must not reserve GPUs"
