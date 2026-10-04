@@ -83,7 +83,7 @@ def test_the_transport_payload_keeps_the_click_on_its_flash_frame():
     import io
     import json
 
-    from live_agent.server.app import WSTransport
+    from live_agent.backend.transport import WSTransport
     from live_agent.types import BlockScript, CanonProfile
 
     class FakeWS:
@@ -127,7 +127,7 @@ def test_the_transport_payload_keeps_the_click_on_its_flash_frame():
 def test_the_page_wire_format_keeps_audio_on_the_frame_timeline():
     """Each chunk's PCM covers its frames to within one sample (the page schedules chunk k at the previous start plus
     n_frames / fps and maps frame i to start + i / fps, so a click stays with its flash)."""
-    from live_agent.server.app import to_pcm16
+    from live_agent.backend.transport import to_pcm16
 
     start = 0
     for ch in _chunks():

@@ -106,6 +106,8 @@ class Utterance:
     t_end: float  # VAD endpoint on the shared timeline
     session_id: str = ""
     scope: str = "private"
+    lesson_context: dict[str, Any] | None = None  # backend-validated catalogue selection, never profile edits
+    request_id: str | None = None  # optional bounded browser correlation id, distinct from the server utterance uid
 
 
 @dataclass

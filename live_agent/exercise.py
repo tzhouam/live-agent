@@ -19,7 +19,7 @@ SKIP = re.compile(r"^(我)?(不会|不知道|跳过|不懂|想不出来?|没思�
 # not a plain answer: a negation, a question or a hedge goes to the LLM ("我不选B", "B是什么意思？", "不会是B吧")
 NOT_PLAIN = re.compile(r"不|没|别|吗|什么|为什么|怎么|哪|[?？]|或者|还是|吧")
 
-EXERCISE_PROMPT = """你是中学老师「{name}」。请给学生出一道关于「{topic}」的练习题。
+EXERCISE_PROMPT = """你是用中文教学的老师「{name}」。请给学生出一道关于「{topic}」的练习题。
 学生档案：
 {profile}
 难度按学生情况定：这个知识点薄弱就出基础题（直接用定义或公式一步能做），基本理解出中等题，已掌握出稍有变化的题；按学生年级出题。
@@ -55,6 +55,7 @@ class Exercise:
     subject: str = ""
     key: str = "x"
     source: str = "lesson"  # "lesson" (pauses the lesson) | "asked" (the student asked for one)
+    request_id: str | None = None  # activity owner assigned by the orchestrator, never by generated JSON
 
     @classmethod
     def from_dict(cls, d: Any, key: str, source: str = "lesson") -> Exercise | None:

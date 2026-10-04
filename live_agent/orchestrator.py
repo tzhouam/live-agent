@@ -20,7 +20,7 @@ import json
 import random
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -483,8 +483,11 @@ class Orchestrator:
     def _drain_director_events(self, t: float) -> None:
         ev = self.director.events
         rev = lambda cid: len(self.director.chains[cid].revisions) if cid in self.director.chains else None  # noqa: E731
-        for concept in self._drain(ev.exercise_timeouts):
-            self.log.emit(EventType.LESSON, t, stage="exercise_timeout", concept=concept)
+        timeout_requests = self._drain(ev.exercise_timeout_requests)
+        for i, concept in enumerate(self._drain(ev.exercise_timeouts)):
+            request_id = timeout_requests[i] if i < len(timeout_requests) else None
+            correlation = {"request_id": request_id} if request_id is not None else {}
+            self.log.emit(EventType.LESSON, t, stage="exercise_timeout", concept=concept, **correlation)
         for chain_id, reason in self._drain(ev.refusals):
             self.log.emit(EventType.REFUSAL, t, chain_id=chain_id, reason=reason, revision=rev(chain_id))
         for chain_id, reason in self._drain(ev.degradations):
@@ -572,7 +575,8 @@ class Orchestrator:
         self.last_presented_end = max(self.last_presented_end or t_end, t_end)
         ch = next((c for c in self.chunks.get(request_index, []) if c.chunk_index == chunk_index), None)
         self.log.emit(EventType.CHUNK_PRESENTED, t_start, request_index=request_index,
-                      chunk_index=chunk_index, t_end=t_end, n_frames=ch.n_frames if ch is not None else None)
+                      chunk_index=chunk_index, t_end=t_end, n_frames=ch.n_frames if ch is not None else None,
+                      chunks_per_request=self.n_chunks, request_complete=len(self.presented[request_index]) == self.n_chunks)
         self._maybe_onset(request_index, chunk_index, t_start)
         if len(self.presented[request_index]) == self.n_chunks and request_index not in self._checked:
             self._checked.add(request_index)
@@ -961,11 +965,11 @@ class Orchestrator:
                       confidence=round(r["confidence"], 2), reason=r["reason"], nudge=nudge)
 
     # ------------------------------------------------------------------ lessons
-    def _start_lesson(self, topic: str) -> None:
+    def _start_lesson(self, topic: str, lesson_context: dict | None = None, request_id: str | None = None) -> None:
         self._stop_lesson()
         self._lesson_mistakes = []
         self.director.lesson_title = topic
-        self._lesson_task = asyncio.create_task(self._guarded(self._lesson_loop(topic), "lesson", fatal=False))
+        self._lesson_task = asyncio.create_task(self._guarded(self._lesson_loop(topic, lesson_context, request_id), "lesson", fatal=False))
         self._aux.add(self._lesson_task)
         self._lesson_task.add_done_callback(lambda t: (self._aux.discard(t), self._maybe_finish()))
 
@@ -1026,17 +1030,18 @@ class Orchestrator:
         self.log.emit(EventType.LESSON, now(), stage="figure_failed", board=fig.board_key, point=fig.point,
                       error=f"labels wrong after {attempts} tries: missing {miss}")
 
-    async def _judge_figures(self, planner, lines) -> None:
+    async def _judge_figures(self, planner, lines, request_id: str | None = None) -> None:
         """Which points of a new section need an explanatory figure (a separate judgement, logged per point);
         runs while the section's first lines already play, so it never delays the lesson."""
+        correlation = {"request_id": request_id} if request_id is not None else {}
         try:
             verdicts = await planner.judge_figures(lines)
         except Exception as e:  # noqa: BLE001 - the section works without figures
-            self.log.emit(EventType.LESSON, now(), stage="figure_judgement_failed", error=str(e)[:160])
+            self.log.emit(EventType.LESSON, now(), stage="figure_judgement_failed", error=str(e)[:160], **correlation)
             return
         board = lines[0].board
         self.log.emit(EventType.LESSON, now(), stage="figure_judgement", board=board.key, title=board.title,
-                      judgements=verdicts)
+                      judgements=verdicts, **correlation)
         self.director.pending_figures += [f for f in board.figures if not f.url]
         self._make_figures()
 
@@ -1048,11 +1053,12 @@ class Orchestrator:
 
         d = self.director
         ex = d.exercise
+        correlation = {"request_id": ex.request_id} if ex.request_id is not None else {}
         profile_epoch = self._profile_epoch
         try:
             r = await grade(d.llm, ex, utt.text)
         except Exception as e:  # noqa: BLE001 - grading failed: the responder answers as usual
-            self.log.emit(EventType.LESSON, now(), stage="grading_failed", error=str(e)[:160])
+            self.log.emit(EventType.LESSON, now(), stage="grading_failed", error=str(e)[:160], **correlation)
             return None
         if not r.get("is_answer"):
             return None
@@ -1075,46 +1081,83 @@ class Orchestrator:
         if not r["correct"] and (ex.source == "lesson" or d.lesson_title):
             self._lesson_mistakes.append(ex.concept + (f"（{r['misconception']}）" if r.get("misconception") else ""))
         self.log.emit(EventType.LESSON, now(), stage="exercise_graded", concept=ex.concept, correct=r["correct"],
-                      skipped=bool(r.get("skipped")), misconception=r.get("misconception"), mastery=change)
+                      skipped=bool(r.get("skipped")), misconception=r.get("misconception"), mastery=change, **correlation)
         self._emit_profile()
         self._exercise_changed()
         return decision
 
-    async def _give_exercise(self, topic: str) -> None:
+    def _catalogue_teaching_context(self, selected: dict | None):
+        if selected is None:
+            return self.student, self.curriculum
+        from live_agent.curriculum import Curriculum
+        from live_agent.student import StudentProfile
+
+        grade = f"{selected['grade']}年级"
+        profile = replace(self.student, grade=grade) if self.student is not None else \
+            StudentProfile(student_id="catalogue", grade=grade)
+        curriculum = Curriculum([s for s in self.curriculum.subjects if s.get("subject") == selected["subject"]],
+                                self.curriculum.pedagogy, self.curriculum.craft)
+        return profile, curriculum
+
+    async def _give_exercise(self, topic: str, lesson_context: dict | None = None, *,
+                             input_epoch: int | None = None, profile_epoch: int | None = None,
+                             plan_version: int | None = None, request_id: str | None = None) -> None:
         """The student asked for an exercise: one on ``topic`` at the level the profile suggests."""
         from live_agent.exercise import make_exercise
 
         d = self.director
+        correlation = {"request_id": request_id} if request_id is not None else {}
         self._exercises += 1
-        profile_epoch, plan = self._profile_epoch, d.plan_version
-        profile = self._student_context() or "无（新学生，没有档案）"
-        if self.curriculum and self.student is not None:
-            from live_agent.curriculum import parse_grade
+        input_epoch = self._input_epoch if input_epoch is None else input_epoch
+        profile_epoch = self._profile_epoch if profile_epoch is None else profile_epoch
+        plan = d.plan_version if plan_version is None else plan_version
 
-            g = parse_grade(self.student.grade)
-            profile += "\n" + self.curriculum.topic_context(topic, g)
-            if self.curriculum.exercise_style(g):
-                profile += f"\n这个年级的练习形式：{self.curriculum.exercise_style(g)}"
+        def superseded() -> bool:
+            return input_epoch != self._input_epoch or profile_epoch != self._profile_epoch or plan != d.plan_version
+
+        def drop_superseded() -> None:
+            self.log.emit(EventType.AUDIT, now(), where="exercise_generation", topic=topic, reason="superseded", **correlation)
+
+        if superseded():
+            drop_superseded()
+            return
+        from live_agent.curriculum import parse_grade
+
+        exercise_profile, curriculum = self._catalogue_teaching_context(lesson_context)
+        g = parse_grade(exercise_profile.grade) if exercise_profile is not None else None
+        profile = exercise_profile.summary() if lesson_context else self._student_context()
+        profile = profile or "无（新学生，没有档案）"
+        if curriculum and exercise_profile is not None:
+            if lesson_context:
+                profile += "\n" + curriculum.teaching_context(g, CHARS_PER_REQUEST, brief=True)
+            profile += "\n" + curriculum.topic_context(topic, g)
+            if curriculum.exercise_style(g):
+                profile += f"\n这个年级的练习形式：{curriculum.exercise_style(g)}"
         try:
-            craft = self.curriculum.practice_craft(g, self.curriculum.subject_of(topic, g)) \
-                if self.curriculum and self.student is not None else ""
+            craft = curriculum.practice_craft(g, curriculum.subject_of(topic, g)) \
+                if curriculum and exercise_profile is not None else ""
             ex = await make_exercise(d.llm, name=d.persona_name, topic=topic, profile=profile,
                                      key=f"q{self._exercises}", craft=craft)
         except Exception as e:  # noqa: BLE001
-            self.log.emit(EventType.LESSON, now(), stage="exercise_failed", topic=topic, error=str(e)[:160])
+            if superseded():
+                drop_superseded()
+                return
+            self.log.emit(EventType.LESSON, now(), stage="exercise_failed", topic=topic, error=str(e)[:160], **correlation)
             d.say_verified("抱歉，这道题我没出好，你可以换个问法。")
             return
-        if d.exercise is not None or profile_epoch != self._profile_epoch or any(
+        if superseded():
+            drop_superseded()
+            return
+        if d.exercise is not None or any(
                 t in ex.question or t in ex.concept for t in d.erased_terms):
             self.log.emit(EventType.LESSON, now(), stage="exercise_dropped", concept=ex.concept,
-                          reason="another exercise is open" if d.exercise is not None else "erasure")
+                          reason="another exercise is open" if d.exercise is not None else "erasure", **correlation)
             return
-        if d.plan_version != plan and d.listening:
-            return  # the student is speaking again: this request is stale
+        ex.request_id = request_id
         lines = ex.lines(22)
         d.pose_exercise(lines[1:])  # the responder already said it will give one
         self.log.emit(EventType.LESSON, now(), stage="exercise", concept=ex.concept, exercise=ex.question,
-                      options=ex.options, kind=ex.kind)
+                      options=ex.options, kind=ex.kind, **correlation)
 
     def _exercise_changed(self) -> None:
         """Tell the page when an exercise opens or closes (its answer buttons); the 2 Hz state snapshot is only
@@ -1122,12 +1165,25 @@ class Orchestrator:
         ex = self.director.exercise
         if ex is self._shown_exercise:
             return
+        previous = self._shown_exercise
         self._shown_exercise = ex
         if ex is None:
-            self.log.emit(EventType.LESSON, now(), stage="exercise_closed")
+            correlation = {"request_id": previous.request_id} if previous is not None and previous.request_id is not None else {}
+            self.log.emit(EventType.LESSON, now(), stage="exercise_closed", **correlation)
         else:
+            correlation = {"request_id": ex.request_id} if ex.request_id is not None else {}
             self.log.emit(EventType.LESSON, now(), stage="exercise_open", concept=ex.concept,
-                          options=[o[:1] for o in ex.options])
+                          kind=ex.kind, question=ex.question, option_texts=list(ex.options),
+                          options=[o[:1] for o in ex.options], **correlation)
+
+    def _remind_existing_exercise(self, request_id: str | None) -> None:
+        """Tell the current input owner which authoritative question must be answered first."""
+        self.director.remind_exercise()
+        ex = self.director.exercise
+        correlation = {"request_id": request_id} if request_id is not None else {}
+        self.log.emit(EventType.LESSON, now(), stage="exercise_existing", concept=ex.concept,
+                      kind=ex.kind, question=ex.question, options=[o[:1] for o in ex.options],
+                      option_texts=list(ex.options), exercise_request_id=ex.request_id, **correlation)
 
     def _erase_learning(self, terms: list[str]) -> int:
         """Erasure of teaching state: the student profile, a pending exercise that mentions a term (with its queued
@@ -1213,18 +1269,20 @@ class Orchestrator:
         self._lesson_task = None
         self.director.stop_lesson()
 
-    async def _lesson_loop(self, topic: str) -> None:
+    async def _lesson_loop(self, topic: str, lesson_context: dict | None = None, request_id: str | None = None) -> None:
         """Outline first (its intro plays with the outline on the board), then one section at a time, each
         generated while the previous one plays (a section is ~1 min of speech, ~10-20 s to generate)."""
         from live_agent.lesson import LessonLine, LessonPlanner
 
         d = self.director
-        planner = LessonPlanner(d.llm, name=d.persona_name, bio=d.persona_bio, curriculum=self.curriculum)
+        correlation = {"request_id": request_id} if request_id is not None else {}
+        lesson_profile, lesson_curriculum = self._catalogue_teaching_context(lesson_context)
+        planner = LessonPlanner(d.llm, name=d.persona_name, bio=d.persona_bio, curriculum=lesson_curriculum)
         context = "；".join(t for r, t in d.dialogue if r == "user")[-300:]
         try:
-            outline = await planner.outline(topic, context, profile=self.student)
+            outline = await planner.outline(topic, context, profile=lesson_profile)
         except Exception as e:  # noqa: BLE001
-            self.log.emit(EventType.LESSON, now(), stage="outline_failed", topic=topic, error=str(e)[:160])
+            self.log.emit(EventType.LESSON, now(), stage="outline_failed", topic=topic, error=str(e)[:160], **correlation)
             d.add_lesson_lines([LessonLine("抱歉，这节课我还没准备好，你可以先问我问题。", None, None)])
             return
         d.lesson_title = outline.title
@@ -1235,7 +1293,7 @@ class Orchestrator:
                              "exercise": s.get("exercise", False)} for s in outline.sections],
                       note=outline.note, adaptive=self.student is not None, subject=outline.subject,
                       subject_source=getattr(planner, "last_subject", None), objectives=outline.objectives,
-                      key_point=outline.key_point, difficulty=outline.difficulty, hook=outline.hook_type)
+                      key_point=outline.key_point, difficulty=outline.difficulty, hook=outline.hook_type, **correlation)
         covered: list[str] = []
         waiting_for = None  # the previous section's exercise: its result shapes the next section
         for i in range(len(outline.sections)):
@@ -1251,76 +1309,83 @@ class Orchestrator:
             lines = None
             for attempt in range(2):
                 try:
-                    lines = await planner.section(outline, i, covered, profile=self.student,
+                    lines = await planner.section(outline, i, covered, profile=lesson_profile,
                                                   mistakes=list(self._lesson_mistakes))
                     break
                 except Exception as e:  # noqa: BLE001 - retry once, then skip the section
                     self.log.emit(EventType.LESSON, now(), stage="section_failed", section=i, attempt=attempt,
-                                  error=str(e)[:160])
+                                  error=str(e)[:160], **correlation)
             if lines and self.cfg.lesson_self_check == "revise" and i > 0:
-                lines = await self._revise_section(planner, outline, i, covered, lines)
+                lines = await self._revise_section(planner, outline, i, covered, lines, profile=lesson_profile, request_id=request_id)
             if lines:
+                for line in lines:
+                    if getattr(line, "exercise", None) is not None:
+                        line.exercise.request_id = request_id
                 if self.cfg.lesson_self_check == "log" or (self.cfg.lesson_self_check == "revise" and i == 0):
-                    self._spawn(self._check_section(planner, outline, i, lines), "lesson_check")
+                    self._spawn(self._check_section(planner, outline, i, lines, profile=lesson_profile, request_id=request_id), "lesson_check")
                 self._lesson_mistakes.clear()  # addressed by this section
                 d.add_lesson_lines(lines)
                 if self.student is not None and outline.sections[i].get("concepts"):
                     self.student.mark_taught(outline.sections[i]["concepts"])
                     self._save_profile()
                 self._make_figures()
-                self._spawn(self._judge_figures(planner, lines), "figure_judgement")
+                self._spawn(self._judge_figures(planner, lines, request_id), "figure_judgement")
                 ex = next((ln.exercise for ln in lines if getattr(ln, "exercise", None) is not None), None)
                 waiting_for = ex if self.student is not None else None  # adapt the next section to the answer
                 self.log.emit(EventType.LESSON, now(), stage="section", section=i,
                               title=outline.sections[i]["title"], lines=len(lines),
                               points=len(lines[0].board.items), depth=outline.sections[i].get("depth"),
-                              exercise=(ex.question if ex is not None else None))
+                              exercise=(ex.question if ex is not None else None), **correlation)
             covered.append(outline.sections[i]["title"])
-        self.log.emit(EventType.LESSON, now(), stage="planned", title=outline.title)
+        self.log.emit(EventType.LESSON, now(), stage="planned", title=outline.title, **correlation)
 
-    async def _check_section(self, planner, outline, i: int, lines, *, revised: bool = False) -> dict:
+    async def _check_section(self, planner, outline, i: int, lines, *, revised: bool = False, profile=None,
+                             request_id: str | None = None) -> dict:
         """Judge a section against the lesson-quality checklist and log the verdict (never raises)."""
+        correlation = {"request_id": request_id} if request_id is not None else {}
         try:
-            v = await planner.check_section(outline, i, lines, profile=self.student)
+            v = await planner.check_section(outline, i, lines, profile=profile if profile is not None else self.student)
         except Exception as e:  # noqa: BLE001 - the check is advisory
-            self.log.emit(EventType.LESSON, now(), stage="check_failed", section=i, error=str(e)[:160])
+            self.log.emit(EventType.LESSON, now(), stage="check_failed", section=i, error=str(e)[:160], **correlation)
             return {}
         if v:
             self.log.emit(EventType.LESSON, now(), stage="check", section=i, title=outline.sections[i]["title"],
-                          passed=v["pass"], scores=v["scores"], problems=v["problems"], fix=v["fix"], revised=revised)
+                          passed=v["pass"], scores=v["scores"], problems=v["problems"], fix=v["fix"], revised=revised, **correlation)
         return v
 
-    async def _revise_section(self, planner, outline, i: int, covered: list[str], lines):
+    async def _revise_section(self, planner, outline, i: int, covered: list[str], lines, *, profile=None,
+                              request_id: str | None = None):
         """Self-check before the section plays; on a fail, one rewrite with the judge's problems. The rewrite is
         kept only if it keeps the planned exercise and the opening correction of the last mistake, and only if
         judge and rewrite finish within ``lesson_revise_deadline_s`` (else the original plays: the check is
         advisory, the lesson's continuity is not). A second opinion on the rewrite is logged, not enforced."""
         from live_agent.lesson import rewrite_keeps
+        correlation = {"request_id": request_id} if request_id is not None else {}
 
         async def judge_and_rewrite():
-            v = await self._check_section(planner, outline, i, lines)
+            v = await self._check_section(planner, outline, i, lines, profile=profile, request_id=request_id)
             if not v or v["pass"]:
                 return lines
             feedback = "；".join(v["problems"]) + (f"；改法：{v['fix']}" if v["fix"] else "")
             try:
-                new = await planner.section(outline, i, covered, profile=self.student,
+                new = await planner.section(outline, i, covered, profile=profile if profile is not None else self.student,
                                             mistakes=list(self._lesson_mistakes), feedback=feedback)
             except Exception as e:  # noqa: BLE001 - keep the first version
-                self.log.emit(EventType.LESSON, now(), stage="revise_failed", section=i, error=str(e)[:160])
+                self.log.emit(EventType.LESSON, now(), stage="revise_failed", section=i, error=str(e)[:160], **correlation)
                 return lines
             lost = rewrite_keeps(lines, new, list(self._lesson_mistakes))
             if lost:
-                self.log.emit(EventType.LESSON, now(), stage="revise_rejected", section=i, reason=lost)
+                self.log.emit(EventType.LESSON, now(), stage="revise_rejected", section=i, reason=lost, **correlation)
                 return lines
-            self.log.emit(EventType.LESSON, now(), stage="revised", section=i, feedback=feedback[:200], lines=len(new))
-            self._spawn(self._check_section(planner, outline, i, new, revised=True), "lesson_check")
+            self.log.emit(EventType.LESSON, now(), stage="revised", section=i, feedback=feedback[:200], lines=len(new), **correlation)
+            self._spawn(self._check_section(planner, outline, i, new, revised=True, profile=profile, request_id=request_id), "lesson_check")
             return new
 
         try:
             return await asyncio.wait_for(judge_and_rewrite(), timeout=self.cfg.lesson_revise_deadline_s)
         except asyncio.TimeoutError:
             self.log.emit(EventType.LESSON, now(), stage="revise_timeout", section=i,
-                          deadline_s=self.cfg.lesson_revise_deadline_s)
+                          deadline_s=self.cfg.lesson_revise_deadline_s, **correlation)
             return lines
 
     async def _switch_to(self, target: int) -> None:
@@ -1368,7 +1433,8 @@ class Orchestrator:
         return self._input_epoch
 
     async def _on_user_utterance(self, utt: Utterance, epoch: int) -> dict[str, Any]:
-        self.log.emit(EventType.UTTERANCE_END, utt.t_end, uid=utt.uid, speaker=utt.speaker, text=utt.text)
+        correlation = {"request_id": utt.request_id} if utt.request_id is not None else {}
+        self.log.emit(EventType.UTTERANCE_END, utt.t_end, uid=utt.uid, speaker=utt.speaker, text=utt.text, **correlation)
         # A forget request must not recall the very fact it asks to erase into the responder.
         memories, memory_ids, recall_id = None, [], None
         if self.memory and not _FORGET.search(utt.text):
@@ -1389,13 +1455,15 @@ class Orchestrator:
             graded = await self._grade_answer(utt, epoch)
             if graded is not None:
                 self._drain_director_events(now())
+                outcome = {**correlation, "applied": not bool(graded.get("superseded"))} if correlation else {}
                 self.log.emit(EventType.UTTERANCE_END, now(), uid=utt.uid, decision=graded,
                               chains={c.chain_id: c.status.value for c in self.director.chains.values()},
-                              recalled=[])
+                              recalled=[], **outcome)
                 return graded
         self.director.student_context = self._student_context()
         decision = await self.director.decide(utt, memories)
         term = (decision or {}).get("forget_term")
+        applied = False
         if epoch != self._input_epoch:
             # The user barged in again while this decision was computed: it must not change the plan
             # (the newer utterance decides). An erasure request is still honoured.
@@ -1405,6 +1473,7 @@ class Orchestrator:
                 decision = {**decision, "steps": []}
             queued_before = {id(x) for x in self.director.queue}
             self.director.apply(utt, decision, memory_ids=memory_ids, recall_id=recall_id)
+            applied = True
             self._decisions += 1  # only applied decisions end the post-interruption wait
             if self.answer_boards and (decision or {}).get("kind") == "content" \
                     and self.director.answer_board_missing(decision):
@@ -1413,18 +1482,24 @@ class Orchestrator:
                     self._spawn(self._answer_board(utt.text, segs), "answer_board")
             self._make_figures()
             kind = (decision or {}).get("kind")
-            if kind == "lesson" and str((decision or {}).get("topic") or "").strip():
-                self._start_lesson(str(decision["topic"]).strip())
+            if kind == "lesson" and self.director.exercise is not None and self.director.exercise.source != "lesson":
+                self._remind_existing_exercise(utt.request_id)  # finish the standalone question before a new lesson
+            elif kind == "lesson" and (utt.lesson_context or str((decision or {}).get("topic") or "").strip()):
+                topic = utt.lesson_context["topic"] if utt.lesson_context else str(decision["topic"]).strip()
+                self._start_lesson(topic, utt.lesson_context, utt.request_id)
             elif kind == "lesson_stop":
                 self._stop_lesson()
             elif kind == "exercise" and self.director.exercise is not None:
-                self.director.remind_exercise()  # one exercise at a time: the open one first
+                self._remind_existing_exercise(utt.request_id)  # one exercise at a time: the open one first
             elif kind == "exercise":
-                self._spawn(self._give_exercise(str((decision or {}).get("topic") or "").strip()
-                                                or self.director.lesson_title or "刚才讲的内容"), "exercise")
+                topic = utt.lesson_context["topic"] if utt.lesson_context else \
+                    str((decision or {}).get("topic") or "").strip() or self.director.lesson_title or "刚才讲的内容"
+                self._spawn(self._give_exercise(topic, utt.lesson_context, input_epoch=epoch,
+                                                profile_epoch=self._profile_epoch, plan_version=self.director.plan_version,
+                                                request_id=utt.request_id), "exercise")
             elif self.director.exercise is not None:
-                self.director.remind_exercise()  # a question while an exercise waits: back to it afterwards
-            if self.student is not None and (decision or {}).get("profile_update"):
+                self._remind_existing_exercise(utt.request_id)  # a question while an exercise waits: back to it afterwards
+            if self.student is not None and not utt.lesson_context and (decision or {}).get("profile_update"):
                 changed = self.student.apply_update(decision["profile_update"])
                 if changed:
                     self._save_profile()
@@ -1440,9 +1515,10 @@ class Orchestrator:
             for x in sorted(self.director.erased_terms, key=len, reverse=True):
                 raw = raw.replace(x, "[已删除]")
             decision = json.loads(raw)
+        outcome = {**correlation, "applied": applied} if correlation else {}
         self.log.emit(EventType.UTTERANCE_END, now(), uid=utt.uid, decision=decision,
                       chains={c.chain_id: c.status.value for c in self.director.chains.values()},
-                      recalled=list(memories or []))
+                      recalled=list(memories or []), **outcome)
         return decision
 
     async def _erase(self, term: str) -> bool:
@@ -1549,7 +1625,10 @@ class Orchestrator:
             "awaiting_decision": d.awaiting_decision, "erasure_gate_open": self._ready.is_set(),
             "queued_segments": len(d.queue), "mode": d.mode.value,
             "exercise": ({"concept": d.exercise.concept, "kind": d.exercise.kind,
-                          "options": [o[:1] for o in d.exercise.options]} if d.exercise is not None else None),
+                          "question": d.exercise.question, "option_texts": list(d.exercise.options),
+                          "options": [o[:1] for o in d.exercise.options],
+                          **({"request_id": d.exercise.request_id} if d.exercise.request_id is not None else {})}
+                         if d.exercise is not None else None),
         }
 
     def open_chains(self) -> list[str]:

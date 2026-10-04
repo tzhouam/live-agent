@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>学习档案 · Live Agent</title>
+<link rel="stylesheet" href="/assets/profile.css">
+</head>
+<body>
+<a class="skip-link" href="#main" data-copy="skip">跳到主要内容</a>
+<aside class="sidebar">
+  <a class="brand" href="/" data-link="classroom"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 19c-3-9 2-15 15-15 0 13-6 18-15 15Zm0 0L15 9"/></svg></span><span><strong data-copy="brand">芽学</strong><small>LIVE AGENT</small></span></a>
+  <div class="nav-label" data-copy="space">我的学习空间</div>
+  <nav aria-label="主导航" id="mainNav">
+    <a data-link="classroom" href="/"><span aria-hidden="true">↗</span><span data-copy="classroom">学习课堂</span></a><a data-link="courses" href="/#courses"><span aria-hidden="true">▦</span><span data-copy="courses">探索课程</span></a>
+    <a class="active" aria-current="page" data-link="profile" href="/profile"><span aria-hidden="true">◎</span><span data-copy="profile">学习档案</span></a>
+    <a data-link="recordings" href="/traces"><span aria-hidden="true">▷</span><span data-copy="recordings">课堂回顾</span></a>
+  </nav>
+  <div class="sidebar-note"><span class="note-orbit" aria-hidden="true">✳</span><strong data-copy="sideTitle">每个人，都有自己的节奏。</strong><p data-copy="sideText">告诉老师你学到了哪里，从这里继续向前。</p></div>
+  <label class="edition-control"><span data-copy="editionLabel">学习阶段</span><select id="editionSelect" aria-label="学习阶段"><option value="primary">小学 · 中文</option><option value="secondary">中学 · 中文</option><option value="university">University & adult · English</option></select></label>
+  <div class="sidebar-footer" data-copy="privateSpace">一对一学习 · 本地演示</div>
+</aside>
+<div class="workspace">
+  <header class="topbar"><div><span data-copy="space">我的学习空间</span><span class="crumb-divider">/</span><strong data-copy="profile">学习档案</strong></div><a id="back" class="back-link" data-link="classroom" href="/" data-copy="back">返回课堂 ↗</a></header>
+  <main id="main" tabindex="-1">
+    <div class="page-heading"><div><span class="eyebrow" data-copy="eyebrow">A LITTLE ABOUT YOU</span><h1 data-copy="title">让学习更适合你。</h1><p data-copy="intro">补充你的年级和学习情况，老师会用更合适的例子、节奏和练习陪你学习。</p></div><span class="edition-pill" id="editionBadge">中学版</span></div>
+    <section class="identity-card" aria-label="当前学习档案" id="identityCard">
+      <div class="avatar" id="avatar" aria-hidden="true">同</div><div class="identity-text"><h2 id="profileName">学习档案</h2><p id="profileGrade">正在载入…</p></div><span class="demo-badge" id="demoBadge" hidden data-copy="demo">演示档案</span>
+      <label class="student-picker"><span data-copy="studentLabel">当前学生</span><select id="student" aria-label="选择学生"></select></label>
+    </section>
+    <p class="privacy-note"><span aria-hidden="true">◇</span><span data-copy="privacy">档案只用于一对一学习。掌握度是未经校准的估计，可以手动修正。</span></p>
+    <div class="profile-layout">
+      <div class="editor-sections">
+        <section class="card" aria-labelledby="h-basic"><div class="section-heading"><div><span class="section-kicker" data-copy="basicKicker">先认识一下</span><h2 id="h-basic" data-copy="basic">基本信息</h2></div><span class="section-icon" aria-hidden="true">◎</span></div>
+          <div class="basic-fields"><label><span data-copy="nameLabel">怎么称呼你</span><input id="name" maxlength="20" autocomplete="given-name" data-placeholder="namePlaceholder" placeholder="如 小明" aria-describedby="basicHelp" data-profile-control disabled></label><label><span data-copy="gradeLabel">年级 / 学习阶段</span><input id="grade" maxlength="12" list="grades" data-placeholder="gradePlaceholder" placeholder="如 初二" aria-describedby="basicHelp" data-profile-control disabled></label><datalist id="grades"></datalist></div>
+          <p class="field-help" id="basicHelp" data-copy="basicHelp">只填写你愿意分享的信息。不确定的内容可以留空。</p><span class="profile-meta" id="meta"></span>
+        </section>
+        <section class="card" aria-labelledby="h-exams"><div class="section-heading"><div><span class="section-kicker" data-copy="examKicker">找到下一步</span><h2 id="h-exams" data-copy="exams">考试与测验</h2></div><button id="addExam" class="secondary-button" data-copy="addExam" data-profile-control disabled>＋ 添加成绩</button></div>
+          <p class="field-help" id="examHelp" data-copy="examHelp">写下最近的测验成绩。需要再练习的知识点，用逗号或顿号分开。</p><div id="exams"><div class="skeleton" aria-hidden="true"></div></div>
+        </section>
+        <section class="card" aria-labelledby="h-concepts"><div class="section-heading"><div><span class="section-kicker" data-copy="conceptKicker">看看学习进展</span><h2 id="h-concepts" data-copy="concepts">知识点掌握度</h2></div><span class="estimate-badge" data-copy="estimate">估计值</span></div>
+          <p class="field-help" id="conceptHelp" data-copy="conceptHelp">这些估计来自测验、练习或手动调整，不是正式评定。滑块可以用方向键调整。</p>
+          <div class="legend"><span class="l-weak" data-copy="weak">值得再练习</span><span class="l-partial" data-copy="partial">正在理解</span><span class="l-mastered" data-copy="mastered">比较熟悉</span><span class="l-unknown" data-copy="unknown">还未评估</span></div><div id="concepts"><div class="skeleton" aria-hidden="true"></div></div>
+          <div class="add-concept"><label><span data-copy="newConcept">添加知识点</span><input id="newName" maxlength="20" data-placeholder="conceptPlaceholder" placeholder="如 因式分解" data-profile-control disabled></label><label><span data-copy="subject">学科</span><input id="newSubject" maxlength="12" data-placeholder="subjectPlaceholder" placeholder="如 数学" data-profile-control disabled></label><label><span data-copy="masteryInput">估计掌握度 %</span><input id="newMastery" type="number" min="0" max="100" data-placeholder="masteryPlaceholder" placeholder="可留空" aria-describedby="newConceptHelp" data-profile-control disabled></label><button id="addConcept" class="secondary-button" data-copy="addConcept" data-profile-control disabled>＋ 添加</button></div>
+          <p class="field-help" id="newConceptHelp" data-copy="newConceptHelp">留空表示还未评估；填写后作为手动估计保存。</p>
+        </section>
+        <section class="card" aria-labelledby="h-hist"><div class="section-heading"><div><span class="section-kicker" data-copy="historyKicker">一步一步的积累</span><h2 id="h-hist" data-copy="history">最近练习</h2></div><span class="section-icon" aria-hidden="true">↗</span></div>
+          <div class="tablewrap"><table class="hist"><thead><tr><th scope="col" data-copy="time">时间</th><th scope="col" data-copy="concept">知识点</th><th scope="col" data-copy="result">结果</th><th scope="col" data-copy="question">题目</th><th scope="col" data-copy="answer">你的回答</th></tr></thead><tbody id="hist"></tbody></table></div>
+          <details class="data-options"><summary data-copy="dataOptions">管理练习记录</summary><label class="checkbox-label"><input type="checkbox" id="clearHist" data-profile-control disabled><span data-copy="clearHistory">保存时清空练习记录、练习次数、错因和练习得出的掌握度</span></label></details>
+        </section>
+      </div>
+      <aside class="profile-guide"><div class="guide-card"><span class="guide-icon" aria-hidden="true">✳</span><h2 data-copy="guideTitle">从你现在的位置出发。</h2><p data-copy="guideText">成绩是线索，不是标签。告诉老师哪里有点难，让下一次练习更有帮助。</p><div class="guide-divider"></div><strong data-copy="guideTipTitle">小提示</strong><p data-copy="guideTip">课堂中的练习结果会自动更新这里。手动改动后，记得点击「保存档案」。</p><a data-link="classroom" href="/" data-copy="guideLink">去课堂试一试 ↗</a></div></aside>
+    </div>
+  </main>
+  <footer class="actions"><div class="save-status"><span class="status-dot" aria-hidden="true"></span><span class="status" id="status" role="status" aria-live="polite">载入中…</span><button id="retryLoad" class="ghost" hidden data-copy="retry">重新载入</button></div><div class="action-buttons"><button class="danger" id="reset" data-copy="reset" data-profile-control disabled>恢复初始档案</button><button class="ghost" id="discard" data-copy="discard" disabled>放弃修改</button><button class="primary" id="save" data-copy="save" disabled>保存档案</button></div></footer>
+</div>
+<script src="/assets/api.js"></script><script src="/assets/profile.js"></script>
+</body>
+</html>

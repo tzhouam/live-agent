@@ -1,0 +1,9 @@
+Source-only re-review; I did not run the reported checks. The supplied code addresses the original late-decision and blank-subject reproductions, but these issues remain:
+
+1. **Major — A late activity event can undo a replacement or clear a newer request.** In [product.js](/data/zhoutaichang/live-agent/frontend/public/assets/product.js), `onLessonEvent` handles `lesson` stages without checking which request produced them. After ordinary text replaces a pending practice request, a delayed `exercise_open` changes the status to “question ready” and displays the old question. If another activity is pending, that old event clears its ticket. The supplied `exercise_open` panel fixture has no `request_id`, and the browser cases cover late decisions rather than late activity events.
+
+2. **Minor — A failed lesson remains pending internally.** `outline_failed` shows `lessonFailed` but leaves `pendingActivity` set. A later successful ordinary text submission therefore changes the displayed failure to “request replaced.” `exercise_failed` clears the ticket; a corresponding outline-failure fixture would expose this difference.
+
+3. **Minor — A selectable padded title loses its catalogue context.** `loadCatalogue()` accepts a title such as `" 真实章节 "` but retains its spaces. After selection, `requestLesson()` and the practice handler trim the input and compare it with the untrimmed title, so `chosen` becomes `null` and no `lesson_context` is sent. The mixed-catalogue fixture covers blanks, not this case.
+
+4. **Minor — Text-only supersession remains unverified across the WebSocket path.** The held-decision backend test explicitly calls `on_speech_start()` before the newer utterance; the browser activity fixtures intercept outgoing text and inject outcomes. Neither check establishes that an actual newer WebSocket text message supersedes a held earlier decision. An interleaved WebSocket text test would settle that path.

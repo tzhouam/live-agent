@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>课堂回顾 · Live Agent</title><link rel="stylesheet" href="/assets/profile.css"><link rel="stylesheet" href="/assets/traces.css"></head>
+<body class="recordings-page">
+<a class="skip-link" href="#main" data-copy="skip">跳到主要内容</a>
+<aside class="sidebar">
+  <a class="brand" href="/" data-link="classroom"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 19c-3-9 2-15 15-15 0 13-6 18-15 15Zm0 0L15 9"/></svg></span><span><strong data-copy="brand">芽学</strong><small>LIVE AGENT</small></span></a>
+  <div class="nav-label" data-copy="space">我的学习空间</div>
+  <nav aria-label="主导航" id="mainNav"><a data-link="classroom" href="/"><span aria-hidden="true">↗</span><span data-copy="classroom">学习课堂</span></a><a data-link="courses" href="/#courses"><span aria-hidden="true">▦</span><span data-copy="courses">探索课程</span></a><a data-link="profile" href="/profile"><span aria-hidden="true">◎</span><span data-copy="profile">学习档案</span></a><a class="active" aria-current="page" data-link="recordings" href="/traces"><span aria-hidden="true">▷</span><span data-copy="recordings">课堂回顾</span></a></nav>
+  <div class="sidebar-note"><span class="note-orbit" aria-hidden="true">✳</span><strong data-copy="sideTitle">学过的，还可以再看看。</strong><p data-copy="sideText">回到当时的讲解，把一个小疑问再想明白。</p></div>
+  <label class="edition-control"><span data-copy="editionLabel">学习阶段</span><select id="editionSelect" aria-label="学习阶段"><option value="primary">小学 · 中文</option><option value="secondary">中学 · 中文</option><option value="university">University & adult · English</option></select></label><div class="sidebar-footer" data-copy="privateSpace">一对一学习 · 本地演示</div>
+</aside>
+<div class="workspace">
+  <header class="topbar"><div><span data-copy="space">我的学习空间</span><span class="crumb-divider">/</span><strong data-copy="recordings">课堂回顾</strong></div><a class="back-link" data-link="classroom" href="/" data-copy="back">返回课堂 ↗</a></header>
+  <main id="main" tabindex="-1">
+    <div class="page-heading"><div><span class="eyebrow" data-copy="eyebrow">LEARNING, WORTH REVISITING</span><h1 data-copy="title">好好学过，慢慢回顾。</h1><p data-copy="intro">重看一段讲解，整理一次思路。这里收好已保存的课堂视频和会话记录。</p></div><span class="edition-pill" id="editionBadge">中学版</span></div>
+    <div class="library-toolbar"><div><h2 data-copy="savedSessions">已保存的课堂</h2><p id="sessionCount" aria-live="polite"></p></div><button id="refresh" class="secondary-button" data-copy="refresh">↻ 刷新列表</button></div>
+    <p class="scope-note" id="scopeNote" data-copy="scope">请先选择学生，或打开公开会话记录。</p>
+    <div class="load-message" id="status" role="status" aria-live="polite">正在寻找已保存的课堂…</div>
+    <div class="recording-grid" id="sessions"></div>
+    <section class="empty-library" id="emptyState" hidden><div class="empty-illustration" aria-hidden="true"><span>▷</span></div><span class="eyebrow" data-copy="emptyEyebrow">YOUR NEXT CHAPTER</span><h2 data-copy="emptyTitle">第一节课，还在前面等你。</h2><p data-copy="emptyText">现在还没有保存的会话。先去课堂聊一个想学的问题；开启录制的会话结束后会出现在这里。</p><a class="button-link" data-link="classroom" href="/" data-copy="emptyLink">开始学习 ↗</a></section>
+    <div class="library-note"><span aria-hidden="true">◇</span><p data-copy="libraryNote">回放是实际保存的课堂内容，不代表知识点已经掌握。可以把看完后仍有疑问的地方，带回下一次课堂。</p></div>
+  </main>
+</div>
+<script src="/assets/api.js"></script><script src="/assets/traces.js"></script>
+</body>
+</html>

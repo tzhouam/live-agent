@@ -1,0 +1,13 @@
+## Findings
+
+1. **Major — WebSocket bytes can be truncated on backend close.** In [frontend/server.mjs](/data/zhoutaichang/live-agent/frontend/server.mjs), `peer.pipe(socket)` is paired with `peer.on('close', () => socket.destroy())`. If the browser reads slowly, `destroy()` can discard writes still queued for it; [Node documents this behavior](https://nodejs.org/download/release/v20.18.1/docs/api/stream.html). The existing test exchanges small frames on loopback. **Smallest check:** pause a WebSocket client, have the mock backend send a large final frame and close, then assert the client receives every byte before EOF.
+
+2. **Major — profile polling can silently erase an unsaved draft.** In [profile.js](/data/zhoutaichang/live-agent/frontend/public/assets/profile.js), the timer checks `dirty` *before* awaiting the profile GET. A user can edit during that request; if a newer version returns, `render()` overwrites the draft and replaces `server.version`. A subsequent save can then succeed without a `409`. **Smallest check:** hold the poll response, edit the name or an exam, return a newer profile, and verify the draft survives or a conflict is shown. The inlined evidence does not establish whether this predates the extraction.
+
+3. **Minor — the declared Node version is too broad.** [package.json](/data/zhoutaichang/live-agent/frontend/package.json) allows Node `>=18`, but the frontend’s signal handler unconditionally calls `server.closeAllConnections()`, which [was added in 18.2.0](https://nodejs.org/download/release/v18.19.1/docs/api/http.html). Shutdown and test teardown fail on 18.0–18.1. **Smallest check:** run the signal test on 18.0 or raise the minimum version to 18.2.
+
+4. **Minor — equivalent port spellings bypass the launcher’s collision check.** [run_live.sh](/data/zhoutaichang/live-agent/scripts/run_live.sh) validates ports numerically but compares their original strings. `PORT=08200 BACKEND_PORT=8200` passes that check, while both processes bind port 8200. **Smallest check:** run the preflight with those values; compare normalized numbers.
+
+By code inspection, all five launcher modes reach the new backend, with `packed` going through `packed_stack.sh`; the frontend starts separately. The compatibility import and repository paths align. HTTP private routes apply `no-store`, and the inspected trace and media routing preserves the intended status and range behavior.
+
+The reported validation exercises the mock stack, not GPU startup or physical lip sync. `ProfileStore.reset` and the model adapter bodies were not inlined, so reset version monotonicity, active-session reset notification, and GPU mode runtime remain unverified.

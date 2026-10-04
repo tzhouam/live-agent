@@ -1,0 +1,17 @@
+tag: student1
+date_utc: 2026-10-02T08:14:11Z
+repo_head: 3f99f19b8ab08ea2d56f2ff9b1eb003f7221dcee
+repo_dirty_files: 46
+vllm_omni_head: 7b4dc7633bde8642f0c05f77bd018751541df404
+codex_cli: codex-cli 0.159.2
+requested_model: gpt-6-sol
+command: codex exec -m gpt-6-sol -s read-only --skip-git-repo-check --json -o docs/reviews/student1_review.md - < docs/reviews/student1_prompt.md
+exit_code: 0
+thread_id: 01a0fba8-209d-7b51-8374-26bafbd16eef
+rollout: /home/zhoutaichang/.codex/sessions/2026/10/02/rollout-2026-10-02T16-08-36-01a0fba8-76cd-7622-ac53-1bab075b7e3f.jsonl
+rollout_models:      10 "model":"gpt-6-sol" 
+inlined_files: docs/student_frontend.md frontend/public/index.html frontend/public/assets/product.js frontend/public/assets/live.js frontend/public/profile.html frontend/public/assets/profile.js frontend/public/traces.html frontend/public/assets/traces.js .cache/student-review/contracts.txt scripts/student_frontend_check.py frontend/tests/live.test.mjs frontend/tests/profile.test.mjs frontend/tests/traces.test.mjs
+prompt_sha256: 9f7dd5bae9d647cf8dd4002d8c610befbac46497e9367c5b5b83a56a1330e701
+verified_thread_rollout: /home/zhoutaichang/.codex/sessions/2026/10/02/rollout-2026-10-02T16-08-14-01a0fba8-209d-7b51-8374-26bafbd16eef.jsonl
+verified_thread_model: gpt-6-sol
+verification_note: exact event-thread rollout checked separately; original wrapper selected a timestamp-adjacent rollout

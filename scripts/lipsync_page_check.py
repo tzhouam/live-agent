@@ -22,8 +22,9 @@ It cannot see the screen or hear the speaker: the physical display and output de
 its beep-and-flash test are for.
 
 Usage: python scripts/lipsync_page_check.py http://127.0.0.1:8200 [--prompt TEXT] [--seconds 9] [--shots out]
-Run it against a CPU mock server (``python -m live_agent.server.app --generator mock --llm-url scripted
---vlm-url mock --asr-url "" --port 8211 --student-store <scratch dir>``) or a live stack (one live session at a time).
+Run it against the frontend of a CPU mock stack (``scripts/run_live.sh demo``) or a live stack
+(one live session at a time). For isolated checks, start ``live_agent.backend.app`` with scratch
+``--student-store`` / ``--log-dir`` paths, and point the frontend's ``BACKEND_URL`` at that backend.
 """
 
 from __future__ import annotations

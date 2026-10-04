@@ -1,0 +1,7 @@
+The inlined source leaves two **major** findings:
+
+1. **Major — A replacement lesson can lose its UI events.** When question B is visible, [product.js](/data/zhoutaichang/live-agent/frontend/public/assets/product.js) returns early for every ordinary text or voice submission, retaining B as `currentActivityId`. The backend permits a new lesson C to replace B when B has `source="lesson"` ([orchestrator.py](/data/zhoutaichang/live-agent/live_agent/orchestrator.py:1485)). C’s outline and later events carry C’s ID, so `acceptsActivity()` rejects them. A null exercise snapshot may clear B’s controls but does not adopt C. Check with B visible, submit a non-answer lesson request C, then deliver C’s outline.
+
+2. **Major — An unrelated error can retire a pending activity.** In [product.js](/data/zhoutaichang/live-agent/frontend/public/assets/product.js), the `error` branch of `onLessonEvent` clears the pending request and its owner based only on the displayed status; it does not match `data.request_id`. If an old or unrelated error arrives while B is waiting, B’s later `exercise_open` is rejected and the activity buttons are enabled despite the server question. A delayed-error fixture with A’s error followed by B’s open event would settle the UI path.
+
+The correlated `exercise_existing` recovery, fresh request IDs and bounded WebSocket test loops otherwise look consistent in the supplied code. I did not run the reported tests.

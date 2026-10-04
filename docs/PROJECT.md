@@ -25,8 +25,16 @@ alone is insufficient for reliable, stateful agent behavior.
 
 - **Phase 1 (complete): research and proposal.** Deliverables are listed below.
 - **Phase 2 (current, owner-authorised 2026-09-26, D-019): implementation** of the A2 system in
-  `live_agent/`, the TaoMate-H3 runtime integration, serving and the evaluation harness. Status and how
-  to run it: `docs/implementation.md`; generator measurements: `docs/m0_measurements.md`. Still no
+  `live_agent/`, the TaoMate-H3 runtime integration, serving and the evaluation harness. The owner-requested
+  frontend/backend split (2026-10-02, D-045) puts browser assets and their independent server in `frontend/`,
+  with the API and streaming backend in `live_agent/backend/`. The owner-requested student frontend
+  (2026-10-02, D-046) adds primary-school and secondary-school interface configurations in Chinese and
+  a university/adult interface configuration in English, using the actual school-topic catalogue,
+  learner profiles and lesson/exercise transport. Teaching remains Chinese/Mandarin; university/adult
+  curriculum coverage and English teaching are not established. Research references, current limits
+  and CPU verification are in `docs/student_frontend.md`; independent GPT-6 Sol source review and repair
+  dispositions are in `docs/codex_reviews.md`, including the final minor guard verified locally after review.
+  Status and how to run it: `docs/implementation.md`; generator measurements: `docs/m0_measurements.md`. Still no
   foundation-model training, paid deployments, public broadcasts, or unrelated repository changes.
 - Initial use cases: **personalized 1:1 interaction** and **livestreaming**.
   We target one focused demo scenario (defined in the proposal), not a

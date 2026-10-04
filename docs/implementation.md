@@ -20,7 +20,8 @@ verified. Every number is labelled *measured locally*, *cited*, *estimate* or *t
 | `live_agent/memory_bridge.py` | §12 | Adapter from the memory service to the orchestrator |
 | `live_agent/generator/base.py`, `mock.py` | §13 | Generator contract; CPU mock with the TaoMate-H3 chunk layout (39/34/34/17 frames, then 34/34/34/17) |
 | `live_agent/generator/taomate_h3.py`, `taomate_worker/` | §13 (T1–T3) | TaoMate-H3 streaming adapter: mid-session prompt queue, audio-teacher lookahead, per-chunk output. Status is tracked in `docs/m0_measurements.md` |
-| `live_agent/server/app.py`, `static/index.html` | — | FastAPI WebSocket server and browser client. JPEG frames + PCM16 per chunk; the client's AudioContext is the master clock; chunk start/end acks are stamped with server time |
+| `live_agent/backend/app.py`, `resources.py`, `config.py`, `runtime.py`, `transport.py` | — | API-only FastAPI backend: resource APIs, configuration, long-lived generator and session orchestration, WebSocket transport, profiles and private media. `live_agent/server/app.py` retains the old import/CLI path as a compatibility entry point |
+| `frontend/server.mjs`, `frontend/public/` | D-045, D-046 | Separate Node frontend server and student classroom, profile editor and recording browser; Chinese primary/secondary and English university/adult interface configurations, actual school-topic navigation, lesson/exercise controls and browser-local notes. Same-origin HTTP/WebSocket proxy; AudioContext remains the playback clock and presentation acknowledgements retain their existing protocol |
 | `live_agent/asr.py` | — | Qwen3-ASR client (vLLM transcription API) and audio decoding |
 | `live_agent/eval/` | §7, §14, §15 | Evaluation: SCHEMA.md log format, scoring (intent chains, D table, outcome rules), stats (Wilson, Clopper–Pearson, KM, clustered bootstrap, Holm, κ, power), 30-task suite, simulated user, runner, report |
 | `configs/persona_hanfu/` | §3 | Persona canon and capability manifest (24 actions covering the E2 suite; `documented` until E1 executes them) |
@@ -38,16 +39,31 @@ verified. Every number is labelled *measured locally*, *cited*, *estimate* or *t
 ## Running
 
 Quick start: `scripts/run_live.sh demo` (CPU only) or `scripts/run_live.sh full` (7 GPUs); see `README.md`.
+The launcher supervises separate frontend and backend processes. Configuration defaults are frontend
+`127.0.0.1:8200` and backend `127.0.0.1:8201`; `PORT`/`HOST` configure the frontend and
+`BACKEND_PORT`/`BACKEND_HOST` configure the backend. Startup readiness is the backend's `/api/health`
+through the frontend proxy. The route and WebSocket boundary is documented in `docs/frontend_backend.md`.
+The launcher defaults to `PERSONA=teacher`; use `PERSONA=hanfu` for the reading host. The CPU demo uses
+the rule responder and cannot generate lessons or exercises. The page reports that limit. Real teaching
+needs the existing configured model stack; student-interface checks did not run that GPU/model path.
 
 ```bash
+# independent CPU backend, no helper models needed
+python3 -m live_agent.backend.app --config configs/persona_teacher \
+    --generator mock --llm-url scripted --vlm-url mock --asr-url "" \
+    --dev-allow-uncalibrated --record --host 127.0.0.1 --port 8201
+# independent frontend (another terminal; Node built-in modules only)
+HOST=127.0.0.1 PORT=8200 BACKEND_URL=http://127.0.0.1:8201 npm --prefix frontend start
+# open http://127.0.0.1:8200, /profile or /traces; tunnel only the frontend port if remote
+
 # helper models (one GPU; always through canhazgpu)
 gpu run --gpus 1 --timeout 6h --note "live-agent helper models" -- scripts/serve_models.sh
 
-# server with the mock generator (no video GPU needed)
-python3 -m live_agent.server.app --generator mock --dev-allow-uncalibrated --port 8200
-# server with TaoMate-H3 (student on 4 GPUs, teacher on 2; started once, shared across sessions)
-gpu run --gpus 6 --timeout 4h --note "live-agent server" -- python3 -m live_agent.server.app --generator taomate_h3
-# open http://127.0.0.1:8200 (tunnel the port if remote)
+# API with real helper models and the mock generator (no video GPU needed)
+python3 -m live_agent.backend.app --generator mock --dev-allow-uncalibrated --port 8201
+# API with TaoMate-H3 (student on 4 GPUs, teacher on 2; started once, shared across sessions)
+gpu run --gpus 6 --timeout 4h --note "live-agent backend" -- python3 -m live_agent.backend.app --generator taomate_h3
+# use the same independently running frontend for either backend
 
 # E2 simulation on the mock stack (real LLM responder, mock judge)
 python3 -m live_agent.eval.runner --conditions A1 A2 --seeds 0 --speed 4 --out .cache/e2
@@ -70,7 +86,99 @@ gpu run --gpus 6 --timeout 4h --note "live-agent E1" -- env PYTHONPATH=. python3
 
 # tests (CPU)
 python3 -m pytest
+npm --prefix frontend test
+python3 scripts/student_frontend_check.py  # isolated browser/CPU services; Playwright + Chromium required
 ```
+
+### Frontend/backend separation (2026-10-02, D-045)
+
+The owner requested a separate frontend and backend. Browser pages and assets now live under `frontend/`;
+Python owns the resource APIs and agent runtime. The frontend proxies `/api/*`, `/ws`, recordings and
+board images with the existing methods, status codes and media bytes. The browser uses its current
+origin, preserving the SSH/HTTPS bridge and avoiding a CORS dependency. The backend's old module path
+delegates to the canonical API-only entry point and no longer serves HTML pages.
+
+This is an engineering boundary change. The single-session generator constraint, single-process profile
+version handling and student allow-list remain. Existing measurements below describe their recorded
+implementation and dates; they do not establish GPU performance or physical lip sync for this refactor.
+Validation (measured locally) is recorded in `docs/reviews/split1_results.md`: Python CPU tests,
+frontend HTTP/WebSocket and profile-race tests, Chromium playback/profile/trace checks, and launcher
+startup, failure and cleanup checks passed. Independent GPT-6 Sol review and repair dispositions are in
+`docs/codex_reviews.md`. These checks do not establish a new model-backed experiment.
+
+### Student classroom (2026-10-02, D-046)
+
+The student page presents a focused classroom with teacher video, readable board, learner selection,
+conversation, lesson topic and practice. Edition configuration is selected with `?edition=primary`,
+`?edition=secondary` or `?edition=university`, or the page selector, and remembered in browser storage. The
+primary and secondary interfaces use Chinese; the university/adult interface uses English. Profile
+and recording links retain edition and learner selection. Technical diagnostics start collapsed.
+
+`GET /api/curriculum/topics` returns the actual stored school chapter titles, grade and provenance;
+the existing summary API remains unchanged. Subject/grade/search filters choose a topic or the student
+can enter a custom goal. Lesson actions enable only after a teaching responder is ready. Selected
+chapters carry backend-validated grade/subject/title context through both lesson and practice requests;
+catalogue titles are trimmed consistently so padded titles retain that context. The planning-local grade
+does not rewrite the learner profile. Custom text behavior remains. The rule-responder demo cannot create lessons or exercises, so the
+interface gates those actions and explains the required teaching model. Exercise snapshots and events
+now carry the actual question and full choice text while preserving the existing letter-option field;
+the reference answer is not exposed. Feedback persists in the page instead of disappearing with the
+pending question.
+
+Every successful browser text submission and voice `speech_start` carries a unique request ID; the
+backend keeps IDs optional for legacy clients. Voice ASR retains the ID and epoch from recording start,
+so intervening newer input can supersede its result. Request IDs identify the activity that produced lesson/exercise status events and exercise state.
+Exercise close, grading and timeout retain the exercise's creating owner; answer utterance events keep the
+answer's own request ID. Correlated decision events report `applied: false` for superseded work. The student
+page filters retired/mismatched activity events and exercise snapshots before updating status or controls.
+Lesson/practice buttons remain blocked while a request is pending, while its generated practice question waits
+to open, and while a question is open. An `exercise_existing` event is correlated to the current input
+and carries the actual question plus its original creator ID, restoring the question without new
+generation or changing ownership. Ordinary text/voice answers retain that creator for grading and close.
+The latest input awaiting activity evidence is separate from the current question's creator. Matching
+nonnull activity events or exercise snapshots can adopt a replacement lesson, preserving existing
+backend replacement of an exercise from the current lesson. Newer input and matching terminal outcomes
+retire the earlier candidate. Decision-property presence or `applied: false` triggers null-safe terminal
+handling, including null/false and missing-decision outcomes for matching candidates and pending requests.
+Panel errors retire only a pending request with the matching ID; unrelated,
+missing or null error IDs do not affect it. Session-wide failure retains the existing connection lifecycle.
+Uncorrelated packets retain their existing shape.
+
+Notes are browser-local and grouped by learner, with a separate test-livestream bucket; notes and the
+current conversation can be exported. Mode changes clear private content including screen-reader
+exercise announcements, synchronize the browser URL, and hide private profile navigation in public mode.
+Existing profile validation and version checks remain; changing learners blanks old visible fields
+and disables writes until the matching response loads. Adult
+or university profile grades are not added: the English editor displays the canonical school grade
+or a disclosed blank for an unsupported grade. Recordings use actual learner/public attribution, with matching scope on the index, files and
+readable logged script/input. Exact declared session ownership takes precedence over multipart filenames.
+Known partial requests are omitted from the planned-script reading aid; remaining teacher scripts may
+include unplayed words and are explicitly not captions or an audio equivalent. Unknown legacy attribution is excluded from scoped views. This local
+service remains a trusted operator environment without learner authentication. The English edition explicitly discloses that the catalogue and
+teaching remain Chinese/Mandarin and that no university/adult course catalogue has been verified.
+
+Design references and exact contracts are in `docs/student_frontend.md`. Validation on 2026-10-02
+(*measured locally*): frontend tests, 97 passed; affected backend/exercise/catalogue/lesson checks,
+95 passed. The full CPU Python suite after student7 repairs passed 423 checks with 1 GPU-only
+skip. Final classroom browser checks passed nine edition/viewport
+cases and thirty-three behavior scenarios with no page errors or horizontal overflow, including local notes/export,
+session, pending/generated activity gating, retirement/existing-question recovery, creator-owned answers,
+replacement-lesson event/snapshot adoption, null/false/missing terminal decisions, matching panel errors, padded catalogue
+context and synthetic exercise/privacy checks; results are in `.cache/student10_frontend_check.json`, with
+empty stderr and previews in `.cache/student10-ui`. The measured pre-repair browser replay of actual backend events is in
+`.cache/manual-lesson-owner/`; subsequent frontend repairs left backend/live code unchanged.
+Initial profile
+and recording browser checks, 12 edition/viewport cases, followed by 12 scoped private/public recording
+cases with readable script text and no JavaScript errors or overflow; the
+existing audiovisual page checks, all 12 passed against an isolated teacher CPU/JPEG environment.
+Synthetic lesson events verify rendering, not real teaching. Formal GPT-6 Sol source review completed
+through student9 and confirmed the named student8 major repairs; it did not execute the measured checks.
+The final minor terminal-decision guard was fixed after review and passed direct browser regressions;
+the reviewed scope and subsequent repair are distinguished in `docs/codex_reviews.md`. The recording-text
+alternative remains partially accepted because it provides planned scripts rather than verified captions
+or an audio equivalent.
+No GPU/live-LLM teaching, learning efficacy, adult curriculum or physical device lip sync was qualified
+by these checks.
 
 ## Verified so far
 

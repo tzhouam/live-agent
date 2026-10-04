@@ -668,3 +668,251 @@ Model gpt-6-sol, verified (`docs/reviews/lipsync4_meta.txt`: rollout models = gp
   - (1) major, absolute lip sync unverified physically: **open** -- the checks verify the page's clock arithmetic (including injected output delays) but not light and sound at the viewer; a camera + microphone recording of the calibration flash and beep on a real screen and headset would settle it. Not possible on this host; the owner can check with the page's beep-and-flash test.
   - (2) minor, the render-error fallback was untested: **fixed** -- the check makes every frame's rendering throw for 4 s and requires chunk_end from the audio clock (3 sent on the mock and on the live stack) and drawing to resume after.
   - (3) minor, the offset check's pass condition did not require its boundary: **fixed** -- it requires a request boundary, the ended chunk kept and re-entered, and with `--expect-boards` (a lesson playing) that the line and board differ across it; the live lesson run passes all of them.
+
+### split1: independent frontend/backend refactor (D-045, 2026-10-02)
+
+Model **gpt-6-sol**, verified (`docs/reviews/split1_meta.txt`: rollout model gpt-6-sol, exit code 0;
+thread `01a0fb85-aca8-7c73-a676-f4a83737c437`). Exact inlined evidence and prompt hash are recorded in
+that metadata file. This engineering review covers the standalone frontend, API-only Python backend,
+HTTP/WebSocket proxy, launcher and local validation; it does not qualify GPU modes or research outcomes.
+
+- **Finding 1, major, queued WebSocket writes on orderly upstream close: accepted and fixed.** The proxy
+  lets normal EOF drain the downstream through `pipe`/`end`; errors and unexpected closure still destroy.
+  A controlled pending-write test fails on the old code and passes on the fix. Ordinary slow TCP runs did
+  not reproduce loss; a separate slow-client test verifies complete delivery of its binary payload.
+- **Finding 2, major, periodic profile refresh overwrites a draft: accepted and fixed.** This race existed
+  before extraction. The response is discarded if editing began, the student/profile changed, or the
+  page became hidden during the fetch. Tests execute the actual script with controlled responses,
+  covering edits, save, reload, student switching and overlapping polls. Removing the guard makes the
+  regressions fail.
+- **Finding 3, minor, Node runtime range: accepted and fixed.** Package and launcher require Node 18.2
+  or newer, matching the shutdown API used.
+- **Finding 4, minor, decimal port spelling: accepted and fixed.** The final launcher normalizes ports
+  before comparison. The review snapshot predated that change; the exact `08200` / `8200` case now exits
+  before starting either service or reserving GPUs.
+
+Repairs submitted for targeted **split2** re-review. Local validation evidence is in
+`docs/reviews/split1_results.md`. The existing generator path and physical display/audio alignment remain
+outside this refactor's verification scope.
+
+### split2: targeted re-review of split1 repairs (D-045, 2026-10-02)
+
+Model **gpt-6-sol**, verified (`docs/reviews/split2_meta.txt`: rollout model gpt-6-sol, exit code 0;
+thread `01a0fb8c-d272-74a3-80a4-4e9808f5e0c9`). The reviewer confirmed all original findings resolved
+by inspection, with no new practical regression in their repairs.
+
+- **New finding, major, Omni model/helper port collision: accepted and fixed.** The planned port list could contain
+  the Omni port and a helper port twice, and the Omni port was not normalized before comparing it with
+  frontend/backend ports. Free-port probes before either service starts cannot detect this planned
+  collision. The launcher now rejects duplicates across its entire normalized listener plan before
+  frontend startup or GPU commands. Fake-command regression checks pass; split3 confirmed the major
+  finding resolved by code inspection.
+
+Reported test outcomes were not independently run by the reviewer. GPU-mode runtime and physical audio/
+video alignment remain unverified by these engineering reviews.
+
+
+### split3: Omni listener-plan re-review (D-045, 2026-10-02)
+
+Model **gpt-6-sol**, verified (`docs/reviews/split3_meta.txt`: rollout model gpt-6-sol, exit code 0;
+thread `01a0fb93-dc82-7841-80f8-d889ff899be3`). The reviewer confirmed the split2 major collision
+finding resolved by inspection and the enabled helper selection consistent with the mode branches.
+
+- **Minor, oversized numeric ports overflow Bash arithmetic: accepted and fixed after review.** Leading
+  zeros are stripped and the decimal length is bounded before any arithmetic, then the normal port
+  range is checked. The exact overflowing Omni input was added to the executable fake-GPU regressions.
+  The final focused launcher suite passes **12 tests (measured locally)**. This small input-validation
+  repair has local regression evidence; it was not submitted for another independent review round.
+
+All findings from these engineering reviews are addressed. Full CPU, frontend, browser and launcher
+validation is recorded in `docs/reviews/split1_results.md` and `split3_results.md`. The reviewers'
+conclusions are code inspection, not independent test execution or GPU/physical playback qualification.
+
+
+### student1: Student product review (D-046, 2026-10-02)
+
+Reviewer **gpt-6-sol**, verified in `docs/reviews/student1_meta.txt` (exit code 0; thread
+`01a0fba8-209d-7b51-8374-26bafbd16eef`; rollout model gpt-6-sol). Exact prompt,
+source bundle, event stream and original findings are preserved under `docs/reviews/student1_*`.
+The source review did not execute tests or qualify real teaching/media. The initial CPU and browser
+passes missed the asynchronous profile and public-view failures; they were not treated as proof.
+
+All findings were accepted for repair or clarification and sent to a material re-review (`student2`):
+
+| Finding | Severity from reviewer | Repair and resolving check |
+|---|---|---|
+| 1: profile switch can write another learner | blocking | Loading/write gates; target loaded profile ID; generation/identity checks on every completion. Deferred-request regressions reproduced wrong-target writes before repair, then passed |
+| 2: private content remains in public view | blocking | Mode transition clears private draft/chat/events/memory/goal/exercise and cached video/board; browser verifies before reconnect |
+| 3: public hello/links carry learner identity | major | Public hello omits student and uses public-preview identity; public links omit student and retain mode; protocol/browser regressions |
+| 4: public mode requires profiles | major | Public readiness depends on service health, with no profile fetch needed for public entry; empty-profile browser regression |
+| 5: classroom profile edit can target stale learner | major | Both live profile/edit action clear while changing/failing; stale GET is invalidated on connect; controlled browser fixture |
+| 6: save response erases newer draft | major | Form controls are locked during write and completion is checked against loaded identity/generation; duplicate-write and stale-response regressions |
+| 7: selected chapter drops subject/grade | major | Exact catalogue subject/grade/title is validated, queued with utterance and applied to lesson-local planner profile/curriculum. Tests inspect actual outline/section prompts and retained learner grade |
+| 8: primary exercise has middle-school role | major | Generic Chinese teacher role with actual profile guidance; exercise-prompt regression. No model-generated question quality claim |
+| 9: preview conflates video and responder | major | Independent notices and capability gating after actual status; mixed-capability browser fixtures |
+| 10: student recordings cross learner scope | major | Attributed session metadata; scoped index/files/text; exclude unknown legacy attribution; private/public API and browser regressions. Existing trusted operator API remains unfiltered; this is not authentication |
+| 11: exercise event lacks announcement | major | Persistent polite status region announces real question and choices without stealing input focus; event rendering fixture |
+| 12: mastery evidence requires hover | major | Visible localized source/attempt text with focusable rows and accessible descriptions; mobile/keyboarding check |
+| 13: recording lacks readable alternative | major, pending media check | In-page logged input and ACKed scripts, with explicit unverified-audio provenance. Tests prove scoped source text and exclude unpresented scripts; no synchronized/verified caption claim |
+| 14: English labels remain Chinese | minor | Localized evidence, capability, state, event and media-control labels; stored curriculum/facts and raw source details retain original language |
+| 15: recordings intro promises notes | minor | Introduction names videos and session records; browser notes remain separate |
+
+Final regression outcomes and the independent repair disposition will be recorded with student2.
+
+### student2: Material re-review of student1 repairs (D-046, 2026-10-02)
+
+Reviewer **gpt-6-sol**, verified in `docs/reviews/student2_meta.txt` (exit code 0; thread
+`01a0fbb7-5055-7502-9919-aa6220b258ce`; rollout model gpt-6-sol). The reviewer found no remaining
+blocking wrong-target write in the supplied source, confirmed several original repairs, and identified
+the following remaining issues. All material repairs were submitted to `student3`.
+
+| Finding | Severity | Disposition and evidence |
+|---|---|---|
+| 1: private exercise live-region persists in public | major | Accepted and fixed: the centralized learning reset clears question, announcement, feedback and indicators; browser asserts the private announcement is empty before and after public reload |
+| 2: URL and public Profile navigation retain old scope | major | Accepted and fixed: current history synchronizes edition/student/public mode, public Profile links hide, reload retains public mode without learner query; actual browser regression |
+| 3: editor shows A while B loads or fails | major | Accepted and fixed: all visible identity, fields, concepts, exams and history clear at load start; controlled pre-fix failures and real delayed/failing GET browser check |
+| 4: standalone practice loses selected grade/subject | major | Accepted and fixed: practice carries validated catalogue context, the orchestrator uses a local selected-grade profile and subject catalogue; actual prompt regression keeps saved Grade 8 while requesting Grade 3 Mathematics |
+| 5: base session versus part filename crosses media attribution | major | Accepted and fixed: shared owner resolver gives an exact declared base trace precedence; collision regression covers both scoped index and direct file access for different learners |
+| 6: recording text is not a reliable spoken replay equivalent | major | Partially accepted: known partial requests are omitted using new chunk-count evidence; all remaining teacher text is labelled planned script, with full-ACK/unknown provenance and possible unplayed words. Verified captions, audio transcription and spoken equivalence remain unimplemented and disclosed; this interface offers a script aid only |
+| 7: English runtime labels are stale/incomplete | minor | Accepted and fixed: pure language refresh updates initial/current media, connection, capability, attention and board-progress labels without replaying profile/status events; focused live-script regression |
+| 8: old learning-step/suggestion indicators persist | minor | Accepted and fixed: learning reset restores default suggestion and chosen-only indicator on mode/session transitions; actual browser regression |
+
+The reviewer did not independently run tests. Model classification still determines whether a lesson
+or exercise starts; CPU fixture success does not qualify teaching quality, English instruction,
+university coverage or physical audiovisual timing. Scoped resources remain filtering for a trusted
+operator service, not account authentication. Final evidence is in `docs/reviews/student1_results.md`.
+
+### student3: Scope, practice and script-aid re-review (D-046, 2026-10-02)
+
+Reviewer **gpt-6-sol**, verified in `docs/reviews/student3_meta.txt` (exit code 0; thread
+`01a0fbc1-d7a4-7a43-807c-3c825cfe4612`; rollout model gpt-6-sol). Source-only review confirmed
+core public clearing, immediate profile-field clearing, exact scoped media ownership and catalogue
+context, and accepted the recording panel as a disclosed limited script aid. New findings were accepted
+and repaired, then sent to targeted `student4` re-review:
+
+| Finding | Severity | Disposition and resolving evidence |
+|---|---|---|
+| 1: profile navigation retains previous learner while GET waits/fails | major | Accepted and fixed: URL and links synchronize at load start after discard-refusal handling; deferred regression and actual failed-GET browser check |
+| 2: old practice generation can reopen after newer decision | major | Accepted and fixed: input/profile epochs and plan version captured before task scheduling, checked before/after generation and exceptions. Five held-generation regressions; supersession produces audit only, never a stale question/failure/spoken error |
+| 3: wrong classification/generation failure leaves waiting status | major | Accepted and fixed: actual decision kind resolves an unstarted request; exercise failure/drop resolves waiting with retry advice. Browser uses explicit wrong-kind/failure events; no typed-action or model classification quality claim |
+| 4: End/error retains question choices or announcement | minor | Accepted and fixed: live exercise snapshot/key and all answer chip text clear; product error clears card/feedback/live-region; controlled lifecycle regressions and browser error fixture |
+| 5: edition switch overwrites session/lesson/note status | minor | Accepted and fixed: retain semantic status keys and re-render current session/lesson/grading plus failed-save warning; browser covers live copy and actual storage failure |
+| 6: active choices and authored diagnostic details stay Chinese | minor | Accepted and fixed: pure current-exercise refresh preserves values/focus/gating; English authored diagnostic templates retain raw source values; focused script regressions |
+| 7: omission copy claims incomplete playback from missing ACK | minor | Accepted and fixed: wording names missing complete chunk acknowledgements and states that they do not prove stopped playback; owned-page/browser checks |
+
+A separate contributor audit also found old chat, board/video, memory/events and goal retained when
+changing learners after End. The profile-selection boundary now clears the old classroom before the
+new GET completes; the actual browser check verifies it. This additional material repair is included
+in `student4`. Measured verification and limitations are in `docs/reviews/student1_results.md`.
+
+### student4: Activity state and supersession re-review (D-046, 2026-10-02)
+
+Reviewer **gpt-6-sol**, verified in `docs/reviews/student4_meta.txt` (exit code 0; thread
+`01a0fbca-ed70-7320-bff6-997df4630cbf`; rollout model gpt-6-sol). Source-only review found no remaining
+concrete defect in profile navigation, learner clearing, stale exercise suppression, active-choice
+translation or recording ACK wording. Four new activity/status findings were accepted and repaired,
+then submitted to targeted `student5`:
+
+| Finding | Severity | Disposition and evidence |
+|---|---|---|
+| 1: successful practice retains waiting status | major | Accepted and fixed: generated/open/closed/graded events set prepared/ready/closed/reviewed copy. Browser asserts successful open and closure plus feedback |
+| 2: custom lesson with empty decision topic never starts | major | Accepted and fixed: matching lesson decision without catalogue context or nonempty topic resolves to not-started. Browser forces the empty-topic decision |
+| 3: unrelated older decision overwrites current request outcome | minor | Accepted and fixed: unique optional bounded request_id is echoed through the actual WS/utterance/panel contract; only a matching decision resolves a pending action. Actual WS round-trip and browser A/B regressions; server uid unchanged |
+| 4: edition change presents an errored connection as ready | minor | Accepted and fixed: product preserves error state/overlay, live language refresh translates error advice without restart/profile replay, and same-language refresh preserves specific advice. Focused and actual browser error checks |
+
+Final combined validation and the `student5` disposition are recorded below and in
+`docs/reviews/student1_results.md`.
+
+### student5: Request matching and activity-outcome re-review (D-046, 2026-10-02)
+
+Reviewer **gpt-6-sol**, verified in `docs/reviews/student5_meta.txt` (exit code 0; thread
+`01a0fbd0-8410-7e93-9891-3f08d41fe263`; rollout model gpt-6-sol). Source-only review supported the
+four direct student4 reproductions but found the following two remaining paths. Both were accepted,
+repaired and submitted to targeted `student6`:
+
+| Finding | Severity | Disposition and evidence |
+|---|---|---|
+| 1: interrupted decision retains same kind without starting activity | major | Accepted and fixed: correlated decision events report applied:false on supersession. The pending activity remains tracked while preparation runs; successful newer text submission cancels it, late old decisions cannot restore waiting. Actual held decision/grading tests and browser causal fixtures |
+| 2: blank catalogue subject is treated as sent context | minor | Accepted and fixed: require nonblank subject/title before exposing cards; a mixed invalid/valid API fixture proves only the valid chapter remains selectable |
+
+The same local submission boundary also covers a successful optional voice start; failed or denied
+voice/text submissions emit no cancellation event. This small extension has focused browser-script
+regressions and preserves the existing speech_start packet. No real ASR/model audio was qualified.
+
+### student6: Activity ownership and catalogue-boundary review (D-046, 2026-10-02)
+
+Reviewer **gpt-6-sol**, verified in `docs/reviews/student6_meta.txt` (exit code 0; thread
+`01a0fbd5-7bfe-7320-9e4b-a627ae6a5c83`; rollout model gpt-6-sol). Source-only review confirmed the
+direct late-decision and blank-subject repairs but found the following remaining paths. All were
+accepted, repaired and submitted to targeted `student7`:
+
+| Finding | Severity | Disposition and evidence |
+|---|---|---|
+| 1: late activity event can restore a superseded question or clear a newer request | major | Accepted and fixed: creator request IDs now follow lesson/exercise events and exercise snapshots. Product and live answer-chip rendering reject another activity's events/state; ordinary answers preserve the open exercise's owner. Backend ownership tests and browser delayed-question/outline fixtures cover replacement, current answers and language refresh |
+| 2: outline failure retains its pending request | minor | Accepted and fixed: outline failure clears the pending request and current owner; a later ordinary submission preserves the failure outcome. Browser regression covers both events |
+| 3: padded catalogue title loses subject/grade context | minor | Accepted and fixed: normalize stored title for display and compare normalized selection before sending the canonical context. Browser padded-title fixture verifies both lesson and practice packets |
+| 4: actual text-only WebSocket supersession lacks verification | minor | Accepted and verified: an actual WebSocket test holds decision B, submits text C and waits for a ping/pong receive-loop boundary before releasing B. B reports applied:false, C reports applied:true, and B starts no activity |
+
+Measured CPU results and the remaining qualification limits are recorded in
+`docs/reviews/student1_results.md`. The independent reviewer did not run those checks.
+
+### student7: Delayed-open and legacy ownership review (D-046, 2026-10-02)
+
+Reviewer **gpt-6-sol**, verified in `docs/reviews/student7_meta.txt` (exit code 0; thread
+`01a0fbe0-270e-7390-a920-f3866997ae36`; rollout model gpt-6-sol). Source-only review found no blocking
+issue and supported the padded-title and outline-failure repairs. Three remaining findings were
+accepted and repaired, then submitted to targeted `student8`:
+
+| Finding | Severity | Disposition and evidence |
+|---|---|---|
+| 1: a new practice request can hide an already-open server question whose event is delayed | major | Accepted and fixed: activity buttons and the send helper stay locked through pending/generated preparation. A correlated exercise_existing response recovers the authoritative question and its original creator when manual input races its open event; the backend does not generate another question. Known/legacy ownership and current-lesson replacement tests plus held-open/recovery browser fixtures cover the paths |
+| 2: newer ordinary input cannot retire an earlier unowned activity | major | Accepted and fixed: all successful text and voice submissions receive distinct bounded IDs. Voice carries its recording-start ID and input epoch through ASR. Modern input retires unowned events; fresh-scope and explicit existing-legacy-question compatibility remain. Ordinary answer IDs preserve the shown exercise's creator for grading/closure. Failed sends and denied permission create no submission |
+| 3: pong-wait consumes a decision before the outcome loop and can hang | minor | Accepted and fixed: both loops share outcome collection; each receive uses a bounded cancellable wait under a total deadline |
+
+Measured verification after these repairs includes 97 frontend tests and 95 affected Python tests,
+both passing. Full-suite and extended browser results are recorded in `docs/reviews/student1_results.md`.
+The independent reviewer did not run those checks. No model-backed teaching or physical voice/media
+qualification is implied.
+
+### student8: Replacement-lesson and correlated-error review (D-046, 2026-10-02)
+
+Reviewer **gpt-6-sol**, verified in `docs/reviews/student8_meta.txt` (exit code 0; thread
+`01a0fbef-2a5b-7753-9b98-3af87d9593fc`; rollout model gpt-6-sol). Source-only review supported
+existing-question recovery, distinct request IDs and the bounded WebSocket collector, but found two
+direct regressions. Both were accepted and repaired for targeted `student9`:
+
+| Finding | Severity | Disposition and evidence |
+|---|---|---|
+| 1: ordinary text replacing a lesson-source question loses the new lesson's events | major | Accepted and reproduced using actual backend decisions/planning with controlled model output and real browser event replay. The product now remembers the latest submission separately from the shown question's owner; only matching actual activity events or a nonnull exercise snapshot adopt the replacement owner. Answers keep creator-owned feedback; newer input and terminal outcomes retire candidates |
+| 2: an unrelated error retires a pending request | major | Accepted and fixed: a panel error can terminate the pending activity only when its request ID matches. Session transport errors retain the existing connection lifecycle. Browser fixtures cover delayed old/unowned errors, the valid pending question and a matching terminal error |
+
+The measured pre-repair replacement reproduction is in `.cache/manual-lesson-owner/`: the backend
+started the new lesson while the browser discarded its outline and question. The repair keeps backend
+lesson-replacement semantics and media scheduling intact. Final browser outcomes and practical limits
+are recorded in `docs/reviews/student1_results.md`; the independent reviewer did not run those checks.
+
+### student9: Final targeted source review (D-046, 2026-10-02)
+
+Reviewer **gpt-6-sol**, verified in `docs/reviews/student9_meta.txt` (exit code 0; thread
+`01a0fbfb-9da2-75e2-a185-323a91bfc258`; exact thread rollout model gpt-6-sol). Source-only review
+confirmed both student8 major fixes: actual replacement activity transfers ownership while answer
+grading/closure stays with its creator, and old/missing/null panel errors cannot retire a pending
+request with another ID. The reviewer did not run the measured checks.
+
+| Finding | Severity | Disposition and evidence |
+|---|---|---|
+| 1: a falsy terminal decision leaves its candidate eligible for later adoption | minor | Accepted and repaired after this review: decision-property presence or applied:false triggers terminal handling, with null-safe decision access. Direct browser cases passed for null/false/missing outcomes: B's question is preserved, C's late outline/open/snapshot is rejected, and pending lesson/practice buttons unlock with truthful status. This small guard extension does not change the reviewed replacement/error contracts |
+
+The independent review is complete; the final minor guard extension passed local regression checks
+and is identified separately from the reviewed source. The final browser run passed 9 layout cases and
+33 behavior rows (measured locally; `.cache/student10_frontend_check.json`). Final measured outcomes and
+limitations are in `docs/reviews/student1_results.md`. Student9 confirmed the named major repairs;
+the partially accepted recording alternative still offers planned script text rather than verified
+captions or an audio equivalent. Teaching/model
+quality, GPU performance, university coverage, efficacy and physical audiovisual timing remain outside
+this local engineering qualification.
+
+Exact event-thread/model verification for every student review is recorded in
+`docs/reviews/student_models_verified.json`. Where the wrapper originally selected a timestamp-adjacent
+rollout, the original metadata was retained and augmented with the separately checked exact thread
+rollout/model. All exact reviewer threads report gpt-6-sol.

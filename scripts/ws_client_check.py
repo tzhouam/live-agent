@@ -1,10 +1,10 @@
-"""Headless WebSocket client that behaves like static/index.html (for server-path checks).
+"""Headless WebSocket client that behaves like frontend/public/index.html (for backend-path checks).
 
 Plays chunks back to back on its own clock (time.monotonic, reported in ms as ``tp`` like the
 browser's performance clock), sends chunk_start / chunk_end acks, answers pongs with clock
 samples, and sends scripted text turns. Prints a JSON summary (chunks, gaps, RTT, events).
 
-    python3 scripts/ws_client_check.py --url ws://127.0.0.1:8200/ws --seconds 45 \
+    python3 scripts/ws_client_check.py --url ws://127.0.0.1:8201/ws --seconds 45 \
         --say 5:请喝口茶吧 --say 25:跟我挥挥手吧
 """
 
@@ -110,7 +110,7 @@ async def main(args) -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--url", default="ws://127.0.0.1:8200/ws")
+    p.add_argument("--url", default="ws://127.0.0.1:8201/ws")
     p.add_argument("--seconds", type=float, default=45)
     p.add_argument("--say", action="append", default=[])
     p.add_argument("--h264", action="store_true", help="announce H.264 support (as a WebCodecs browser does)")

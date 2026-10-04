@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("av")
 
-from live_agent.server.app import WSTransport, encode_h264, encode_jpeg  # noqa: E402
+from live_agent.backend.transport import WSTransport, encode_h264, encode_jpeg  # noqa: E402
 from live_agent.types import Chunk  # noqa: E402
 
 

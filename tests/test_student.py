@@ -405,7 +405,7 @@ def _client(tmp_path, students="demo,e2e"):
 
     from fastapi.testclient import TestClient
 
-    from live_agent.server.app import build_app
+    from live_agent.backend.app import build_app
     args = SimpleNamespace(config=str(tt.CFG), student="demo", students=students, student_store=str(tmp_path),
                            record=False, generator="mock", log_dir=str(tmp_path / "logs"))
     return TestClient(build_app(args))
@@ -413,7 +413,7 @@ def _client(tmp_path, students="demo,e2e"):
 
 def test_the_profile_page_edits_a_profile_with_version_checks(tmp_path):
     c = _client(tmp_path)
-    assert c.get("/profile").status_code == 200
+    assert c.get("/profile").status_code == 404  # browser pages are owned by the standalone frontend
     assert [s["id"] for s in c.get("/api/students").json()["students"]] == ["demo", "e2e"]
     assert c.get("/api/students/someone-else").status_code == 404  # not on the allow-list
     p = c.get("/api/students/demo").json()

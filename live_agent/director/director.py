@@ -75,6 +75,7 @@ class DirectorEvents:
 
     refusals: list[tuple[str, str]] = field(default_factory=list)  # (chain_id, reason)
     exercise_timeouts: list[str] = field(default_factory=list)  # exercises answered by the teacher after silence
+    exercise_timeout_requests: list[str | None] = field(default_factory=list)  # owner captured before closing
     degradations: list[tuple[str, str]] = field(default_factory=list)
     completion_claims: list[tuple[str, int, int | None]] = field(default_factory=list)  # (chain, request, step)
     capacity_skips: list[tuple[str, int]] = field(default_factory=list)  # (chain_id, revision)
@@ -762,6 +763,7 @@ class Director:
         for line in lines:
             self.queue.append(Segment(chain_id=None, plan_version=self.plan_version, line=line))
         self.events.exercise_timeouts.append(ex.concept)
+        self.events.exercise_timeout_requests.append(ex.request_id)
         self.close_exercise(before)
         return self.queue.popleft() if self.queue else None
 
