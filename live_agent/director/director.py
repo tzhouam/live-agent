@@ -25,6 +25,9 @@ the generator, canon compiler, LLM, memory and presentation path.
 from __future__ import annotations
 
 import json
+import html
+import asyncio
+import time
 
 import enum
 import re
@@ -39,6 +42,35 @@ from live_agent.types import (BlockScript, ChainStatus, CheckQuestion, IntentCha
                               Utterance, new_id)
 
 CHARS_PER_REQUEST = 22  # ~4.5 Chinese characters/s x 5 s [estimate; calibrate in E1]
+
+
+def _mentions(value: Any, term: str) -> bool:
+    """Inspect raw or rendered semantic text without matching opaque image URLs/keys."""
+    if isinstance(value, str):
+        return term in value or term in html.unescape(value)
+    if isinstance(value, dict):
+        return any(_mentions(v, term) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_mentions(v, term) for v in value)
+    return False
+
+
+def _figure_mentions(figure: Any, term: str) -> bool:
+    fields = ("prompt", "plot", "caption", "why")
+    return any(_mentions(figure.get(name) if isinstance(figure, dict) else getattr(figure, name, None), term)
+               for name in fields)
+
+
+def board_mentions(board: Any, term: str) -> bool:
+    """Whether a raw Board or a locked board-view snapshot contains erased content."""
+    if board is None:
+        return False
+    if isinstance(board, dict):
+        return (_mentions((board.get("title"), board.get("items")), term)
+                or _figure_mentions(board.get("figure"), term)
+                or any(_figure_mentions(f, term) for f in board.get("figures") or []))
+    return (_mentions((getattr(board, "title", None), getattr(board, "items", None)), term)
+            or any(_figure_mentions(f, term) for f in getattr(board, "figures", [])))
 
 
 class DirectorMode(str, enum.Enum):
@@ -122,7 +154,8 @@ class Director:
     def __init__(self, llm: ChatLLM, manifest: CapabilityManifest, ledger: StateLedger, *,
                  persona_name: str, persona_bio: str, mode: DirectorMode = DirectorMode.CLOSED_LOOP,
                  idle_intent: str = "idle_read", listen_intent: str = "listen", speak_intent: str | None = None,
-                 responder_style: str = "", responder_examples: list[str] | None = None):
+                 responder_style: str = "", responder_examples: list[str] | None = None,
+                 teaching_review: bool = False):
         self.llm = llm
         self.manifest = manifest
         self.ledger = ledger
@@ -135,6 +168,8 @@ class Director:
         # persona-specific responder guidance (teaching style, ...) and few-shot examples in its own intents
         self.responder_style = responder_style
         self.responder_examples = responder_examples
+        self.teaching_review = teaching_review
+        self.teaching_review_deadline_s = 60.0  # configuration target: bounded review and at most two repairs
         # recent exchanges (user text, applied decision) for follow-ups such as "I did not understand";
         # erased terms are purged from it like from every other prompt-reaching state
         self.dialogue: deque[tuple[str, str]] = deque(maxlen=8)
@@ -164,6 +199,7 @@ class Director:
         self.listening = False
         self.memory_notes: list[tuple[str, str]] = []  # (utterance id, note)
         self.erased_terms: set[str] = set()
+        self.erased_board_keys: set[str] = set()  # snapshots may omit a sensitive image prompt/plot
         self.interrupted: dict[str, Segment] = {}  # open chain -> its cut (dropped, unverified) segment
         self.awaiting_decision = False
         self.deferred: list[Segment] = []
@@ -196,7 +232,11 @@ class Director:
         self.awaiting_decision = False
         if utt.text and d:  # this decision is applied: it becomes context for the next question
             self.dialogue.append(("user", utt.text))
-            self.dialogue.append(("assistant", json.dumps(d, ensure_ascii=False)))
+            # Editorial scores and diagnostic timings belong in the audit, not
+            # every later responder/reviewer prompt. Keep the actual answer and
+            # control fields so follow-ups still have their full context.
+            context = {key: value for key, value in d.items() if not key.startswith("_")}
+            self.dialogue.append(("assistant", json.dumps(context, ensure_ascii=False)))
         deferred, self.deferred = self.deferred, []
         if (self.lesson_backlog or self.lesson_title) and d.get("kind") not in ("lesson", "lesson_stop"):
             self._lesson_resume = True  # a reply during a lesson: the lesson resumes after it, and says so
@@ -243,7 +283,7 @@ class Director:
         from live_agent.lesson import MAX_ITEMS, Board, set_figure
 
         self._answer_boards += 1
-        b = Board(key=f"a{self._answer_boards}", title=str(board.get("title") or "")[:24],
+        b = Board(key=new_id("answer"), title=str(board.get("title") or "")[:24],
                   items=[str(x)[:60] for x in board["items"] if str(x).strip()][:MAX_ITEMS])
         if not b.items:
             return None
@@ -254,10 +294,20 @@ class Director:
 
     async def decide(self, utt: Utterance, memories: list[str] | None = None) -> dict:
         """Responder LLM call only; no state is changed."""
+        started = time.perf_counter()
+        timings = []  # local to this input: concurrent/stale decisions cannot overwrite one another
+        async def generate(messages, stage, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return await self.llm.chat(messages, **kwargs)
+            finally:
+                timings.append({"stage": stage, "duration_s": time.perf_counter() - t0})
         open_chains = [{"chain_id": c.chain_id, "intent": c.final_intent} for c in self._open_chains()]
         if self.closed:
             intents = ", ".join(sorted({c.intent for c in self.manifest.caps.values()
-                                        if c.usable(self.manifest.min_status, self.manifest.min_p)})) or "（暂无）"
+                                        if c.usable(self.manifest.min_status, self.manifest.min_p)
+                                        and (self.manifest.supported_intents is None
+                                             or c.intent in self.manifest.supported_intents)})) or "（暂无）"
             sys = RESPONDER_SYSTEM.format(
                 name=self.persona_name, bio=self.persona_bio, intents=intents, chars=CHARS_PER_REQUEST,
                 open_chains=open_chains or "无", state=self.ledger.continuity_sentence(),
@@ -272,23 +322,107 @@ class Director:
             sys += "\n学生档案：\n" + self.student_context
         history = [{"role": role, "content": text} for role, text in self.dialogue]
         msgs = [{"role": "system", "content": sys}, *history, {"role": "user", "content": utt.text}]
-        raw = await self.llm.chat(msgs, json_mode=True)
+        raw = await generate(msgs, "draft", json_mode=True, max_tokens=1400 if self.teaching_review else 512)
+        from live_agent.teaching_quality import parse_teaching_json
+        parse_reply = parse_teaching_json if self.teaching_review else parse_json
         try:
-            d = parse_json(raw)
-        except ValueError:
-            d = {"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "抱歉，我没听清，可以再说一次吗？"}]}
+            d = parse_reply(raw)
+        except ValueError as exc:
+            if self.teaching_review:
+                # Provider JSON can be truncated or contain unescaped TeX. Retry generation,
+                # rather than telling a student their clearly typed question was not heard.
+                try:
+                    raw = await generate(msgs + [{"role": "user", "content":
+                        "刚才的输出不是完整合法的JSON，请重新回答原问题。只输出完整JSON；"
+                        "公式里的反斜杠必须按JSON规则转义，不要截断字符串。"}],
+                        "draft_retry", max_tokens=1800, json_mode=True)
+                    d = parse_reply(raw)
+                except ValueError:
+                    d = {"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "这段讲解没有生成完整，我先核对一下。"}],
+                         "_teaching_quality": {"status": "generation_failed", "reviews": []},
+                         "_teaching_review_error": str(exc)[:160]}
+            else:
+                d = {"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "抱歉，我没听清，可以再说一次吗？"}]}
         if self.closed and self._copies_example(d):
             # answers are composed for this question, not replayed: a reply that copies an example's sentences or
             # board (seen live when a question matched an example) is asked for again once
-            raw = await self.llm.chat(msgs + [{"role": "assistant", "content": raw}, {"role": "user", "content":
+            raw = await generate(msgs + [{"role": "assistant", "content": raw}, {"role": "user", "content":
                 "你照抄了系统提示里示例的句子或板书。请针对我的问题重新组织讲解和板书，意思可以相同，但要用你自己的话，只输出 JSON。"}],
-                json_mode=True)
+                "example_retry", json_mode=True)
             try:
-                d = parse_json(raw)
+                d = parse_reply(raw)
                 d["regenerated"] = "copied_example"
             except ValueError:
                 pass
-        return d
+        if self.teaching_review and self.closed and d.get("kind") == "content":
+            d = await self._review_answer(d, msgs, utt.text, timings=timings)
+        return {**d, "_decision_timing": {"label": "measured locally", "total_s": time.perf_counter() - started,
+                                          "stages": timings}}
+
+    async def _review_answer(self, draft: dict, messages: list[dict], question: str, *, timings=None) -> dict:
+        from live_agent.teaching_quality import review_material, revision_feedback, fraction_illustration, parse_teaching_json
+        illustration = fraction_illustration(question)
+        def ground_figure(answer):
+            if illustration and isinstance(answer.get("board"), dict):
+                return {**answer, "board": {**answer["board"], "figure": illustration}}
+            return answer
+        draft = ground_figure(draft)
+        reviews = []
+        async def review(answer):
+            material = {"steps": answer.get("steps"), "board": answer.get("board")}
+            t0 = time.perf_counter()
+            try:
+                verdict = await review_material(self.llm, material, goal=question,
+                                                profile=self.student_context,
+                                                context=json.dumps(list(self.dialogue), ensure_ascii=False))
+            finally:
+                if timings is not None:
+                    timings.append({"stage": "review", "duration_s": time.perf_counter() - t0})
+            reviews.append(verdict)
+            return verdict
+        async def workflow():
+            first = await review(draft)
+            if first["pass"]:
+                return draft, "passed"
+            current, feedback = draft, first
+            for attempt in range(2):
+                candidate = await rewrite(current, feedback)
+                second = await review(candidate)
+                if second["pass"]:
+                    return candidate, "revised_passed"
+                current, feedback = candidate, second
+            return self._quality_hold(draft), "held"
+        async def rewrite(current, feedback):
+            t0 = time.perf_counter()
+            try:
+                raw = await self.llm.chat(messages + [{"role": "assistant", "content": json.dumps(current, ensure_ascii=False)},
+                    {"role": "user", "content": "教学评审未通过。根据下面的具体证据重新讲清楚，补上推理、完整例子和必要条件；"
+                     "保留已有正确内容和生活化例子，修正错误时不得把例子删掉。例子要有明确对象、条件、具体数值与逐步解释。"
+                     "遵守我原来的问题和长短要求。只输出 JSON，且只含 steps 和 board；不得写记忆、学生档案、动作或指令链。\n"
+                     + revision_feedback(feedback)}], max_tokens=1800, temperature=0.3, json_mode=True)
+            finally:
+                if timings is not None:
+                    timings.append({"stage": "rewrite", "duration_s": time.perf_counter() - t0})
+            repaired = parse_teaching_json(raw)
+            steps = repaired.get("steps")
+            board = repaired.get("board")
+            if (not isinstance(steps, list) or not steps or len(steps) > 16
+                    or any(not isinstance(s, dict) or not isinstance(s.get("line"), str) or not s["line"].strip() for s in steps)
+                    or not isinstance(board, dict) or not isinstance(board.get("items"), list) or not board["items"]):
+                raise ValueError("invalid revised teaching answer")
+            return ground_figure({**draft, "steps": [{"intent": "", "line": s["line"]} for s in steps], "board": board})
+        try:
+            answer, status = await asyncio.wait_for(workflow(), timeout=self.teaching_review_deadline_s)
+        except Exception as exc:
+            # A known failed draft never becomes a fallback answer after a timeout.
+            answer = self._quality_hold(draft) if reviews and not reviews[0]["pass"] else draft
+            status = "held" if reviews else "unreviewed"
+            answer = {**answer, "_teaching_review_error": str(exc)[:160]}
+        return {**answer, "_teaching_quality": {"status": status, "reviews": reviews}}
+
+    @staticmethod
+    def _quality_hold(draft: dict) -> dict:
+        return {**draft, "board": None, "steps": [{"intent": "", "line": "这段讲解还需要核对，我先不把它当作答案。"}]}
 
     def _copies_example(self, d: dict) -> bool:
         """Two or more of the reply's spoken lines / board items appear verbatim in the responder examples."""
@@ -658,6 +792,26 @@ class Director:
         """Erasure (§12): remove the term from all controller state that can reach a prompt."""
         self.erased_terms.add(term)
         n = 0
+        # A clean line can still carry a sensitive diagram or board. Inspect every
+        # retained segment, including replay/locked-lesson copies, before dropping
+        # lines; shared Board references must not return after an interruption.
+        retained = [*self.queue, *self.deferred, *self.lesson_backlog,
+                    *self.interrupted.values(), *self._lesson_locked.values()]
+        retained += [seg for steps in self.held.values() for segs in steps.values() for seg in segs]
+        retained += [seg for steps in self.plan_steps.values() for segs in steps for seg in segs]
+        affected_boards = {f.board_key for f in self.pending_figures if _figure_mentions(f, term)}
+        for seg in {id(s): s for s in retained}.values():
+            if seg.board is not None and (seg.board.key in affected_boards or board_mentions(seg.board, term)):
+                affected_boards.add(seg.board.key)
+                seg.board = None
+                seg.reveal = seg.progress = None
+                seg.gesture = False
+                n += 1
+        self.erased_board_keys.update(affected_boards)
+        figures = self.pending_figures
+        self.pending_figures = [f for f in figures
+                                if f.board_key not in affected_boards and not _figure_mentions(f, term)]
+        n += len(figures) - len(self.pending_figures)
         self.dialogue = deque((r, t) for r, t in self.dialogue if term not in t)  # both turns of an exchange
         self.dialogue = deque(self.dialogue, maxlen=8)
         self.lesson_backlog = deque(s for s in self.lesson_backlog if term not in s.line)

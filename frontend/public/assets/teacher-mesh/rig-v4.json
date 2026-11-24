@@ -1,0 +1,1249 @@
+{
+  "version": 1,
+  "model": "teacher-mesh-v1",
+  "renderer": "pixi-mesh",
+  "canvas": [
+    480,
+    864
+  ],
+  "description": "Custom adult anime teacher with one intact registered head and painted rigid arm sections; not Live2D/Cubism.",
+  "head_scale": 1,
+  "neck_mask": null,
+  "hair_physics": {
+    "stiffness": 35,
+    "damping": 10,
+    "max_offset": 2.6
+  },
+  "background": "classroom-v1.png",
+  "tabletop_y": 575,
+  "foreground_y": 690,
+  "supported_gestures": [
+    "idle",
+    "listen",
+    "explain",
+    "present",
+    "point",
+    "smile",
+    "think",
+    "nod",
+    "shake",
+    "wave"
+  ],
+  "limits": {
+    "head_turn": 0.65,
+    "head_tilt": 0.045,
+    "breath": 1.6,
+    "hair_sway": 2.6,
+    "gesture_weight": 1
+  },
+  "layers": [
+    {
+      "id": "face",
+      "group": "head",
+      "asset": "head-neutral-v4.png",
+      "rect": [
+        128.4,
+        193,
+        215.82,
+        236.16
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "body",
+      "group": "body",
+      "asset": "body-v4.png",
+      "rect": [
+        90,
+        369,
+        300,
+        350.63583815028903
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "lids-half",
+      "group": "head",
+      "asset": "lids-half-v4.png",
+      "rect": [
+        184.2,
+        283.9,
+        111.6,
+        37.8
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "lids",
+      "group": "head",
+      "asset": "lids-v4.png",
+      "rect": [
+        184.2,
+        283.9,
+        111.6,
+        37.8
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "mouth-soft",
+      "group": "head",
+      "asset": "mouth-soft-v4.png",
+      "rect": [
+        214.8,
+        331.6,
+        49.5,
+        27.9
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "mouth-a",
+      "group": "head",
+      "asset": "mouth-a-v4.png",
+      "rect": [
+        214.8,
+        331.6,
+        49.5,
+        27.9
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "mouth-o",
+      "group": "head",
+      "asset": "mouth-o-v4.png",
+      "rect": [
+        214.8,
+        331.6,
+        49.5,
+        27.9
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    }
+  ],
+  "hands": {
+    "relaxed": {
+      "asset": "relaxed-hand-right-v4.png",
+      "size": [
+        35.24050632911393,
+        58.0
+      ],
+      "anchor": [
+        0.7395833333333334,
+        0.06962025316455696
+      ],
+      "rotation_offset": -0.27,
+      "skin_mask": null,
+      "contact_shadow": true,
+      "rest_rotation": 0,
+      "sides": {
+        "-1": {
+          "asset": "relaxed-hand-left-v4.png",
+          "size": [
+            34.37037037037037,
+            58.0
+          ],
+          "anchor": [
+            0.296875,
+            0.07407407407407407
+          ],
+          "rotation_offset": 0.24,
+          "skin_mask": null,
+          "contact_shadow": true,
+          "rest_rotation": 0
+        },
+        "1": {
+          "asset": "relaxed-hand-right-v4.png",
+          "size": [
+            35.24050632911393,
+            58.0
+          ],
+          "anchor": [
+            0.7395833333333334,
+            0.06962025316455696
+          ],
+          "rotation_offset": -0.27,
+          "skin_mask": null,
+          "contact_shadow": true,
+          "rest_rotation": 0
+        }
+      }
+    },
+    "open": {
+      "asset": "open-hand-right-v4.png",
+      "size": [
+        55.27142857142857,
+        73.0
+      ],
+      "anchor": [
+        0.36981132075471695,
+        0.07714285714285714
+      ],
+      "rotation_offset": -0.06,
+      "skin_mask": null,
+      "contact_shadow": false,
+      "sides": {
+        "-1": {
+          "asset": "open-hand-left-v4.png",
+          "size": [
+            55.429799426934096,
+            73.0
+          ],
+          "anchor": [
+            0.6339622641509434,
+            0.07163323782234957
+          ],
+          "rotation_offset": 0.03,
+          "skin_mask": null,
+          "contact_shadow": false
+        },
+        "1": {
+          "asset": "open-hand-right-v4.png",
+          "size": [
+            55.27142857142857,
+            73.0
+          ],
+          "anchor": [
+            0.36981132075471695,
+            0.07714285714285714
+          ],
+          "rotation_offset": -0.06,
+          "skin_mask": null,
+          "contact_shadow": false
+        }
+      }
+    },
+    "point": {
+      "asset": "point-hand-right-v4.png",
+      "size": [
+        33.4051724137931,
+        75.0
+      ],
+      "anchor": [
+        0.5483870967741935,
+        0.08045977011494253
+      ],
+      "rotation_offset": 0.1,
+      "skin_mask": null,
+      "contact_shadow": false,
+      "sides": {
+        "-1": {
+          "asset": "point-hand-left-v4.png",
+          "size": [
+            33.30945558739255,
+            75.0
+          ],
+          "anchor": [
+            0.4774193548387097,
+            0.08022922636103152
+          ],
+          "rotation_offset": -0.08,
+          "skin_mask": null,
+          "contact_shadow": false
+        },
+        "1": {
+          "asset": "point-hand-right-v4.png",
+          "size": [
+            33.4051724137931,
+            75.0
+          ],
+          "anchor": [
+            0.5483870967741935,
+            0.08045977011494253
+          ],
+          "rotation_offset": 0.1,
+          "skin_mask": null,
+          "contact_shadow": false
+        }
+      }
+    },
+    "wave": {
+      "asset": "wave-hand-right-v4.png",
+      "size": [
+        62.31958762886598,
+        78.0
+      ],
+      "anchor": [
+        0.47096774193548385,
+        0.07989690721649484
+      ],
+      "rotation_offset": -0.05,
+      "skin_mask": null,
+      "contact_shadow": false,
+      "sides": {
+        "-1": {
+          "asset": "wave-hand-left-v4.png",
+          "size": [
+            61.44245524296675,
+            78.0
+          ],
+          "anchor": [
+            0.525974025974026,
+            0.08439897698209718
+          ],
+          "rotation_offset": 0.08,
+          "skin_mask": null,
+          "contact_shadow": false
+        },
+        "1": {
+          "asset": "wave-hand-right-v4.png",
+          "size": [
+            62.31958762886598,
+            78.0
+          ],
+          "anchor": [
+            0.47096774193548385,
+            0.07989690721649484
+          ],
+          "rotation_offset": -0.05,
+          "skin_mask": null,
+          "contact_shadow": false
+        }
+      }
+    }
+  },
+  "arms": {
+    "shoulders": [
+      [
+        374,
+        411
+      ],
+      [
+        106,
+        411
+      ]
+    ],
+    "elbows": [
+      [
+        381,
+        548
+      ],
+      [
+        99,
+        548
+      ]
+    ],
+    "forearm_length": 112,
+    "rest_angle": -0.75,
+    "explain_angle": -1.55,
+    "present_angle": -1.3,
+    "point_angle": 0.25,
+    "wave_upper_angle": 0.32,
+    "wave_angle": -2.88,
+    "think_upper_angle": -0.42,
+    "think_angle": -2.94,
+    "gesture_paths": {
+      "wave": {
+        "target": [
+          332,
+          456
+        ],
+        "outward_offset": 10,
+        "min_duration": 3.5,
+        "hand_shape_mode": "opaque",
+        "hand_rotation_offset": 0.62,
+        "hand_shape_start": 0.6,
+        "hand_shape_end": 0.8
+      },
+      "think": {
+        "target": [
+          300,
+          420
+        ],
+        "outward_offset": 10,
+        "min_duration": 3.5,
+        "hand_shape_mode": "opaque",
+        "hand_rotation_offset": -0.2,
+        "hand_shape_start": 0.6,
+        "hand_shape_end": 0.8
+      },
+      "point": {
+        "target": [
+          330,
+          455
+        ],
+        "outward_offset": 5,
+        "min_duration": 3.5,
+        "hand_shape_mode": "opaque",
+        "hand_rotation_offset": 0.7,
+        "hand_shape_start": 0.6,
+        "hand_shape_end": 0.8
+      }
+    }
+  },
+  "extraction": {
+    "face": {
+      "source": "head-neutral-v4.png",
+      "size": [
+        1199,
+        1312
+      ],
+      "shared_source_scale_configuration": 0.18
+    },
+    "lids-half": {
+      "source": "head-soft-v4.png",
+      "source_region": [
+        310,
+        505,
+        930,
+        715
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          470,
+          618,
+          129,
+          76
+        ],
+        [
+          744,
+          590,
+          128,
+          79
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        0.0,
+        -1.0,
+        -2.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          0.99945604495166,
+          -0.00019536695287588287,
+          0.23679155613686856
+        ],
+        [
+          0.00019536695287588287,
+          0.99945604495166,
+          0.4084653854115763
+        ]
+      ],
+      "inlier_features_measured": 340,
+      "median_error_source_pixels_measured": 0.6646039485931396
+    },
+    "lids": {
+      "source": "head-blink-v4.png",
+      "source_region": [
+        310,
+        505,
+        930,
+        715
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          470,
+          618,
+          129,
+          76
+        ],
+        [
+          744,
+          590,
+          128,
+          79
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        0.0,
+        0.0,
+        -2.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          0.9991954802305646,
+          0.0005321692173710402,
+          -0.10145915257938207
+        ],
+        [
+          -0.0005321692173710402,
+          0.9991954802305646,
+          0.6613055700581264
+        ]
+      ],
+      "inlier_features_measured": 289,
+      "median_error_source_pixels_measured": 0.6664481163024902
+    },
+    "mouth-soft": {
+      "source": "head-soft-v4.png",
+      "source_region": [
+        480,
+        770,
+        755,
+        925
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          619,
+          844,
+          133,
+          73
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        0.0,
+        0.0,
+        -2.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          0.99945604495166,
+          -0.00019536695287588287,
+          0.23679155613686856
+        ],
+        [
+          0.00019536695287588287,
+          0.99945604495166,
+          0.4084653854115763
+        ]
+      ],
+      "inlier_features_measured": 340,
+      "median_error_source_pixels_measured": 0.6646039485931396
+    },
+    "mouth-a": {
+      "source": "head-mouth-a-v4.png",
+      "source_region": [
+        480,
+        770,
+        755,
+        925
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          619,
+          844,
+          133,
+          73
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        1.0,
+        1.0,
+        0.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          1.0006945787571353,
+          0.0005576033243820758,
+          -0.34737399989886547
+        ],
+        [
+          -0.0005576033243820758,
+          1.0006945787571353,
+          -0.2414439285661923
+        ]
+      ],
+      "inlier_features_measured": 291,
+      "median_error_source_pixels_measured": 0.6197680830955505
+    },
+    "mouth-o": {
+      "source": "head-mouth-o-v4.png",
+      "source_region": [
+        480,
+        770,
+        755,
+        925
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          619,
+          844,
+          133,
+          73
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        0.0,
+        -1.0,
+        -2.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          0.9992587619488047,
+          -0.0007327622438679177,
+          0.6870011528515199
+        ],
+        [
+          0.0007327622438679177,
+          0.9992587619488047,
+          -0.2277137467865631
+        ]
+      ],
+      "inlier_features_measured": 320,
+      "median_error_source_pixels_measured": 0.7258957624435425
+    },
+    "body": {
+      "source": "torso-clean-shoulders-v4.png",
+      "source_region": [
+        170,
+        130,
+        1090,
+        1190
+      ],
+      "trim_in_region": [
+        25,
+        25,
+        890,
+        1036
+      ],
+      "bounds_in_source": [
+        195,
+        155,
+        1060,
+        1166
+      ],
+      "size": [
+        865,
+        1011
+      ],
+      "asset": "body-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained"
+    },
+    "upper-left": {
+      "source": "limbs-slim-atlas-v4.png",
+      "source_region": [
+        535,
+        35,
+        755,
+        620
+      ],
+      "trim_in_region": [
+        33,
+        36,
+        188,
+        554
+      ],
+      "bounds_in_source": [
+        568,
+        71,
+        723,
+        589
+      ],
+      "size": [
+        155,
+        518
+      ],
+      "asset": "upper-left-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "bone_anchors_source_configuration": [
+        [
+          635,
+          130
+        ],
+        [
+          659,
+          568
+        ]
+      ],
+      "runtime_uniform_scale_configuration": 0.3127242984670021
+    },
+    "upper-right": {
+      "source": "limbs-slim-atlas-v4.png",
+      "source_region": [
+        800,
+        35,
+        1015,
+        620
+      ],
+      "trim_in_region": [
+        18,
+        36,
+        163,
+        556
+      ],
+      "bounds_in_source": [
+        818,
+        71,
+        963,
+        591
+      ],
+      "size": [
+        145,
+        520
+      ],
+      "asset": "upper-right-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "bone_anchors_source_configuration": [
+        [
+          910,
+          130
+        ],
+        [
+          894,
+          568
+        ]
+      ],
+      "runtime_uniform_scale_configuration": 0.31298465800712927
+    },
+    "forearm-left": {
+      "source": "limbs-slim-atlas-v4.png",
+      "source_region": [
+        535,
+        630,
+        770,
+        1100
+      ],
+      "trim_in_region": [
+        39,
+        30,
+        208,
+        445
+      ],
+      "bounds_in_source": [
+        574,
+        660,
+        743,
+        1075
+      ],
+      "size": [
+        169,
+        415
+      ],
+      "asset": "forearm-left-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "bone_anchors_source_configuration": [
+        [
+          645,
+          682
+        ],
+        [
+          679,
+          1041
+        ]
+      ],
+      "runtime_uniform_scale_configuration": 0.31058791398131586
+    },
+    "forearm-right": {
+      "source": "limbs-slim-atlas-v4.png",
+      "source_region": [
+        800,
+        630,
+        1010,
+        1100
+      ],
+      "trim_in_region": [
+        23,
+        29,
+        178,
+        444
+      ],
+      "bounds_in_source": [
+        823,
+        659,
+        978,
+        1074
+      ],
+      "size": [
+        155,
+        415
+      ],
+      "asset": "forearm-right-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "bone_anchors_source_configuration": [
+        [
+          901,
+          682
+        ],
+        [
+          899,
+          1041
+        ]
+      ],
+      "runtime_uniform_scale_configuration": 0.3119728746602824
+    },
+    "elbow-left": {
+      "source": "limbs-slim-atlas-v4.png",
+      "source_region": [
+        550,
+        1220,
+        755,
+        1360
+      ],
+      "trim_in_region": [
+        8,
+        0,
+        174,
+        140
+      ],
+      "bounds_in_source": [
+        558,
+        1220,
+        724,
+        1360
+      ],
+      "size": [
+        166,
+        140
+      ],
+      "asset": "elbow-left-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained; filled cloth interior with soft elliptical alpha crop",
+      "alpha_crop_configuration": {
+        "shape": "ellipse",
+        "feather_fraction": 0.32
+      }
+    },
+    "elbow-right": {
+      "source": "limbs-slim-atlas-v4.png",
+      "source_region": [
+        800,
+        1220,
+        1000,
+        1360
+      ],
+      "trim_in_region": [
+        13,
+        0,
+        178,
+        140
+      ],
+      "bounds_in_source": [
+        813,
+        1220,
+        978,
+        1360
+      ],
+      "size": [
+        165,
+        140
+      ],
+      "asset": "elbow-right-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained; filled cloth interior with soft elliptical alpha crop",
+      "alpha_crop_configuration": {
+        "shape": "ellipse",
+        "feather_fraction": 0.32
+      }
+    },
+    "relaxed-hand-left": {
+      "source": "hands-atlas-v4.png",
+      "source_region": [
+        105,
+        0,
+        475,
+        340
+      ],
+      "trim_in_region": [
+        120,
+        7,
+        312,
+        331
+      ],
+      "bounds_in_source": [
+        225,
+        7,
+        417,
+        331
+      ],
+      "size": [
+        192,
+        324
+      ],
+      "asset": "relaxed-hand-left-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "wrist_anchor_source_configuration": [
+        282,
+        31
+      ],
+      "finger_axis_radians_configuration": 0.24
+    },
+    "relaxed-hand-right": {
+      "source": "hands-atlas-v4.png",
+      "source_region": [
+        550,
+        0,
+        910,
+        340
+      ],
+      "trim_in_region": [
+        56,
+        15,
+        248,
+        331
+      ],
+      "bounds_in_source": [
+        606,
+        15,
+        798,
+        331
+      ],
+      "size": [
+        192,
+        316
+      ],
+      "asset": "relaxed-hand-right-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "wrist_anchor_source_configuration": [
+        748,
+        37
+      ],
+      "finger_axis_radians_configuration": -0.27
+    },
+    "open-hand-left": {
+      "source": "hands-atlas-v4.png",
+      "source_region": [
+        105,
+        340,
+        475,
+        705
+      ],
+      "trim_in_region": [
+        44,
+        6,
+        309,
+        355
+      ],
+      "bounds_in_source": [
+        149,
+        346,
+        414,
+        695
+      ],
+      "size": [
+        265,
+        349
+      ],
+      "asset": "open-hand-left-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "wrist_anchor_source_configuration": [
+        317,
+        371
+      ],
+      "finger_axis_radians_configuration": 0.03
+    },
+    "open-hand-right": {
+      "source": "hands-atlas-v4.png",
+      "source_region": [
+        550,
+        340,
+        910,
+        705
+      ],
+      "trim_in_region": [
+        60,
+        6,
+        325,
+        356
+      ],
+      "bounds_in_source": [
+        610,
+        346,
+        875,
+        696
+      ],
+      "size": [
+        265,
+        350
+      ],
+      "asset": "open-hand-right-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "wrist_anchor_source_configuration": [
+        708,
+        373
+      ],
+      "finger_axis_radians_configuration": -0.06
+    },
+    "point-hand-left": {
+      "source": "hands-atlas-v4.png",
+      "source_region": [
+        105,
+        705,
+        475,
+        1070
+      ],
+      "trim_in_region": [
+        142,
+        8,
+        297,
+        357
+      ],
+      "bounds_in_source": [
+        247,
+        713,
+        402,
+        1062
+      ],
+      "size": [
+        155,
+        349
+      ],
+      "asset": "point-hand-left-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "wrist_anchor_source_configuration": [
+        321,
+        741
+      ],
+      "finger_axis_radians_configuration": -0.08
+    },
+    "point-hand-right": {
+      "source": "hands-atlas-v4.png",
+      "source_region": [
+        550,
+        705,
+        910,
+        1070
+      ],
+      "trim_in_region": [
+        71,
+        9,
+        226,
+        357
+      ],
+      "bounds_in_source": [
+        621,
+        714,
+        776,
+        1062
+      ],
+      "size": [
+        155,
+        348
+      ],
+      "asset": "point-hand-right-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "wrist_anchor_source_configuration": [
+        706,
+        742
+      ],
+      "finger_axis_radians_configuration": 0.1
+    },
+    "wave-hand-left": {
+      "source": "hands-atlas-v4.png",
+      "source_region": [
+        105,
+        1070,
+        475,
+        1510
+      ],
+      "trim_in_region": [
+        40,
+        7,
+        348,
+        398
+      ],
+      "bounds_in_source": [
+        145,
+        1077,
+        453,
+        1468
+      ],
+      "size": [
+        308,
+        391
+      ],
+      "asset": "wave-hand-left-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "wrist_anchor_source_configuration": [
+        307,
+        1110
+      ],
+      "finger_axis_radians_configuration": 0.08
+    },
+    "wave-hand-right": {
+      "source": "hands-atlas-v4.png",
+      "source_region": [
+        550,
+        1070,
+        910,
+        1510
+      ],
+      "trim_in_region": [
+        19,
+        9,
+        329,
+        397
+      ],
+      "bounds_in_source": [
+        569,
+        1079,
+        879,
+        1467
+      ],
+      "size": [
+        310,
+        388
+      ],
+      "asset": "wave-hand-right-v4.png",
+      "extraction": "largest authored alpha component; original edge alpha retained",
+      "wrist_anchor_source_configuration": [
+        715,
+        1110
+      ],
+      "finger_axis_radians_configuration": -0.05
+    }
+  },
+  "asset_revision": 4,
+  "head_pivot": [
+    240,
+    389
+  ],
+  "collar_blend": false,
+  "jaw_width": 0,
+  "coherent_head": true,
+  "arm_depth": "over-body",
+  "expression_states": {
+    "mode": "registered-opaque",
+    "blink_half_threshold": 0.15,
+    "blink_closed_threshold": 0.75,
+    "mouth_soft_threshold": 0.04,
+    "mouth_open_threshold": 0.36,
+    "mouth_round_threshold": 0.55
+  },
+  "arm_segments": [
+    {
+      "id": "upper-left",
+      "side": -1,
+      "bone": "upper",
+      "asset": "upper-left-v4.png",
+      "size": [
+        48.472266262385325,
+        161.9911866059071
+      ],
+      "anchors": [
+        [
+          0.432258064516129,
+          0.1138996138996139
+        ],
+        [
+          0.5870967741935483,
+          0.9594594594594594
+        ]
+      ]
+    },
+    {
+      "id": "forearm-left",
+      "side": -1,
+      "bone": "forearm",
+      "asset": "forearm-left-v4.png",
+      "size": [
+        52.48935746284238,
+        128.89398430224608
+      ],
+      "anchors": [
+        [
+          0.42011834319526625,
+          0.05301204819277108
+        ],
+        [
+          0.621301775147929,
+          0.9180722891566265
+        ]
+      ]
+    },
+    {
+      "id": "elbow-left",
+      "side": -1,
+      "bone": "elbow",
+      "asset": "elbow-left-v4.png",
+      "size": [
+        44,
+        37.10843373493976
+      ],
+      "anchor": [
+        0.5,
+        0.5
+      ],
+      "rotation": 0
+    },
+    {
+      "id": "upper-right",
+      "side": 1,
+      "bone": "upper",
+      "asset": "upper-right-v4.png",
+      "size": [
+        45.38277541103374,
+        162.7520221637072
+      ],
+      "anchors": [
+        [
+          0.6344827586206897,
+          0.11346153846153846
+        ],
+        [
+          0.5241379310344828,
+          0.9557692307692308
+        ]
+      ]
+    },
+    {
+      "id": "forearm-right",
+      "side": 1,
+      "bone": "forearm",
+      "asset": "forearm-right-v4.png",
+      "size": [
+        48.35579557234377,
+        129.46874298401718
+      ],
+      "anchors": [
+        [
+          0.5032258064516129,
+          0.05542168674698795
+        ],
+        [
+          0.49032258064516127,
+          0.9204819277108434
+        ]
+      ]
+    },
+    {
+      "id": "elbow-right",
+      "side": 1,
+      "bone": "elbow",
+      "asset": "elbow-right-v4.png",
+      "size": [
+        44,
+        37.333333333333336
+      ],
+      "anchor": [
+        0.5,
+        0.5
+      ],
+      "rotation": 0
+    }
+  ]
+}

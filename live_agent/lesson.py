@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from live_agent.llm import ChatLLM, parse_json
+from live_agent.types import new_id
 
 MAX_ITEMS = 6
 ITEM_CHARS = 60
@@ -69,13 +70,16 @@ SECTION_PROMPT = """你是{role}「{name}」，正在上「{title}」这节课�
 2. 每句不超过 {chars} 个汉字，口语化；公式和符号全部用中文读出来（如「a 加 b 的和的平方」「x 的平方」），讲稿里不要出现 $、LaTeX、括号、加减乘除号或等号。
 3. 直接从这一节的内容讲起，不要打招呼，不要重复开场白或前面讲过的话。
    配图由系统按要点另外判断和绘制；讲图形、图像或结构时可以说「看黑板上的图」，但不要描述图里没有的细节。
-4. 每节至少一处启发式设问（自问自答）：先提一个学生能想一想的问题，下一句再给答案（如「你猜猜看，是哪个？」「对，是……」），不要连着问几个问题。这是老师连续讲解的视频课，学生只在练习时真正作答，所以讲稿里的提问不等学生回答。
+4. 在需要引导思考时自然地提出一个具体问题，再解释思路；不必每节都设问。学生没有作答时，不要说「对」「答得真好」或假装收到了回答。避免反复使用「你猜猜」「明白了吗」和夸张语气。
 5. summary 写 1-2 句，简短小结这一节{outro}。
 6. 讲稿总共 {n_lines} 句。{craft}
+7. 每条新概念要点都走完「直观情境 → 为什么/条件 → 展开的例子 → 回扣结论」。例题写清中间推理，不只念答案。
+   不要把所有句子写成同一句结论的改写；要点之间有因果或递进。重点内容用一个常见错误与正确方法对照。
+   检查理解的问题要能暴露具体误解，不能只问懂了吗；若本节另有练习，不要提前透露那道练习的答案。
 因材施教：{adapt}{exercise_req}"""
 
 
-CHECK_PROMPT = """你是中小学教学竞赛的评委。下面是{role}「{name}」给{grade}学生上「{title}」这节课的第 {i}/{n} 节「{section}」的板书和讲稿（一对一视频课，每句台词很短是系统要求，不算问题）。
+CHECK_PROMPT = """你是中小学教学竞赛的评委。下面是{role}「{name}」给{grade}学生上「{title}」这节课的第 {i}/{n} 节「{section}」的板书和讲稿（一对一视频课，台词可以短，但要按完整意思和自然停顿组织，不能把无意义的碎片句当成正常讲解）。
 本课目标：{objectives}；重点：{key_point}；难点：{difficulty}。
 这一节的定位：{depth}。练习题由系统在小结后另外提出（讲稿末尾的 [练习] 行），没有 [练习] 行的小节本来就不出题，不算缺练习。
 请按下面的标准逐条打分，只输出 JSON：
@@ -92,10 +96,13 @@ CHECK_PROMPT = """你是中小学教学竞赛的评委。下面是{role}「{name
 
 
 FIGURE_JUDGE_PROMPT = """你是教学设计专家。下面是「{title}」这一节的板书要点，以及老师讲每条要点时说的话。
-请逐条判断：这条要点是否复杂到需要一张解释图，学生光听讲、看文字不容易理解。
-需要图的典型情况：几何图形和空间关系；函数图像和数量变化；细胞、分子、器官等结构；有多个步骤、阶段或循环的过程；实验装置；多个量的对比。
+采用先看懂、再讲清的教学方式：逐条为实质性知识点安排有帮助的图，目标是多数要点都有视觉支持，而不只给最难的要点画图。
+具体概念、定义和简单事实可以用例子、结构或分类图说明；简单例题、数量关系、变化过程、循环、对比、实验步骤也优先配图。
+复杂程度不是是否配图的门槛；即使 complexity 为 1，只要图能帮助理解或展示具体例子，need 就应为 true。
+几何图形和空间关系、函数图像、细胞等结构、多个量的对比都适合配图。不同要点围绕各自的概念或例子画图，避免重复同一张泛泛的全课图。
 讲解里说到「看黑板上的图」「这个形状」「这条曲线」的，必须配图。
-不需要图的：定义复述、简单事实、结论小结、鼓励和提问。每节最多 {max_figs} 张图，优先给最难懂的要点。
+只跳过纯问候、鼓励、过渡、没有知识内容的提问以及没有新内容的空泛小结；有具体比较或例子的总结仍可配图。
+每个要点最多一张，最多给 {max_figs} 个要点配图，优先覆盖不同的知识点。已有配图可保留，不重复提出同一要点。
 只输出 JSON：{{"points": [{{"i": 要点序号, "complexity": 1-3（1 简单，2 一般，3 抽象或空间关系复杂）, "need": true 或 false, "why": 一句理由, "figure": 需要时写配图，否则 null}}]}}
 配图写法：
 - 函数图像、坐标系里的点：{{"plot": {{"functions": ["x**2-2*x-3"], "x": [-3, 5], "points": [{{"x": -1, "y": 0, "label": "x₁"}}], "title": 图标题}}, "caption": 图注}}
@@ -103,8 +110,10 @@ FIGURE_JUDGE_PROMPT = """你是教学设计专家。下面是「{title}」这一
 - 几何图形（三角形、正方形、多边形，按比例精确画在方格上）：{{"plot": {{"polygons": [{{"points": [[0,0],[4,0],[0,3]], "label": "直角三角形", "sides": ["4", "5", "3"]}}], "grid": true}}, "caption": 图注}}
   （points 是顶点坐标，sides 依次标注每条边：第 i 条边从第 i 个顶点到下一个顶点）
 - 插图、结构、流程、实验装置示意：{{"prompt": 配图描述, "caption": 图注}}；prompt 具体写清画什么、怎么摆放，要标注的文字都放在「」里
-  （如：一片绿叶，太阳的箭头标注「阳光」，根部箭头标注「水」）；这类图由图像模型画，画不准数学关系，几何图形和函数图像一律用 plot。
+  （如：一片绿叶，太阳的箭头标注「阳光」，根部箭头标注「水」）；这类图表达结构和概念关系，几何图形和函数图像一律用 plot。
 caption 不超过 16 个字。
+整段回答或总结的上下文（不属于任何一个特定要点，不要按句子序号映射到要点）：
+{context}
 要点和讲解：
 {points}"""
 
@@ -129,14 +138,18 @@ class Board:
     title: str
     items: list[str] = field(default_factory=list)  # raw text with $...$ LaTeX
     figures: list[Figure] = field(default_factory=list)  # per point (judged) or for the whole board
+    strip_numbering: bool = True  # explanatory points number themselves; exercise text must stay exact
 
     def view(self, reveal: int | None, progress: tuple[int, int] | None = None) -> dict[str, Any]:
         """What the page shows: items up to ``reveal`` (all when None), the ``reveal``-th highlighted, with the
         spoken line's position within that point (``progress``)."""
-        v = {"key": self.key, "title": html.escape(self.title), "items": [render_item(x) for x in self.items],
+        v = {"key": self.key, "title": html.escape(self.title),
+             "items": [render_item(x, strip_numbering=self.strip_numbering) for x in self.items],
              "reveal": reveal}
         if progress is not None and reveal is not None:
             v["progress"] = list(progress)
+        v["figures"] = [{"url": f.url, "caption": html.escape(f.caption), "point": f.point}
+                        for f in self._ready_figures()]
         fig = self.figure_for(reveal)
         if fig is not None:
             v["figure"] = {"url": fig.url, "caption": html.escape(fig.caption)}
@@ -145,10 +158,23 @@ class Board:
     def figure_for(self, reveal: int | None) -> Figure | None:
         """The figure of the point being explained, else the board's own figure; never another point's figure
         (it would illustrate something she is not talking about)."""
-        ready = [f for f in self.figures if f.url]
+        ready = self._ready_figures()
         exact = [f for f in ready if reveal is not None and f.point == reveal]
         whole = [f for f in ready if f.point is None]
         return (exact or whole or [None])[0]
+
+    def _ready_figures(self) -> list[Figure]:
+        """One authoritative figure per valid point, including future points for manual gallery viewing."""
+        points, ready = set(), []
+        for fig in self.figures:
+            if fig.point is not None and (type(fig.point) is not int or not 0 <= fig.point < len(self.items)):
+                continue
+            if fig.point in points:
+                continue
+            points.add(fig.point)
+            if fig.url:
+                ready.append(fig)
+        return ready
 
 
 @dataclass
@@ -172,6 +198,7 @@ class Outline:
     key_point: str = ""  # 重点
     difficulty: str = ""  # 难点
     hook_type: str = ""  # how the intro opens (情境 / 问题 / 复习 / 故事 / 实验 / 直接)
+    board_key: str = field(default_factory=lambda: new_id("lesson"))  # isolates late figures across lessons
 
     def focus(self) -> str:
         """The lesson's objectives, key point and difficulty for a section prompt ("" when the outline has none)."""
@@ -185,18 +212,53 @@ class Outline:
         return ("\n" + "；".join(parts) + "。") if parts else ""
 
 
-def set_figure(board: Board, fig, point: int | None = None, why: str = "") -> Figure | None:
-    """Attach a figure request (an exact plot spec or an illustration prompt) to ``board`` for ``point``."""
+def _figure_request(fig) -> tuple[dict | None, str] | None:
     if not isinstance(fig, dict):
         return None
     plot = fig.get("plot")
-    f = Figure(point=point, caption=str(fig.get("caption") or "")[:20], why=str(why)[:60], board_key=board.key)
     if isinstance(plot, dict) and (plot.get("functions") or plot.get("points") or plot.get("polygons")):
-        f.plot = plot
-    elif str(fig.get("prompt") or "").strip():
-        f.prompt = str(fig["prompt"]).strip()[:400]
-    else:
+        # Model records need the renderer's containers, otherwise a malformed first
+        # record can consume a point and prevent its corrected duplicate being used.
+        functions, points, polygons = (plot.get(k) or [] for k in ("functions", "points", "polygons"))
+        if not all(isinstance(value, list) for value in (functions, points, polygons)):
+            return None
+        if any(not isinstance(f, str) or not f.strip() for f in functions):
+            return None
+        if any(not isinstance(p, dict) or "x" not in p or "y" not in p for p in points):
+            return None
+        for polygon in polygons:
+            if not isinstance(polygon, dict):
+                return None
+            vertices = polygon.get("points")
+            if not isinstance(vertices, list) or len(vertices) < 2:
+                return None
+            if any(not isinstance(v, list) or len(v) != 2 for v in vertices):
+                return None
+            if polygon.get("sides") is not None and not isinstance(polygon["sides"], list):
+                return None
+        if any(plot.get(axis) is not None and
+               (not isinstance(plot[axis], list) or len(plot[axis]) != 2) for axis in ("x", "y")):
+            return None
+        return plot, ""
+    prompt = fig.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return None, prompt.strip()[:400]
+    return None
+
+
+def set_figure(board: Board, fig, point: int | None = None, why: str = "") -> Figure | None:
+    """Attach at most one figure per valid point, preserving an existing queued or ready figure."""
+    if point is not None and (type(point) is not int or not 0 <= point < len(board.items)):
         return None
+    request = _figure_request(fig)
+    if request is None:
+        return None
+    existing = next((f for f in board.figures if (f.point is None if point is None
+                     else type(f.point) is int and f.point == point)), None)
+    if existing is not None:
+        return existing
+    f = Figure(point=point, caption=str(fig.get("caption") or "")[:20], why=str(why)[:60], board_key=board.key)
+    f.plot, f.prompt = request
     board.figures.append(f)
     return f
 
@@ -227,10 +289,11 @@ def _tex_say(tex: str) -> str:
     return re.sub(r"\\[a-zA-Z]+|[{}]", "", tex)
 
 
-def render_item(text: str) -> str:
+def render_item(text: str, *, strip_numbering: bool = True) -> str:
     """Board text -> safe HTML: plain text escaped, **bold**, $...$ LaTeX as MathML (text fallback)."""
     text = repair_latex(text)
-    text = re.sub(r"^\s*(?:\d{1,2}|[一二三四五六七八九十])\s*[.、．)）]\s*", "", text)  # the board numbers points itself
+    if strip_numbering:
+        text = re.sub(r"^\s*(?:\d{1,2}|[一二三四五六七八九十])\s*[.、．)）]\s*", "", text)  # the board numbers points itself
     out = []
     for i, part in enumerate(re.split(r"\$([^$]+)\$", text)):
         if i % 2:
@@ -335,7 +398,7 @@ class LessonPlanner:
             self.curriculum.section_craft(grade, subject, last=last)
         return text
 
-    async def outline(self, topic: str, context: str = "", profile=None) -> Outline:
+    async def outline(self, topic: str, context: str = "", profile=None, feedback: str = "") -> Outline:
         """``profile``: a student.StudentProfile (None: no saved profile, an average student of ``default_grade``)."""
         curriculum = await self._curriculum_block(topic, profile)
         self.last_curriculum = curriculum  # for the log
@@ -348,7 +411,8 @@ class LessonPlanner:
             profile=profile.summary() if profile is not None else "无（新学生，没有档案）",
             subjects="、".join(known) or "语文、数学、英语、物理、化学、生物学、历史、地理、道德与法治、科学、信息科技",
             curriculum=curriculum, craft=(craft + "\n") if craft else "",
-            default_grade=(profile.grade if profile is not None and profile.grade else "初中"))}],
+            default_grade=(profile.grade if profile is not None and profile.grade else "初中"))
+            + ("\n上一版备课大纲的评审意见：" + feedback + "。修正具体问题，保持原主题和学生程度。" if feedback else "")}],
             max_tokens=1100, temperature=0.4, json_mode=True)
         d = parse_json(raw)
         sections, prereq = [], 0
@@ -388,7 +452,19 @@ class LessonPlanner:
                        note=str(d.get("plan_note") or "")[:120], subject=subject, objectives=objectives,
                        key_point=str(d.get("key_point") or "").strip()[:24],
                        difficulty=str(d.get("difficulty") or "").strip()[:24],
-                       hook_type=str(d.get("hook_type") or "").strip()[:6])
+            hook_type=str(d.get("hook_type") or "").strip()[:6])
+
+    async def review_outline(self, outline: Outline, topic: str, profile=None) -> dict:
+        from live_agent.teaching_quality import review_material
+        material = {"outline": {"title": outline.title, "objectives": outline.objectives,
+                    "key_point": outline.key_point, "difficulty": outline.difficulty,
+                    "sections": outline.sections, "intro": outline.intro}}
+        return await review_material(self.llm, material, goal=f"为「{topic}」准备符合学生程度的课程大纲",
+            profile=profile.summary() if profile is not None else "",
+            guidance="这是课程大纲，不是讲稿。example检查不适用记2，不要求大纲写展开算例。"
+            "reasoning检查小节目标与前置关系和递进顺序；alignment检查是否围绕原主题、目标有对应小节。"
+            "correctness检查目标、重点、难点和导入是否有错误概念；不能人为对立本来相同的概念。"
+            "练习尚未生成，不要求大纲展示题目或答案。不要要求复习小节提前讲完核心小节。")
 
     async def section(self, outline: Outline, i: int, covered: list[str], profile=None,
                       mistakes: list[str] | None = None, feedback: str = "") -> list[LessonLine]:
@@ -444,7 +520,7 @@ class LessonPlanner:
                     by[ln["item"]].append(str(ln.get("text", "")))
             groups = [(items[j], by[j]) for j in range(len(items))]
         groups = groups[:MAX_ITEMS]
-        board = Board(key=f"s{i}", title=str(b.get("title") or sec["title"])[:24], items=[g[0] for g in groups])
+        board = Board(key=f"{outline.board_key}:s{i}", title=str(b.get("title") or sec["title"])[:24], items=[g[0] for g in groups])
         set_figure(board, b.get("figure"))
         lines: list[LessonLine] = []
         for j, (_, said) in enumerate(groups):
@@ -463,6 +539,24 @@ class LessonPlanner:
             if ex is not None:
                 lines += ex.lines(self.chars)
         return lines
+
+    async def review_section(self, outline: Outline, i: int, lines: list[LessonLine], profile=None) -> dict:
+        """Pre-presentation review includes reasoning, worked examples and exercise answers."""
+        from live_agent.teaching_quality import review_material
+        board = next((line.board for line in lines if line.board is not None), None)
+        exercise = next((line.exercise for line in lines if line.exercise is not None), None)
+        material = {"board": {"title": board.title, "items": board.items} if board else None,
+                    "lines": [{"point": line.item, "text": line.text} for line in lines if line.exercise is None],
+                    "exercise": {"question": exercise.question, "answer": exercise.answer,
+                                 "options": exercise.options} if exercise else None}
+        checklist = self.curriculum.checklist(self._grade(profile)) if self.curriculum and self.curriculum.craft else []
+        sec = outline.sections[i]
+        return await review_material(self.llm, material, goal=f"本节「{sec['title']}」：{sec.get('goal', '')}",
+            profile=profile.summary() if profile is not None else "",
+            context=f"全课「{outline.title}」背景（不是要求本节覆盖的全部内容）：" + outline.focus(),
+            guidance=DEPTH_NAMES.get(sec.get("depth"), DEPTH_NAMES["new"])
+            + "；只按本节目标检查，不要求前置/复习小节讲完后续主课内容或提前解后面的题。"
+            + "；教学参考：" + "；".join(checklist))
 
     async def check_section(self, outline: Outline, i: int, lines: list[LessonLine], profile=None) -> dict:
         """Self-check of a generated section against the lesson-quality checklist (competition rubrics and the
@@ -504,33 +598,60 @@ class LessonPlanner:
                 "items": len(items)}
 
 
-    async def judge_figures(self, lines: list[LessonLine], max_figs: int = 3) -> list[dict]:
-        """Per board point: is it complex enough to need an explanatory figure? Attaches the figures to the board
-        and returns the judgements (point, complexity, need, why) for the log."""
+    async def judge_figures(self, lines: list[LessonLine], max_figs: int = MAX_ITEMS) -> list[dict]:
+        """Plan visual support for substantive points, bounded by a per-point budget.
+
+        Existing figures remain authoritative; duplicated model records cannot replace
+        queued/drawn images. Unassigned speech supplies global context, never a guessed point.
+        """
         board = next((ln.board for ln in lines if ln.board is not None), None)
         if board is None or not board.items:
             return []
+        if type(max_figs) is not int or max_figs < 0:
+            raise ValueError("figure budget must be a nonnegative integer")
+        budget = min(max_figs, MAX_ITEMS, len(board.items))
+        if not budget:
+            return []
         said = {j: [] for j in range(len(board.items))}
+        context = []
         for ln in lines:
-            if ln.item is not None and ln.item in said:
+            if ln.board is not None and ln.board is not board:
+                continue
+            if ln.item is None:
+                context.append(ln.text)
+            elif type(ln.item) is int and ln.item in said:
                 said[ln.item].append(ln.text)
         points = "\n".join(f"{j}. {board.items[j]}：{''.join(said[j])}" for j in range(len(board.items)))
         raw = await self.llm.chat([{"role": "user", "content": FIGURE_JUDGE_PROMPT.format(
-            title=board.title, max_figs=max_figs, points=points)}], max_tokens=1200, temperature=0.2, json_mode=True)
-        out = []
+            title=board.title, max_figs=budget, points=points, context="\n".join(context) or "无额外上下文")}],
+            max_tokens=max(1200, 300 * budget + 400), temperature=0.2, json_mode=True)
+        verdicts = {}
         for d in parse_json(raw).get("points") or []:
-            if not isinstance(d, dict) or not isinstance(d.get("i"), int) or not 0 <= d["i"] < len(board.items):
+            if not isinstance(d, dict) or type(d.get("i")) is not int or not 0 <= d["i"] < len(board.items):
                 continue
-            room = sum(1 for f in board.figures if f.point is not None) < max_figs
-            fig = set_figure(board, d.get("figure"), point=d["i"], why=str(d.get("why") or "")) \
-                if d.get("need") and room else None
+            previous = verdicts.get(d["i"])
+            usable = d.get("need") is True and _figure_request(d.get("figure")) is not None
+            earlier_usable = previous is not None and previous.get("need") is True and _figure_request(previous.get("figure")) is not None
+            if previous is None or (usable and not earlier_usable):
+                verdicts[d["i"]] = d
+        existing = {}
+        for fig in board.figures:
+            if type(fig.point) is int and 0 <= fig.point < len(board.items):
+                existing.setdefault(fig.point, fig)
+        out = []
+        for i, d in verdicts.items():
+            fig = existing.get(i)
+            if fig is None and d.get("need") is True and len(existing) < budget:
+                fig = set_figure(board, d.get("figure"), point=i, why=str(d.get("why") or ""))
+                if fig is not None:
+                    existing[i] = fig
             out.append({"point": d["i"], "complexity": d.get("complexity"), "need": fig is not None,
                         "why": str(d.get("why") or "")[:60],
                         "kind": ("plot" if fig and fig.plot else "illustration" if fig else None)})
         return out
 
     def intro_lines(self, outline: Outline) -> list[LessonLine]:
-        board = Board(key="outline", title=outline.title, items=[s["title"] for s in outline.sections])
+        board = Board(key=f"{outline.board_key}:outline", title=outline.title, items=[s["title"] for s in outline.sections])
         return [LessonLine(x, board, None) for x in outline.intro] or \
             [LessonLine(f"今天我们来学{outline.title}。"[: self.chars], board, None)]
 

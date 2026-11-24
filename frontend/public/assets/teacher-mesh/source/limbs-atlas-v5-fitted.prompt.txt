@@ -1,0 +1,4 @@
+Use case: precise-object-edit.
+Edit target: this exact sleeve atlas. Make one localized correction ONLY to the shoulder area of the TWO upper sleeve objects in the top row.
+Remove the bulky protruding teardrop-shaped shoulder-cap lobes. Repaint the upper150pixels of each upper sleeve as a single smooth restrained rounded sleeve crown with an ordinary thin tailoring seam. No second teardrop piece, raised flap, puff, gathered cap, inflated lobe or shoulder pad. The widest shoulder crown should be no more than10percent wider than the straight upper-arm fabric just below it. Keep adult slender jacket fit and the source centerline.
+Preserve the entire rest of both upper sleeves below shoulder level, all forearm taper/cuffs/buttons, both flat elbow patches, object locations and lengths, navy texture/color, light direction, transparent background and1024x1536canvas. Do not add any objects or change artwork elsewhere. Clean transparent alpha, no labels or background.

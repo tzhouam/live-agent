@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from pathlib import Path
 
+import pytest
+
 from live_agent.capability import CapabilityManifest, Status
-from live_agent.director.director import Director, DirectorMode
+from live_agent.director.director import Director, DirectorMode, Segment, board_mentions
 from live_agent.generator.base import RequestTiming
 from live_agent.ledger import StateLedger
 from live_agent.llm import ScriptedLLM
@@ -156,6 +159,103 @@ def test_purge_removes_term_from_controller_state():
     assert all("杭州" not in s.line for s in d.queue)
     assert all("杭州" not in c.final_intent for c in d.chains.values())
     assert all("杭州" not in r.transcript for r in d.ledger.history)
+
+
+@pytest.mark.parametrize("location", ["title", "items", "caption", "prompt", "plot", "why"])
+def test_board_only_erasure_keeps_clean_speech_and_unrelated_visuals(location):
+    from live_agent.lesson import Board, set_figure
+
+    marker = "BOARD_ONLY_SECRET"
+    d = make()
+    sensitive = Board("sensitive", "标题", ["要点"])
+    figure = set_figure(sensitive, {"prompt": "干净示意图", "caption": "图注"})
+    figure.url = "/board/img/d000000000000001.png"
+    if location == "title":
+        sensitive.title = marker
+    elif location == "items":
+        sensitive.items.append(marker)
+    elif location == "plot":
+        figure.plot = {"points": [{"x": 0, "y": 0, "label": marker}]}
+    else:
+        setattr(figure, location, marker)
+    # Even a clean pending picture belongs to the board being detached.
+    related = set_figure(sensitive, {"prompt": "另一张干净图"}, point=0)
+    orphan = set_figure(Board("orphan", "", []), {"prompt": marker})
+    clean = Board("clean", "干净标题", ["干净要点"])
+    clean_pending = set_figure(clean, {"prompt": "安全示意图"})
+    d.pending_figures = [related, orphan, clean_pending]
+    d.queue = deque([Segment(None, 1, line="我们看这张示意图。", board=sensitive,
+                            reveal=0, progress=(1, 2), gesture=True),
+                     Segment(None, 1, line="接着看这个要点。", board=clean)])
+
+    assert d.purge(marker) > 0
+    first, second = d.next_script(0), d.next_script(1)
+    assert first.transcript == "我们看这张示意图。" and first.board is None
+    assert second.transcript == "接着看这个要点。" and second.board["key"] == "clean"
+    assert d.pending_figures == [clean_pending]
+    assert d.erased_board_keys == {"sensitive", "orphan"}
+
+
+def test_board_erasure_cleans_every_retained_segment_container():
+    from live_agent.lesson import Board, set_figure
+
+    d = make()
+    board = Board("shared", "标题", ["SECRET_IN_BOARD"])
+    pending = set_figure(board, {"prompt": "关联的干净图"})
+    segments = [Segment(None, 1, line="干净讲解。", board=board,
+                        reveal=0, progress=(1, 1), gesture=True) for _ in range(7)]
+    d.queue = deque([segments[0]])
+    d.deferred = [segments[1]]
+    d.held = {"chain": {1: [segments[2]]}}
+    d.interrupted = {"chain": segments[3]}
+    d.plan_steps = {"chain": [[segments[4]]]}
+    d.lesson_backlog = deque([segments[5]])
+    d._lesson_locked = {0: segments[6]}
+    d.pending_figures = [pending]
+
+    d.purge("SECRET_IN_BOARD")
+    assert all(segment.line == "干净讲解。" and segment.board is None for segment in segments)
+    assert all(segment.reveal is None and segment.progress is None and not segment.gesture
+               for segment in segments)
+    assert d.pending_figures == []
+    assert d.erased_board_keys == {"shared"}
+    # Repair replay copies cannot recover an old board reference.
+    from live_agent.types import IntentChain, TaskKind
+    chain = IntentChain(chain_id="chain", kind=TaskKind.MULTISTEP, opened_by="u",
+                        final_intent="干净指令", clock_origin=0.0)
+    d.plan_steps = {"chain": [[], [segments[4]]]}
+    assert d._replay_after(chain, 0)[0].board is None
+
+
+def test_erased_board_does_not_return_when_a_locked_lesson_line_is_requeued():
+    from live_agent.lesson import Board, LessonLine, set_figure
+
+    d = make()
+    board = Board("lesson:secret", "标题", ["干净要点"])
+    figure = set_figure(board, {"prompt": "图形", "caption": "LOCKED_BOARD_SECRET"})
+    figure.url = "/board/img/d000000000000001.png"
+    d.add_lesson_lines([LessonLine("我们看这张示意图。", board, 0)])
+    locked = d.next_script(0)
+    assert board_mentions(locked.board, "LOCKED_BOARD_SECRET")
+    d.purge("LOCKED_BOARD_SECRET")
+    d.on_interrupted([locked])
+    intro, resumed = d.next_script(1), d.next_script(2)
+    assert intro.board is None
+    assert resumed.transcript == "我们看这张示意图。"
+    assert resumed.board is None
+    assert d.erased_board_keys == {"lesson:secret"}
+
+
+def test_board_erasure_detects_html_escaped_snapshots_without_matching_opaque_identifiers():
+    from live_agent.lesson import Board, set_figure
+
+    marker = "<PRIVATE>"
+    board = Board("opaque-key", "干净标题", ["干净要点"])
+    figure = set_figure(board, {"prompt": "示意图", "caption": marker})
+    figure.url = "/board/img/d000000000000001.png"
+    assert board_mentions(board.view(None), marker)
+    assert not board_mentions(board.view(None), "opaque-key")
+    assert not board_mentions(board.view(None), "board/img")
 
 
 def test_open_loop_uses_llm_action_phrase_without_manifest():

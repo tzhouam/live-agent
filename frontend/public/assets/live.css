@@ -16,3 +16,13 @@ html[data-edition=university]{--accent:#355b78;--accent-soft:#eef3f6;--lime:#dce
 @media(max-width:360px){.sidebar .brand>span:last-child{display:none}.sidebar{padding:14px}}
 .prof .concept-record{padding-bottom:9px;margin-bottom:8px;border-bottom:1px solid var(--line)}.prof .concept-record:last-child{border:0;margin-bottom:0}.prof .concept-evidence{margin:4px 0 0;line-height:1.6;font-size:10px;color:var(--muted)}html[data-edition=primary] .prof .concept-evidence{font-size:11px}
 .session-controls{border-top:0;border-bottom:1px solid var(--line);margin:0 0 18px;padding:0 0 14px}
+
+.figure-enlarge{flex:0 0 auto;min-height:44px;padding:4px 8px;border:0;background:transparent;color:var(--accent);font:inherit;font-size:.75em;cursor:zoom-in}.board figure img{min-height:0;cursor:zoom-in}.board-figure-dialog{width:min(1120px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 32px);padding:20px;overflow:auto}.board-figure-dialog .dialog-heading{margin-bottom:12px}.board-figure-dialog h2{margin:0;font-size:20px}.board-figure-dialog img{display:block;width:auto;height:auto;max-width:100%;max-height:calc(100dvh - 180px);object-fit:contain;margin:auto}.board-figure-dialog p{text-align:center;margin:12px 0 0}
+
+.board-gallery{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;flex:0 0 auto;padding-top:6px;line-height:1.3}.board-gallery button{min-height:36px;padding:5px 8px;font-size:12px;background:#ffffffb8}.board-gallery span{min-width:38px;text-align:center;font-size:12px;font-variant-numeric:tabular-nums}.board figcaption{overflow-wrap:anywhere}.board-gallery #boardBrowse{min-height:44px}
+@media(max-width:860px){.board.hasfig{min-height:280px}}
+/* Keep opt-in attention feedback next to the camera, including narrow classrooms. */
+.focus-live{flex-basis:100%;font-size:11px;line-height:1.6;overflow-wrap:anywhere;margin:0;padding:6px 10px;border-radius:8px;background:var(--chip)}
+.focus-live[hidden]{display:none}
+/* The browser avatar shares the video viewport without changing its native aspect ratio. */
+.screen .teacher-avatar-canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;max-width:none;z-index:0;pointer-events:none}.screen .overlay,.screen .video-decoration{z-index:1}.screen .avflash{z-index:2}

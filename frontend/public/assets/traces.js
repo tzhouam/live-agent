@@ -1,4 +1,4 @@
-const params = new URLSearchParams(location.search), editions = ["primary", "secondary", "university"];
+const params = new URLSearchParams(location.search), editions = ["primary", "secondary", "university", "live"];
 let preferredEdition = "secondary";
 try { preferredEdition = localStorage.getItem("liveAgent.edition") || preferredEdition; } catch (_) {}
 const requestedEdition = params.get("edition");
@@ -13,11 +13,19 @@ const copy = english ? {
 };
 function t(key, values = {}) { return String(copy[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => String(values[name] ?? "")); }
 Object.assign(copy, english ? {
+  fallbackTitle:"Server fallback video", fallbackDownload:"Download fallback video", fallbackPart:"Fallback video · Part {part}",
+  fallbackGenerated:"Generated fallback material", fallbackGeneratedPart:"Generated fallback material · Part {part}",
+  fallbackVideoLabel:"Server fallback avatar recording from {date}",
+  fallbackNote:"This file contains the server fallback avatar. The classroom used a browser VTuber; its appearance and movements are not recorded in this video.",
   chooseLearner:"Choose a learner in the study room to see their saved private sessions.",
   publicScope:"Showing public sessions only. Older records without clear scope are excluded. This trusted local service has no account authentication; library filtering does not control access to files.",
   transcript:"Read scripts & input", transcriptLabel:"Planned scripts and recorded input", transcriptNote:"This reading aid contains planned tutor scripts and recorded user input. Scripts may include words that were never played. This is not an audio transcript or captions, and is not a reliable equivalent of the spoken replay. Spoken words and timing have not been verified.",
   transcriptLoading:"Loading session text…", transcriptEmpty:"Nothing is available in this reading aid.", transcriptMissing:"Readable text is unavailable for this record.", transcriptError:"Session text couldn’t be loaded. Try again.", transcriptRetry:"Retry session text", tutorScript:"Planned tutor script", userInput:"Recorded user input", scriptUnknown:"Playback completion is unknown; this planned text may include unplayed words.", scriptComplete:"All expected chunks were acknowledged; script words and actual audio are still unverified.", partialOmitted:"Planned scripts were omitted where complete chunk acknowledgements are missing. Missing acknowledgements do not prove playback stopped. This reading aid does not establish coverage of the recorded audio."
 } : {
+  fallbackTitle:"备用老师视频", fallbackDownload:"下载备用视频", fallbackPart:"备用视频 · 第 {part} 部分",
+  fallbackGenerated:"生成的备用素材", fallbackGeneratedPart:"生成的备用素材 · 第 {part} 部分",
+  fallbackVideoLabel:"{date}的备用老师录像",
+  fallbackNote:"这份文件保存的是服务器的备用老师画面。课堂当时使用了浏览器中的 VTuber；其外观与动作没有录入这份视频。",
   chooseLearner:"请先去课堂选择学生，再查看这个学生保存的私人课堂。",
   publicScope:"只显示公开会话，没有明确归属的旧记录不显示。当前服务用于可信的本地环境，没有账号登录；列表筛选不等于文件访问权限隔离。",
   transcript:"阅读讲稿与输入", transcriptLabel:"计划讲稿与保存的用户输入", transcriptNote:"这些文字仅供阅读参考，包括老师的计划讲稿和保存的用户输入。讲稿可能含有从未播放的内容，不是音频转写或字幕，也不能可靠替代录像中的声音。实际说出的文字和时间位置尚未核对。",
@@ -124,22 +132,29 @@ function recordingCard(session) {
   const card = document.createElement("article"); card.className = "recording-card";
   const presented = session.videos.filter(video => video.label.startsWith("presented")).sort((a,b) => recordingPart(a) - recordingPart(b));
   const generated = session.videos.filter(video => video.label.startsWith("generated")).sort((a,b) => recordingPart(a) - recordingPart(b));
+  const isFallback = file => file.visual_source === "server_video_fallback";
+  const hasFallback = session.videos.some(isFallback);
   const when = traceUpdateTime(session.updated_at);
   if (presented.length) {
     const video = document.createElement("video"); video.controls = true; video.preload = "none"; video.playsInline = true;
-    video.src = presented[0].url; video.setAttribute("aria-label", t("videoLabel", {date:when})); card.append(video);
+    video.src = presented[0].url; video.setAttribute("aria-label", t(isFallback(presented[0]) ? "fallbackVideoLabel" : "videoLabel", {date:when})); card.append(video);
   } else {
     const empty = document.createElement("div"); empty.className = "recording-no-video";
     const icon = document.createElement("span"); icon.textContent = "▷"; icon.setAttribute("aria-hidden", "true");
     const text = document.createElement("p"); text.textContent = t("noVideo"); empty.append(icon, text); card.append(empty);
   }
   const content = document.createElement("div"); content.className = "recording-content";
-  const title = document.createElement("h3"); title.textContent = t("session");
+  const title = document.createElement("h3"); title.textContent = t(hasFallback ? "fallbackTitle" : "session");
   const time = document.createElement("p"); time.className = "recording-time"; time.textContent = when; time.title = session.updated_at;
   content.append(title, time);
+  if (hasFallback) {
+    const note = document.createElement("p"); note.className = "transcript-note"; note.textContent = t("fallbackNote"); content.append(note);
+  }
   if (presented.length) {
     const links = document.createElement("div"); links.className = "recording-downloads";
-    presented.forEach(file => links.append(traceLink(file.url, recordingPart(file) === 1 ? t("download") : t("part", {part:recordingPart(file)}), "download-link")));
+    presented.forEach(file => links.append(traceLink(file.url, recordingPart(file) === 1
+      ? t(isFallback(file) ? "fallbackDownload" : "download")
+      : t(isFallback(file) ? "fallbackPart" : "part", {part:recordingPart(file)}), "download-link")));
     content.append(links);
   }
   const details = document.createElement("details"); details.className = "file-details";
@@ -152,7 +167,8 @@ function recordingCard(session) {
     const note = document.createElement("p"); note.textContent = t("generatedNote"); details.append(note);
     const generatedFiles = document.createElement("div"); generatedFiles.className = "file-list";
     generated.forEach(file => {
-      const label = recordingPart(file) === 1 ? t("generated") : t("generatedPart", {part:recordingPart(file)});
+      const label = recordingPart(file) === 1 ? t(isFallback(file) ? "fallbackGenerated" : "generated")
+        : t(isFallback(file) ? "fallbackGeneratedPart" : "generatedPart", {part:recordingPart(file)});
       generatedFiles.append(traceLink(file.url, label));
     });
     details.append(generatedFiles);

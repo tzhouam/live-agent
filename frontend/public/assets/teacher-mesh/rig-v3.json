@@ -1,0 +1,734 @@
+{
+  "version": 1,
+  "model": "teacher-mesh-v1",
+  "renderer": "pixi-mesh",
+  "canvas": [
+    480,
+    864
+  ],
+  "description": "Custom mesh-deformed adult anime teacher; not a Live2D/Cubism model.",
+  "head_scale": 1,
+  "neck_mask": null,
+  "hair_physics": {
+    "stiffness": 35,
+    "damping": 10,
+    "max_offset": 2.6
+  },
+  "background": "classroom-v1.png",
+  "tabletop_y": 575,
+  "foreground_y": 690,
+  "supported_gestures": [
+    "idle",
+    "listen",
+    "explain",
+    "present",
+    "point",
+    "smile",
+    "think",
+    "nod",
+    "shake",
+    "wave"
+  ],
+  "limits": {
+    "head_turn": 0.65,
+    "head_tilt": 0.045,
+    "breath": 1.6,
+    "hair_sway": 2.6,
+    "gesture_weight": 1
+  },
+  "layers": [
+    {
+      "id": "face",
+      "group": "head",
+      "rect": [
+        157.5,
+        195,
+        165,
+        246.4609571788413
+      ],
+      "grid": [
+        13,
+        19
+      ],
+      "asset": "face-v3.png"
+    },
+    {
+      "id": "body",
+      "group": "body",
+      "rect": [
+        75,
+        325,
+        330,
+        420.68702290076334
+      ],
+      "grid": [
+        15,
+        19
+      ],
+      "asset": "body-v3.png"
+    },
+    {
+      "id": "left-arm",
+      "group": "arm",
+      "side": -1,
+      "rect": [
+        0,
+        0,
+        67,
+        249.21969696969697
+      ],
+      "grid": [
+        9,
+        27
+      ],
+      "anchors": [
+        [
+          0.481,
+          0.074
+        ],
+        [
+          0.327,
+          0.508
+        ],
+        [
+          0.715,
+          0.947
+        ]
+      ],
+      "asset": "left-arm-v3.png"
+    },
+    {
+      "id": "right-arm",
+      "group": "arm",
+      "side": 1,
+      "rect": [
+        0,
+        0,
+        67,
+        252.28076923076924
+      ],
+      "grid": [
+        9,
+        27
+      ],
+      "anchors": [
+        [
+          0.519,
+          0.074
+        ],
+        [
+          0.673,
+          0.508
+        ],
+        [
+          0.285,
+          0.947
+        ]
+      ],
+      "asset": "right-arm-v3.png"
+    },
+    {
+      "id": "eyes",
+      "group": "head",
+      "rect": [
+        198,
+        290,
+        84,
+        22.5
+      ],
+      "grid": [
+        15,
+        5
+      ],
+      "asset": "eyes-v3.png"
+    },
+    {
+      "id": "lids",
+      "group": "head",
+      "rect": [
+        198,
+        291,
+        84,
+        22.131736526946106
+      ],
+      "grid": [
+        15,
+        5
+      ],
+      "asset": "lids-v3.png"
+    },
+    {
+      "id": "brows",
+      "group": "head",
+      "rect": [
+        198,
+        281,
+        84,
+        8.424778761061948
+      ],
+      "grid": [
+        15,
+        3
+      ],
+      "asset": "brows-v3.png"
+    },
+    {
+      "id": "mouth-neutral",
+      "group": "head",
+      "rect": [
+        224,
+        320,
+        32,
+        21.974248927038627
+      ],
+      "grid": [
+        11,
+        7
+      ],
+      "asset": "mouth-neutral-v3.png"
+    },
+    {
+      "id": "mouth-a",
+      "group": "head",
+      "rect": [
+        224,
+        317,
+        32,
+        25.74222222222222
+      ],
+      "grid": [
+        11,
+        9
+      ],
+      "asset": "mouth-a-v3.png"
+    },
+    {
+      "id": "mouth-o",
+      "group": "head",
+      "rect": [
+        227,
+        318,
+        26,
+        25.707865168539325
+      ],
+      "grid": [
+        9,
+        9
+      ],
+      "asset": "mouth-o-v3.png"
+    },
+    {
+      "id": "glasses",
+      "group": "head",
+      "rect": [
+        187,
+        286,
+        106,
+        29.12087912087912
+      ],
+      "grid": [
+        15,
+        5
+      ],
+      "asset": "glasses-v3.png"
+    },
+    {
+      "id": "front-hair",
+      "group": "head",
+      "rect": [
+        157,
+        184,
+        166,
+        229.00454545454545
+      ],
+      "grid": [
+        19,
+        23
+      ],
+      "asset": "front-hair-v3.png"
+    }
+  ],
+  "hands": {
+    "relaxed": {
+      "asset": "relaxed-hand-v3.png",
+      "size": [
+        70,
+        66.24708624708624
+      ],
+      "anchor": [
+        0.83,
+        0.12
+      ],
+      "rest_rotation": -0.45,
+      "contact_shadow": true
+    },
+    "open": {
+      "asset": "open-hand-v3.png",
+      "size": [
+        79,
+        63.80047505938242
+      ],
+      "anchor": [
+        0.88,
+        0.2
+      ]
+    },
+    "point": {
+      "asset": "point-hand-v3.png",
+      "size": [
+        66,
+        73.17796610169492
+      ],
+      "anchor": [
+        0.625,
+        0.645
+      ],
+      "skin_mask": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0.55
+        ],
+        [
+          0.695,
+          0.564
+        ],
+        [
+          0.68,
+          0.61
+        ],
+        [
+          0.615,
+          0.68
+        ],
+        [
+          0.555,
+          0.725
+        ],
+        [
+          0,
+          0.725
+        ]
+      ]
+    },
+    "wave": {
+      "asset": "wave-hand-v3.png",
+      "size": [
+        58,
+        91.64885496183206
+      ],
+      "anchor": [
+        0.53,
+        0.76
+      ],
+      "skin_mask": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0.694
+        ],
+        [
+          0.681,
+          0.694
+        ],
+        [
+          0.674,
+          0.739
+        ],
+        [
+          0.519,
+          0.773
+        ],
+        [
+          0.387,
+          0.751
+        ],
+        [
+          0.378,
+          0.694
+        ],
+        [
+          0,
+          0.694
+        ]
+      ]
+    }
+  },
+  "arms": {
+    "shoulders": [
+      [
+        360,
+        375
+      ],
+      [
+        120,
+        375
+      ]
+    ],
+    "elbows": [
+      [
+        369,
+        507
+      ],
+      [
+        111,
+        507
+      ]
+    ],
+    "forearm_length": 112,
+    "rest_angle": -0.55,
+    "explain_angle": -1.1,
+    "present_angle": -0.91,
+    "point_angle": 0.3,
+    "wave_upper_angle": 0.3,
+    "wave_angle": -2.88,
+    "think_upper_angle": -0.42,
+    "think_angle": -2.94
+  },
+  "extraction": {
+    "body": {
+      "source": "body-atlas-v3.png",
+      "region": [
+        65,
+        0,
+        610,
+        700
+      ],
+      "trim": [
+        10,
+        24,
+        534,
+        692
+      ],
+      "size": [
+        524,
+        668
+      ]
+    },
+    "back-hair": {
+      "source": "body-atlas-v3.png",
+      "region": [
+        615,
+        0,
+        1024,
+        705
+      ],
+      "trim": [
+        15,
+        16,
+        344,
+        705
+      ],
+      "size": [
+        329,
+        689
+      ]
+    },
+    "right-arm": {
+      "source": "arms-atlas-v3.png",
+      "region": [
+        130,
+        10,
+        430,
+        1030
+      ],
+      "trim": [
+        15,
+        22,
+        275,
+        1001
+      ],
+      "size": [
+        260,
+        979
+      ]
+    },
+    "left-arm": {
+      "source": "arms-atlas-v3.png",
+      "region": [
+        600,
+        10,
+        900,
+        1030
+      ],
+      "trim": [
+        20,
+        21,
+        284,
+        1003
+      ],
+      "size": [
+        264,
+        982
+      ]
+    },
+    "open-hand": {
+      "source": "arms-atlas-v3.png",
+      "region": [
+        565,
+        1080,
+        1024,
+        1536
+      ],
+      "trim": [
+        20,
+        25,
+        441,
+        365
+      ],
+      "size": [
+        421,
+        340
+      ]
+    },
+    "relaxed-hand": {
+      "source": "arms-atlas-v3.png",
+      "region": [
+        45,
+        1060,
+        510,
+        1536
+      ],
+      "trim": [
+        21,
+        20,
+        450,
+        426
+      ],
+      "size": [
+        429,
+        406
+      ]
+    },
+    "face": {
+      "source": "face-atlas-v3.png",
+      "region": [
+        20,
+        70,
+        425,
+        695
+      ],
+      "trim": [
+        8,
+        16,
+        405,
+        609
+      ],
+      "size": [
+        397,
+        593
+      ]
+    },
+    "front-hair": {
+      "source": "face-atlas-v3.png",
+      "region": [
+        400,
+        35,
+        845,
+        680
+      ],
+      "trim": [
+        0,
+        13,
+        440,
+        620
+      ],
+      "size": [
+        440,
+        607
+      ]
+    },
+    "glasses": {
+      "source": "face-atlas-v3.png",
+      "region": [
+        840,
+        295,
+        1230,
+        435
+      ],
+      "trim": [
+        7,
+        19,
+        371,
+        119
+      ],
+      "size": [
+        364,
+        100
+      ]
+    },
+    "eyes": {
+      "source": "face-atlas-v3.png",
+      "region": [
+        30,
+        775,
+        410,
+        900
+      ],
+      "trim": [
+        23,
+        16,
+        359,
+        106
+      ],
+      "size": [
+        336,
+        90
+      ]
+    },
+    "brows": {
+      "source": "face-atlas-v3.png",
+      "region": [
+        440,
+        800,
+        805,
+        865
+      ],
+      "trim": [
+        14,
+        9,
+        353,
+        43
+      ],
+      "size": [
+        339,
+        34
+      ]
+    },
+    "lids": {
+      "source": "face-atlas-v3.png",
+      "region": [
+        840,
+        775,
+        1220,
+        905
+      ],
+      "trim": [
+        18,
+        19,
+        352,
+        107
+      ],
+      "size": [
+        334,
+        88
+      ]
+    },
+    "mouth-neutral": {
+      "source": "face-atlas-v3.png",
+      "region": [
+        85,
+        1005,
+        355,
+        1215
+      ],
+      "trim": [
+        21,
+        25,
+        254,
+        185
+      ],
+      "size": [
+        233,
+        160
+      ]
+    },
+    "mouth-a": {
+      "source": "face-atlas-v3.png",
+      "region": [
+        480,
+        1000,
+        760,
+        1220
+      ],
+      "trim": [
+        24,
+        17,
+        249,
+        198
+      ],
+      "size": [
+        225,
+        181
+      ]
+    },
+    "mouth-o": {
+      "source": "face-atlas-v3.png",
+      "region": [
+        915,
+        1000,
+        1140,
+        1220
+      ],
+      "trim": [
+        24,
+        15,
+        202,
+        191
+      ],
+      "size": [
+        178,
+        176
+      ]
+    },
+    "point-hand": {
+      "source": "hands-atlas-v1.png",
+      "region": [
+        0,
+        0,
+        887,
+        887
+      ],
+      "trim": [
+        164,
+        77,
+        872,
+        862
+      ],
+      "size": [
+        708,
+        785
+      ]
+    },
+    "wave-hand": {
+      "source": "hands-atlas-v1.png",
+      "region": [
+        887,
+        0,
+        1774,
+        887
+      ],
+      "trim": [
+        181,
+        34,
+        705,
+        862
+      ],
+      "size": [
+        524,
+        828
+      ]
+    }
+  },
+  "asset_revision": 3,
+  "head_pivot": [
+    240,
+    378
+  ],
+  "collar_blend": false,
+  "jaw_width": 0
+}

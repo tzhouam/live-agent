@@ -218,7 +218,7 @@ def test_the_planner_carries_objectives_focus_and_the_craft_into_every_prompt(tm
     sec_prompt = planner.llm.calls[1][-1]["content"]
     assert "本课目标：能说出勾股定理；能求斜边；重点：a²+b²=c²；难点：分清直角边和斜边。" in sec_prompt
     assert "结课：回到目标" in sec_prompt and "借鉴孙维刚老师（结构教学）的做法：一题多解；知识结构图" in sec_prompt
-    assert "启发式设问" in sec_prompt and "回到本课目标和重点" in sec_prompt  # the last section closes the lesson
+    assert "引导思考" in sec_prompt and "回到本课目标和重点" in sec_prompt  # the last section closes the lesson
     v = asyncio.run(planner.check_section(outline, 1, lines, profile=p))
     # one applicable item (grade 8), scored 2: the pass rule is applied in code, not taken from the judge's "pass"
     assert v == {"pass": True, "scores": {"1": 2}, "problems": ["第一条要点没有例子"], "fix": "加一个例子", "items": 1}

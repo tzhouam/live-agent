@@ -1,7 +1,8 @@
-"""Puppet generator: a skeleton-controlled cartoon teacher on CPU (D-047).
+"""Puppet generator: a skeleton-controlled VTuber-style teacher on CPU (D-047).
 
 The cheap peer of the TaoMate-H3 backends (docs/notes/cheap_avatar_backbone.md): no GPU, no
-diffusion. One 5-s request is
+diffusion. Each request uses four chunks; teaching speech follows the complete
+utterance's duration, while silent/action clips keep their nominal layout. It is
 
 - the spoken line synthesized by a TTS client (``live_agent.tts``) — the real "teacher"
   latency, and
@@ -22,7 +23,6 @@ import argparse
 import asyncio
 import json
 import math
-import random
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -32,6 +32,7 @@ import numpy as np
 
 from live_agent.generator.base import Generator, GeneratorInfo, RequestTiming
 from live_agent.generator.mock import FIRST_LAYOUT, LATER_LAYOUT
+from live_agent.generator.puppet_art import render_frame
 from live_agent.prompt.h3_compiler import extract_dialogue
 from live_agent.tts import SynthTTS, TTS_RATE, make_tts
 from live_agent.types import Chunk, now
@@ -51,14 +52,16 @@ class Pose:
     head_dx: float = 0.0
     head_dy: float = 0.0
     head_tilt: float = 0.0
-    r_sh: float = 0.30
-    r_el: float = 0.35
-    l_sh: float = 0.30
-    l_el: float = 0.35
+    r_sh: float = 0.15
+    r_el: float = -0.85
+    l_sh: float = 0.15
+    l_el: float = -0.85
     mouth_open: float = 0.0
+    mouth_round: float = 0.0
     smile: float = 0.0
     brow: float = 0.0
     eye_close: float = 0.0
+    palm_open: float = 0.0
     item: str = ""
 
 
@@ -66,46 +69,62 @@ _FIELDS = tuple(f for f in Pose.__dataclass_fields__ if f != "item")
 
 # Animation keyframes: (fraction of the request, pose overrides). Every animation starts and
 # ends at the idle pose, so consecutive requests never freeze mid-gesture.
+def _raised(sh: float, el: float, *, both: bool = False, **extra) -> list[tuple[float, dict]]:
+    """Fold the elbow before opening the shoulder, keeping the transition on camera."""
+    tucked = {"r_sh": -0.80, "r_el": 2.65}
+    held = {"r_sh": sh, "r_el": el, **extra}
+    if both:
+        tucked.update(l_sh=-0.80, l_el=2.65)
+        held.update(l_sh=sh, l_el=el)
+    return [(0.06, tucked), (0.16, held), (0.82, held), (0.92, tucked), (1.0, {})]
+
+
 ANIMATIONS: dict[str, list[tuple[float, dict]]] = {
     "idle": [],
-    "listen": [(0.10, {"head_tilt": 0.14}), (0.40, {"head_tilt": 0.14, "head_dy": 7.0}),
-               (0.70, {"head_tilt": 0.14}), (1.0, {})],
-    "explain": [(0.08, {"r_sh": 0.80, "r_el": 1.35}), (0.92, {"r_sh": 0.80, "r_el": 1.35}), (1.0, {})],
-    "point": [(0.12, {"r_sh": 1.05, "r_el": 1.45, "item": "pointer", "head_dx": -8.0}),
-              (0.80, {"r_sh": 1.05, "r_el": 1.45, "item": "pointer", "head_dx": -8.0}), (1.0, {})],
-    "draw": [(0.12, {"r_sh": 1.35, "r_el": 1.05, "item": "chalk", "head_dx": -10.0}),
-             (0.85, {"r_sh": 1.35, "r_el": 1.05, "item": "chalk", "head_dx": -10.0}), (1.0, {})],
-    "hold": [(0.12, {"r_sh": -0.30, "r_el": -1.55, "l_sh": 0.30, "l_el": 1.55, "item": "book"}),
-             (0.85, {"r_sh": -0.30, "r_el": -1.55, "l_sh": 0.30, "l_el": 1.55, "item": "book"}), (1.0, {})],
-    "count": [(0.12, {"r_sh": 0.95, "r_el": 0.80, "item": "count"}),
-              (0.85, {"r_sh": 0.95, "r_el": 0.80, "item": "count"}), (1.0, {})],
-    "thumb": [(0.12, {"r_sh": 0.90, "r_el": 0.70, "item": "thumb", "smile": 0.6}),
-              (0.85, {"r_sh": 0.90, "r_el": 0.70, "item": "thumb", "smile": 0.6}), (1.0, {})],
-    "spin": [(0.12, {"r_sh": 1.10, "r_el": 0.65}), (0.88, {"r_sh": 1.10, "r_el": 0.65}), (1.0, {})],
-    "drink": [(0.10, {"r_sh": 0.55, "r_el": 0.30, "item": "mug"}),
-              (0.28, {"r_sh": -0.90, "r_el": -2.50, "item": "mug", "head_dy": 6.0}),
-              (0.72, {"r_sh": -0.90, "r_el": -2.50, "item": "mug", "head_dy": 6.0}),
-              (0.92, {"r_sh": 0.55, "r_el": 0.30, "item": "mug"}), (1.0, {})],
-    "nod": [(0.10, {"head_dy": 13.0}), (0.22, {}), (0.34, {"head_dy": 13.0}), (0.46, {}), (1.0, {})],
-    "shake": [(0.12, {"head_dx": -16.0}), (0.28, {"head_dx": 16.0}), (0.44, {"head_dx": -14.0}),
+    "listen": [(0.10, {"head_tilt": 0.08}), (0.40, {"head_tilt": 0.08, "head_dy": 4.0}),
+               (0.70, {"head_tilt": 0.08}), (1.0, {})],
+    # Ordinary speech keeps the elbow below the shoulder and bends it in the
+    # same direction as the resting pose. Avoid the old backward elbow sweep.
+    "explain": [(0.24, {"r_sh": 0.08, "r_el": -1.55, "palm_open": 0.8}),
+                (0.70, {"r_sh": 0.08, "r_el": -1.55, "palm_open": 0.8}), (1.0, {})],
+    "point": _raised(0.03, 2.80, item="pointer", head_dx=-4.0),
+    "draw": _raised(-0.45, 2.73, item="chalk", head_dx=-4.0),
+    "hold": [(0.14, {"r_sh": 0.07, "r_el": -0.77, "l_sh": 0.07, "l_el": -0.77, "item": "book"}),
+             (0.85, {"r_sh": 0.07, "r_el": -0.77, "l_sh": 0.07, "l_el": -0.77, "item": "book"}), (1.0, {})],
+    "count": _raised(-0.45, 2.73, item="count"),
+    "thumb": _raised(-0.62, 2.68, item="thumb", smile=0.6),
+    "spin": [(0.14, {"l_sh": -0.82, "l_el": 1.75}),
+             (0.86, {"l_sh": -0.82, "l_el": 1.75}), (1.0, {})],
+    "drink": [(0.10, {"r_sh": 0.39, "r_el": -0.61, "item": "mug"}),
+              (0.28, {"r_sh": -0.91, "r_el": -2.15, "item": "mug", "head_dy": 3.0}),
+              (0.72, {"r_sh": -0.91, "r_el": -2.15, "item": "mug", "head_dy": 3.0}),
+              (0.92, {"r_sh": 0.39, "r_el": -0.61, "item": "mug"}), (1.0, {})],
+    "nod": [(0.10, {"head_dy": 4.0}), (0.22, {}), (0.34, {"head_dy": 4.0}), (0.46, {}), (1.0, {})],
+    "shake": [(0.12, {"head_dx": -8.0}), (0.28, {"head_dx": 8.0}), (0.44, {"head_dx": -7.0}),
               (0.60, {}), (1.0, {})],
     "smile": [(0.12, {"smile": 1.0}), (0.85, {"smile": 1.0}), (1.0, {})],
-    "wave": [(0.12, {"r_sh": 1.50, "r_el": 0.90}), (0.88, {"r_sh": 1.50, "r_el": 0.90}), (1.0, {})],
-    "bow": [(0.15, {"head_dy": 40.0, "r_sh": 0.55, "r_el": 0.50, "l_sh": 0.55, "l_el": 0.50}),
-            (0.70, {"head_dy": 40.0, "r_sh": 0.55, "r_el": 0.50, "l_sh": 0.55, "l_el": 0.50}), (1.0, {})],
-    "think": [(0.12, {"r_sh": -0.55, "r_el": -2.40, "head_tilt": 0.12, "brow": 1.0}),
-              (0.88, {"r_sh": -0.55, "r_el": -2.40, "head_tilt": 0.12, "brow": 1.0}), (1.0, {})],
-    "present": [(0.12, {"r_sh": 0.85, "r_el": 1.35, "l_sh": 0.85, "l_el": 1.35, "smile": 0.6}),
-                (0.88, {"r_sh": 0.85, "r_el": 1.35, "l_sh": 0.85, "l_el": 1.35, "smile": 0.6}), (1.0, {})],
+    "wave": _raised(0.40, 2.78, item="wave", smile=0.5),
+    "bow": [(0.15, {"head_dy": 10.0}), (0.70, {"head_dy": 10.0}), (1.0, {})],
+    "think": [(0.12, {"r_sh": -0.84, "r_el": -2.22, "head_tilt": 0.06, "brow": 1.0}),
+              (0.88, {"r_sh": -0.84, "r_el": -2.22, "head_tilt": 0.06, "brow": 1.0}), (1.0, {})],
+    "present": [(0.24, {"r_sh": 0.16, "r_el": -1.35, "palm_open": 1.0, "smile": 0.3}),
+                (0.70, {"r_sh": 0.16, "r_el": -1.35, "palm_open": 1.0, "smile": 0.3}), (1.0, {})],
 }
 
-# Hand oscillation while an animation holds: (shoulder amplitude, elbow amplitude, Hz)
+# Hand oscillation while a gesture holds: (shoulder amplitude, elbow amplitude, Hz)
 WIGGLE: dict[str, tuple[float, float, float]] = {
-    "explain": (0.10, 0.16, 2.2),
-    "draw": (0.06, 0.10, 2.6),
-    "spin": (0.14, 0.22, 1.8),
-    "wave": (0.0, 0.28, 3.0),
+    "explain": (0.008, 0.018, 0.35),
+    "draw": (0.018, 0.045, 0.9),
+    "spin": (0.035, 0.055, 0.7),
+    "wave": (0.0, 0.07, 1.0),
 }
+
+# The browser rig points with its authored index hand, without a pointer prop.
+# Keep this alias separate from the legacy persona capability phrase.
+BROWSER_POINT_PHRASE = (
+    "she points toward the teaching board with her right index finger, "
+    "then gently lowers her hand to rest at the desk"
+)
 
 _ANIM_BY_INTENT = {  # teacher capabilities + hanfu-persona aliases
     "idle_teach": "idle", "listen": "listen", "explain": "explain", "point_board": "point",
@@ -145,18 +164,28 @@ def _interp_pose(keys: list[tuple[float, dict]], u: float) -> Pose:
     return Pose(**vals, item=k0.get("item", ""))
 
 
-def pose_at(anim: str, t: float, dur: float, mouth: float, phase: float) -> Pose:
+def pose_at(anim: str, t: float, dur: float, mouth: float, phase: float,
+            motion_time: float | None = None) -> Pose:
     u = min(1.0, max(0.0, t / dur))
     p = _interp_pose(ANIMATIONS.get(anim, []), u)
-    p.head_dy += 1.4 * math.sin(2 * math.pi * t / 3.6 + phase)  # breathing
-    p.head_dx += 2.2 * math.sin(2 * math.pi * t / 7.3 + phase * 1.7)  # micro sway
-    if (t + phase * 2.9) % 2.9 < 0.13:  # blink
-        p.eye_close = 1.0
+    clock = t if motion_time is None else motion_time
+    p.head_dy += 1.4 * math.sin(2 * math.pi * clock / 3.6 + phase)
+    p.head_dx += 2.2 * math.sin(2 * math.pi * clock / 7.3 + phase * 1.7)
+    blink = (clock + phase * 2.9) % 2.9
+    if blink < 0.24:
+        p.eye_close = _smoothstep(blink / 0.08) if blink < 0.08 else 1 - _smoothstep((blink - 0.08) / 0.16)
     p.mouth_open = max(p.mouth_open, mouth)
     w = WIGGLE.get(anim)
-    if w and 0.08 < u < 0.95:
-        p.r_sh += w[0] * math.sin(2 * math.pi * w[2] * t + phase)
-        p.r_el += w[1] * math.cos(2 * math.pi * w[2] * 0.9 * t + phase)
+    if w and 0.16 < u < 0.82:
+        envelope = _smoothstep((u - 0.16) / 0.08) * _smoothstep((0.82 - u) / 0.12)
+        sh = envelope * w[0] * math.sin(2 * math.pi * w[2] * clock + phase)
+        el = envelope * w[1] * math.cos(2 * math.pi * w[2] * 0.9 * clock + phase)
+        if anim == "spin":
+            p.l_sh += sh
+            p.l_el += el
+        else:
+            p.r_sh += sh
+            p.r_el += el
     return p
 
 
@@ -183,139 +212,32 @@ def mouth_track(audio: np.ndarray, n_frames: int, fps: float, sr: int) -> np.nda
 
 # --------------------------------------------------------------------------- drawing
 
-SKIN = (255, 219, 186)
-HAIR = (56, 42, 36)
-JACKET = (58, 84, 104)
-SLEEVE = (88, 120, 144)  # lighter than the jacket so the arms read against the torso
-SLEEVE_EDGE = (34, 50, 62)
-SHIRT = (246, 246, 240)
-WALL = (216, 227, 231)
-BOARD = (43, 74, 60)
-FRAME = (126, 94, 63)
-CHALK = (226, 226, 214)
-DESK = (150, 111, 72)
-DESK_TOP = (182, 142, 95)
-MUG = (172, 62, 52)
-GLOBE = (96, 140, 170)
-
-
-def _draw_item(d, P, hx: float, hy: float, item: str, side: int) -> None:
-    """What the right hand holds, drawn at the hand position (cartoon approximations)."""
-    if item == "pointer":
-        tip = (hx - side * 54.0, hy - 104.0)
-        d.line([P(hx, hy), P(*tip)], fill=FRAME, width=4)
-        d.ellipse([P(tip[0] - 4, tip[1] - 4), P(tip[0] + 4, tip[1] + 4)], fill=(180, 60, 50))
-    elif item == "chalk":
-        tip = (hx - side * 16.0, hy - 22.0)
-        d.line([P(hx, hy), P(*tip)], fill=(240, 240, 235), width=5)
-    elif item == "mug":
-        d.rectangle([P(hx - 14, hy - 38), P(hx + 14, hy + 2)], fill=MUG, outline=(120, 40, 34), width=2)
-        d.arc([P(hx + 10, hy - 26), P(hx + 26, hy - 8)], 270, 90, fill=(120, 40, 34), width=3)
-    elif item == "book":
-        d.rectangle([P(hx - 34, hy - 46), P(hx + 34, hy + 2)], fill=(204, 178, 116),
-                    outline=(150, 124, 70), width=2)
-        d.line([P(hx, hy - 46), P(hx, hy + 2)], fill=(150, 124, 70), width=2)
-    elif item == "count":
-        for j in range(5):
-            a = -0.9 + j * 0.45
-            d.line([P(hx, hy), P(hx + 14 * math.sin(a), hy - 18 - 4 * math.cos(a))],
-                   fill=SKIN, outline=(200, 170, 140), width=4)
-    elif item == "thumb":
-        d.line([P(hx, hy), P(hx - side * 2.0, hy - 22.0)], fill=SKIN, outline=(200, 170, 140), width=7)
-
-
-def render_frame(w: int, h: int, p: Pose) -> np.ndarray:
-    from PIL import Image, ImageDraw
-
-    img = Image.new("RGB", (w, h), WALL)
-    d = ImageDraw.Draw(img)
-    sx, sy = w / 480.0, h / 864.0
-
-    def P(x: float, y: float) -> tuple[float, float]:
-        return (x * sx, y * sy)
-
-    def limb(a: tuple[float, float], b: tuple[float, float], width: int) -> None:
-        d.line([P(*a), P(*b)], fill=SLEEVE_EDGE, width=width + 6)  # outline first: sleeve reads on jacket
-        d.line([P(*a), P(*b)], fill=SLEEVE, width=width)
-
-    # scene: blackboard with chalk marks
-    d.rectangle([P(30, 48), P(450, 356)], fill=BOARD, outline=FRAME, width=max(2, int(6 * sx)))
-    for cx, cy, ln in ((70, 120, 60), (70, 160, 90), (150, 110, 50), (150, 260, 110), (70, 300, 80)):
-        d.line([P(cx, cy), P(cx + ln, cy - 8)], fill=CHALK, width=2)
-
-    # torso and collar (the lower part disappears behind the lectern front drawn last)
-    d.polygon([P(168, 592), P(312, 592), P(322, 740), P(158, 740)], fill=JACKET)
-    d.polygon([P(216, 592), P(264, 592), P(252, 650), P(228, 650)], fill=SHIRT)
-    d.rectangle([P(228, 526 + p.head_dy), P(252, 566 + p.head_dy)], fill=SKIN)  # neck
-
-    # head
-    hx, hy = 240.0 + p.head_dx, 470.0 + p.head_dy
-    d.ellipse([P(hx - 64, hy - 64), P(hx + 64, hy + 64)], fill=SKIN)
-    d.ellipse([P(hx - 70, hy - 8), P(hx - 58, hy + 12)], fill=SKIN)
-    d.ellipse([P(hx + 58, hy - 8), P(hx + 70, hy + 12)], fill=SKIN)
-    d.pieslice([P(hx - 64, hy - 64), P(hx + 64, hy + 64)], 180, 360, fill=HAIR)
-    d.rectangle([P(hx - 64, hy - 64), P(hx - 52, hy - 6)], fill=HAIR)
-    d.rectangle([P(hx + 52, hy - 64), P(hx + 64, hy - 6)], fill=HAIR)
-    d.rectangle([P(hx - 66, hy - 70), P(hx + 66, hy - 54)], fill=HAIR)
-
-    # face: eyes, glasses, brows, mouth
-    ey = hy - 6
-    tilt = p.head_tilt
-    for exo in (-24.0, 24.0):
-        ex = hx + exo + tilt * 18.0
-        if p.eye_close > 0.5:
-            d.line([P(ex - 9, ey), P(ex + 9, ey)], fill=(40, 30, 26), width=3)
-        else:
-            d.ellipse([P(ex - 9, ey - 6), P(ex + 9, ey + 6)], fill=(250, 250, 250),
-                      outline=(60, 50, 44), width=2)
-            d.ellipse([P(ex - 3.5, ey - 4), P(ex + 3.5, ey + 4)], fill=(50, 40, 34))
-        d.ellipse([P(ex - 15, ey - 11), P(ex + 15, ey + 11)], outline=(70, 60, 54), width=2)
-        by = ey - 20.0 - p.brow * 6.0
-        d.line([P(ex - 10, by), P(ex + 10, by - 2 - p.brow * 3)], fill=(50, 38, 32), width=4)
-    d.line([P(hx - 9 + tilt * 18, ey - 4), P(hx + 9 + tilt * 18, ey - 4)], fill=(70, 60, 54), width=2)
-    my = hy + 34.0
-    if p.smile > 0.4 and p.mouth_open < 0.15:
-        d.arc([P(hx - 16, my - 16), P(hx + 16, my + 14)], 20, 160, fill=(120, 60, 50), width=4)
-    else:
-        mw, mh = 13.0 + p.smile * 4.0, 2.0 + p.mouth_open * 22.0
-        d.ellipse([P(hx - mw, my - mh * 0.2), P(hx + mw, my + mh)], fill=(150, 80, 70),
-                  outline=(110, 60, 52), width=2)
-
-    # the desk surface the character stands behind: drawn under the arms so resting hands
-    # and the props read as *on* the lectern, not floating
-    d.polygon([P(96, 640), P(384, 640), P(404, 704), P(76, 704)], fill=DESK_TOP)
-    d.line([P(96, 640), P(384, 640)], fill=DESK, width=6)  # the back edge props rest against
-    d.line([P(104, 646), P(376, 646)], fill=(206, 166, 118), width=3)
-    d.ellipse([P(352, 598), P(396, 640)], fill=GLOBE, outline=DESK, width=2)  # globe, on the desk
-    d.arc([P(352, 598), P(396, 640)], 200, 340, fill=(220, 230, 235), width=2)
-    if p.item != "mug":  # the mug is in the hand while drinking
-        d.rectangle([P(386, 600), P(410, 640)], fill=MUG, outline=(120, 40, 34), width=2)
-        d.arc([P(408, 608), P(422, 632)], 270, 90, fill=(120, 40, 34), width=3)
-
-    # arms: shoulder -> elbow -> hand, outlined sleeves, items in the right hand
-    for side, sh_a, el_a, item in ((1, p.r_sh, p.r_el, p.item), (-1, p.l_sh, p.l_el, "")):
-        S = (302.0 if side > 0 else 178.0, 588.0)
-        E = (S[0] + side * 66.0 * math.sin(sh_a), S[1] + 66.0 * math.cos(sh_a))
-        H = (E[0] + side * 60.0 * math.sin(sh_a + el_a), E[1] + 60.0 * math.cos(sh_a + el_a))
-        d.ellipse([P(S[0] - 22, S[1] - 22), P(S[0] + 22, S[1] + 22)], fill=JACKET,
-                  outline=SLEEVE_EDGE, width=2)  # shoulder pad covers the sleeve joint
-        limb(S, E, max(2, int(24 * sx)))
-        limb(E, H, max(2, int(18 * sx)))
-        d.ellipse([P(H[0] - 14, H[1] - 14), P(H[0] + 14, H[1] + 14)], fill=SKIN,
-                  outline=(200, 170, 140), width=2)
-        if item:
-            _draw_item(d, P, H[0], H[1], item, side)
-
-    # lectern front, drawn last: hides the lower body
-    d.polygon([P(76, 704), P(404, 704), P(424, 864), P(56, 864)], fill=DESK)
-    d.rectangle([P(76, 704), P(404, 716)], fill=(120, 88, 56))
-    return np.asarray(img, dtype=np.uint8)
-
+def speech_shape_track(audio: np.ndarray, n_frames: int, fps: float, sr: int) -> np.ndarray:
+    """Coarse acoustic variety, not phoneme recognition: darker voiced sounds round
+    the lips, brighter sounds spread them. Silence does not animate the mouth."""
+    shapes = np.zeros(n_frames, dtype=np.float32)
+    previous = 0.0
+    for i in range(n_frames):
+        segment = audio[int(i / fps * sr):int((i + 1) / fps * sr)]
+        target = 0.0
+        if len(segment) > 1 and np.sqrt(np.mean(segment.astype(np.float64) ** 2)) > 1e-4:
+            spectrum = np.abs(np.fft.rfft(segment * np.hanning(len(segment))))
+            frequencies = np.fft.rfftfreq(len(segment), 1 / sr)
+            centroid = float(np.sum(spectrum * frequencies) / max(1e-9, spectrum.sum()))
+            target = float(np.clip((1800 - centroid) / 1500, 0, 1))
+        previous += 0.3 * (target - previous)
+        shapes[i] = previous
+    return shapes
 
 def render_chunk(w: int, h: int, n: int, t0: float, dt: float, dur: float, anim: str,
-                 mouth: np.ndarray, phase: float) -> np.ndarray:
-    frames = [render_frame(w, h, pose_at(anim, t0 + i * dt, dur, float(mouth[i]), phase))
-              for i in range(n)]
+                 mouth: np.ndarray, phase: float, motion_start: float = 0.0,
+                 shapes: np.ndarray | None = None) -> np.ndarray:
+    frames = []
+    for i in range(n):
+        t = t0 + i * dt
+        pose = pose_at(anim, t, dur, float(mouth[i]), phase, motion_start + t)
+        pose.mouth_round = float(shapes[i]) if shapes is not None else 0.0
+        frames.append(render_frame(w, h, pose))
     return np.stack(frames) if frames else np.zeros((0, h, w, 3), dtype=np.uint8)
 
 
@@ -326,10 +248,14 @@ class PuppetGenerator(Generator):
     """CPU skeleton-puppet backend; construct directly (tests) or via ``from_args``."""
 
     def __init__(self, *, tts=None, capabilities: list[tuple[str, str]] | None = None,
-                 fps: float = 24.0, size: tuple[int, int] = (864, 480), seed: int = 0):
+                 fps: float = 24.0, size: tuple[int, int] = (864, 480), seed: int = 0,
+                 speech_timing: str = "natural"):
+        if speech_timing not in ("natural", "fixed"):
+            raise ValueError("speech_timing must be natural or fixed")
         self.info = GeneratorInfo(name="puppet", request_seconds=5.0, chunks_per_request=4,
                                   fps=fps, width=size[1], height=size[0], sample_rate=TTS_RATE)
         self.tts = tts or SynthTTS()
+        self.speech_timing = speech_timing
         self._caps = capabilities or []
         self.seed = seed  # SessionView forwards the session seed here
         self._queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
@@ -340,6 +266,7 @@ class PuppetGenerator(Generator):
         self._first_in_session = True
         self._task: asyncio.Task | None = None
         self._error: BaseException | None = None
+        self._motion_time = 0.0
 
     @staticmethod
     def add_args(p: argparse.ArgumentParser) -> None:
@@ -348,6 +275,11 @@ class PuppetGenerator(Generator):
                             "edge (Microsoft Edge neural voices), piper (local CPU voices)")
         p.add_argument("--puppet-tts-voice", default="zh-CN-XiaoxiaoNeural",
                        help="voice name for edge/url TTS")
+        p.add_argument("--puppet-tts-rate", default="-4%", help="Edge speaking rate")
+        p.add_argument("--puppet-tts-pitch", default="-8Hz", help="Edge voice pitch")
+        p.add_argument("--puppet-tts-volume", default="+0%", help="Edge speech volume")
+        p.add_argument("--puppet-speech-timing", choices=["natural", "fixed"], default="natural",
+                       help="natural: follow complete teaching speech; fixed: retain nominal minimum duration")
         p.add_argument("--tts-url", default="", help="url mode: OpenAI-compatible base, e.g. http://host:port/v1")
         p.add_argument("--tts-model", default="tts-1", help="url mode: model id")
         p.add_argument("--tts-api-key-env", default="TTS_API_KEY",
@@ -368,8 +300,9 @@ class PuppetGenerator(Generator):
             caps = [(c.get("phrase", ""), c.get("intent", "")) for c in data.get("capabilities", [])]
         tts = make_tts(ns.puppet_tts, voice=ns.puppet_tts_voice, base_url=ns.tts_url,
                        model=ns.tts_model, api_key=os.environ.get(ns.tts_api_key_env) or "EMPTY",
-                       model_path=ns.puppet_piper_model)
-        return cls(tts=tts, capabilities=caps)
+                       model_path=ns.puppet_piper_model, edge_rate=ns.puppet_tts_rate,
+                       edge_pitch=ns.puppet_tts_pitch, edge_volume=ns.puppet_tts_volume)
+        return cls(tts=tts, capabilities=caps, speech_timing=ns.puppet_speech_timing)
 
     # ------------------------------------------------------------ contract
 
@@ -379,7 +312,7 @@ class PuppetGenerator(Generator):
     def detect_animation(self, prompt: str) -> str:
         """Intent of the locked prompt -> animation id (longest capability signature found)."""
         best_intent, best_len = "", 0
-        for phrase, intent in self._caps:
+        for phrase, intent in [*self._caps, (BROWSER_POINT_PHRASE, "point_board")]:
             sig = phrase.split("{")[0].split(",")[0].strip()
             if len(sig) >= 10 and sig in prompt and len(sig) > best_len:
                 best_intent, best_len = intent, len(sig)
@@ -405,17 +338,27 @@ class PuppetGenerator(Generator):
         tm.t_student_start = now()
         layout = FIRST_LAYOUT if self._first_in_session else LATER_LAYOUT
         self._first_in_session = False
-        total = sum(layout)
         fps, sr = self.info.fps, self.info.sample_rate
+        anim = self.detect_animation(prompt)
+        total = sum(layout)
+        if spoken is not None and len(spoken):
+            # Complete every utterance, including a short breath after its end.
+            # Four indexed chunks preserve the transport/acknowledgement contract.
+            speech_frames = math.ceil((len(spoken) / sr + 0.22) * fps)
+            if self.speech_timing == "natural" and anim in ("idle", "explain", "present"):
+                total = max(math.ceil(1.8 * fps), speech_frames)
+            else:
+                total = max(total, speech_frames)
+            boundaries = [round(total * sum(layout[:i]) / sum(layout)) for i in range(5)]
+            layout = [b - a for a, b in zip(boundaries, boundaries[1:])]
         dur = total / fps
         track = np.zeros(int(dur * sr), dtype=np.float32)
         if spoken is not None and len(spoken):
-            n = min(len(track), len(spoken))
-            track[:n] = spoken[:n]
-        anim = self.detect_animation(prompt)
+            track[:len(spoken)] = spoken
         mouth = mouth_track(track, total, fps, sr)
-        rng = random.Random(((self.seed & 0xFFFFF) << 20) ^ (k * 7919 + 1))
-        phase = rng.random() * 10.0
+        phase = (self.seed % 997) / 997 * 10.0
+        motion_start = self._motion_time
+        shapes = speech_shape_track(track, total, fps, sr)
         base = 0
         base_samples = 0
         for ci, n in enumerate(layout):
@@ -424,19 +367,23 @@ class PuppetGenerator(Generator):
             t0 = base / fps
             frames = await asyncio.to_thread(  # drawing stays off the event loop
                 render_chunk, self.info.width, self.info.height, n, t0, 1.0 / fps, dur, anim,
-                mouth[base:base + n], phase)
+                mouth[base:base + n], phase, motion_start, shapes[base:base + n])
             nsamp = int(n / fps * sr)  # the per-chunk contract count (transport pads/trims too)
             seg = track[base_samples:base_samples + nsamp]
             if len(seg) < nsamp:
                 seg = np.concatenate([seg, np.zeros(nsamp - len(seg), dtype=np.float32)])
             audio = np.repeat(seg[:, None], 2, axis=1)  # [S, 2] float32 stereo
             ch = Chunk(k, ci, n, fps, video=frames, audio=audio, sample_rate=sr,
-                       t_ready=now(), meta={"prompt": prompt, "session": session})
+                       t_ready=now(), meta={"prompt": prompt, "session": session, "request_duration_s": dur,
+                                             "avatar_gesture": anim, "request_offset_s": t0,
+                                             "motion_time_s": motion_start + t0})
             if ci == 0:
                 tm.t_first_chunk = ch.t_ready
             await self._out.put(ch)
             base += n
             base_samples += nsamp
+        if session == self._session:
+            self._motion_time += base / fps
         tm.t_done = now()
 
     async def submit(self, request_index: int, prompt: str) -> None:
@@ -458,6 +405,7 @@ class PuppetGenerator(Generator):
     async def reset(self) -> None:
         self._session += 1
         self._first_in_session = True
+        self._motion_time = 0.0
         while not self._queue.empty():
             self._queue.get_nowait()
 

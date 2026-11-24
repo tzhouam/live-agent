@@ -1,0 +1,54 @@
+{
+  "tool": "built-in imagegen",
+  "date": "2026-10-06",
+  "use_case": "identity-preserve",
+  "prompt": "Use case: identity-preserve. Asset type: facial animation image atlas for a realistic Japanese anime VTuber teacher. Reference image is the EXACT character identity, shading and frontal face. Create ONE sheet with exactly THREE columns and TWO rows of identical close-up faces, each face filling its own equal rectangular cell. Same frontal pose, same face size, same nose and mouth position, same silver glasses, brown hair, teal eyes, soft realistic skin, viewer-left lighting in all cells. Crop at forehead and just below chin like the reference; no shoulders, no scene. Keep eyes OPEN in all cells, no exaggerated expressions. Change only lips and subtle expression. Row 1 left: small relaxed speaking opening, a narrow horizontal slit with restrained teeth; middle: modest wider open A speaking mouth with believable tongue and teeth, not a scream; right: rounded small O speaking mouth, pursed lips. Row 2 left: slightly spread E speaking mouth with upper teeth visible; middle: natural closed-lip warm encouraging smile, subtly raised corners; right: neutral closed mouth with relaxed lips for thoughtful listening. Fine painterly realistic anime shading and natural mouth anatomy, no cartoon black holes, no oversized lips, no lipstick. All six faces perfectly aligned and same scale for local patch extraction. No text, labels, gutters or grid strokes.",
+  "reference": ".cache/teacher-motion/face-reference.png (crop of atlas-v2.png: [146,55,306,225])",
+  "source": "expressions-v1.png",
+  "runtime_atlas": "mouth-expressions-v1.png",
+  "extraction": {
+    "tile_size": [
+      512,
+      512
+    ],
+    "mouth_centers": [
+      [
+        274,
+        357
+      ],
+      [
+        278,
+        360
+      ],
+      [
+        278,
+        363
+      ],
+      [
+        275,
+        349
+      ],
+      [
+        278,
+        351
+      ],
+      [
+        276,
+        351
+      ]
+    ],
+    "crop_size": [
+      176,
+      112
+    ]
+  },
+  "states": [
+    "small speech",
+    "open A",
+    "rounded O",
+    "spread E",
+    "encouraging smile",
+    "thoughtful neutral"
+  ],
+  "limitations": "Speech shape uses coarse acoustic brightness and amplitude, not phoneme recognition. Existing teacher identity, body geometry and background remain the registered base."
+}

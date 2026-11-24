@@ -8,6 +8,7 @@ from pathlib import Path
 
 from live_agent.capability import CapabilityManifest, Status
 from live_agent.director.director import Director
+from live_agent.director.director import CHARS_PER_REQUEST
 from live_agent.ledger import StateLedger
 from live_agent.llm import ScriptedLLM
 from live_agent.prompt.h3_compiler import compile_prompt
@@ -44,6 +45,37 @@ def test_responder_gets_teaching_rules_and_the_teachers_own_examples():
     assert "教学规则" in system and "杠杆为什么能省力" in system
     assert "drink_tea" not in system  # no examples in another persona's intents
     assert "point_board" in system and "idle_teach" in system
+
+
+def test_teacher_examples_model_complete_spoken_sentences():
+    """Examples must not teach the model to end an audio turn halfway through a clause."""
+    canon = json.loads((CFG / "canon.json").read_text(encoding="utf-8"))
+    examples = [json.loads(example.split(" → ", 1)[1]) for example in canon["responder_examples"]]
+    for answer in examples:
+        assert answer["steps"]
+        for step in answer["steps"]:
+            line = step["line"]
+            assert line.endswith(("。", "？", "！")), line
+            assert len(line) <= CHARS_PER_REQUEST, line
+    # Removing canned praise must preserve teaching routes, facts and honesty.
+    content = [answer for answer in examples if answer["kind"] == "content"]
+    assert all(answer["board"]["items"] for answer in content)
+    assert {answer["kind"] for answer in examples} >= {"content", "action", "lesson", "exercise", "lesson_stop"}
+    profile = next(answer["profile_update"] for answer in examples if "profile_update" in answer)
+    assert profile["exam"]["score"] == 72
+    assert profile["exam"]["weak"] == ["因式分解"]
+    assert any("AI 生成" in step["line"] for answer in examples for step in answer["steps"])
+
+
+def test_teacher_prompt_allows_natural_endings_and_specific_feedback():
+    d, llm, _ = _director(ANSWER)
+    _ask(d, "我没听懂，能换个例子吗？")
+    system = llm.calls[0][0]["content"]
+    assert "不必每次追问" in system
+    assert "针对具体卡点" in system
+    assert "肯定要具体说明哪一步做对了" in system
+    assert "不要句句叫「同学」" in system
+    assert "像和一个学生面对面交流一样说话" in system
 
 
 def test_an_answer_is_spoken_over_requests_with_the_explaining_gesture():

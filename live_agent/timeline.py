@@ -152,7 +152,8 @@ class LockScheduler:
             return None
         if self.cfg.mode == LockMode.EARLY:
             return v_prev
-        return v_prev + self.cfg.request_s - self.lambda_estimate() - self.cfg.sigma_s
+        duration = self.durations.get(k_next - 1, self.cfg.request_s)
+        return v_prev + duration - self.lambda_estimate() - self.cfg.sigma_s
 
     # ------------------------------------------------------------ corrections
     def planned_lock(self, j: int) -> float | None:
@@ -164,7 +165,8 @@ class LockScheduler:
             return None
         if self.cfg.mode == LockMode.EARLY:
             return v_prev
-        return v_prev + self.cfg.request_s - self.lambda_estimate() - self.cfg.sigma_s
+        duration = self.durations.get(j - 1, self.cfg.request_s)
+        return v_prev + duration - self.lambda_estimate() - self.cfg.sigma_s
 
     def earliest_correctable(self, t_evidence: float, chain_cost_s: float, next_unlocked: int) -> int:
         """First request j >= next_unlocked with P_j >= E + C (no upper bound; proposal §10.3)."""

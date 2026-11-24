@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from live_agent.lesson import Board, LessonLine, spoken
+from live_agent.lesson import Board, LessonLine, render_item, spoken
 from live_agent.llm import ChatLLM, parse_json
 
 LETTERS = "ABCD"
@@ -41,7 +41,7 @@ GRADE_PROMPT = """你是老师，正在批改学生的口头回答。
 先判断学生这句话是不是在回答这道题（是答案、写出了结果或说不会，都算回答；问别的问题、聊别的事不算）。
 是回答时判断对错（意思对、等价的式子或数值都算对）；错了用一句话指出学生的错误想法。
 只输出 JSON：{{"is_answer": true 或 false, "correct": true 或 false, "misconception": 错误想法（答对时为 null）,
-"feedback": [老师回应，2-3 句，每句不超过 {chars} 个汉字，口语化：答对先肯定再点出关键；答错先鼓励，再讲正确思路和答案；公式用中文读出来]}}"""
+"feedback": [老师回应，2-3 句，每句不超过 {chars} 个汉字，自然口语：答对简短确认并点出关键；答错直接指出需要调整的那一步，再讲思路和答案；避免空泛夸奖、反复鼓励和「不太对哦」等幼儿化语气；公式用中文读出来]}}"""
 
 
 @dataclass
@@ -81,7 +81,13 @@ class Exercise:
         items = [self.question, *self.options]
         if reveal_answer:
             items.append(f"答案：{self.answer_text()}")
-        return Board(key=self.key + ("a" if reveal_answer else ""), title=f"练习 · {self.concept}"[:24], items=items)
+        return Board(key=self.key + ("a" if reveal_answer else ""), title=f"练习 · {self.concept}"[:24], items=items,
+                     strip_numbering=False)
+
+    def presentation(self) -> dict:
+        """Question-only HTML uses the board's escaped text/MathML renderer; no answer is exposed."""
+        return {"question_html": render_item(self.question, strip_numbering=False),
+                "option_html": [render_item(option, strip_numbering=False) for option in self.options]}
 
     def answer_text(self) -> str:
         if self.kind == "choice":
@@ -170,9 +176,9 @@ def feedback_lines(ex: Exercise, r: dict, chars: int, llm_lines: list[str] | Non
         head += [f"答案是 {ex.answer}。"] if ex.kind == "choice" else spoken(f"答案是{ex.answer}。", chars)
         return head + expl
     if r["correct"]:
-        return ["答对了，很好！"] + expl[:2]
-    head = [f"不太对哦，正确答案是 {ex.answer}。"] if ex.kind == "choice" else \
-        ["不太对哦，我们看一下。"] + spoken(f"答案是{ex.answer}。", chars)
+        return ["答对了。"] + expl[:2]
+    head = [f"正确答案是 {ex.answer}，我们看一下原因。"] if ex.kind == "choice" else \
+        ["这里的结果还需要调整。"] + spoken(f"答案是{ex.answer}。", chars)
     return head + expl
 
 

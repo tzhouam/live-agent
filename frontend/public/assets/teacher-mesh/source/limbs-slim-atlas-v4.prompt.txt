@@ -1,0 +1,8 @@
+Use case: precise-object-edit.
+Edit target: the input layered navy teacher garment atlas, preserving its 1024x1536 layout and left torso entirely unchanged.
+Correct ONLY the six separate sleeve/elbow assets in the right half. Same fabric, warm upper-left light, adult tailored navy blazer, fine texture, exact locations and limb segment heights.
+1. Make BOTH long upper sleeves and BOTH cuffed forearm sleeves SLIMMER by about25 percent across their width, with the same centerline locations and end-to-end lengths. Fit natural adult arms: normal rounded deltoid shoulder, upper arm gently tapering, forearm modestly tapering to white cuff. No ballooning, no armor or sharp upward shoulder pad. Preserve original shoulder seam, crease texture and cuffs/buttons but re-author shading for the slimmer shape, not a squeezed image.
+2. The segment cut ends are for overlap underneath adjacent artwork. CLOSE ALL cut ends with continuous navy fabric: NO dark hollow oval, opening, cufflike black rim, bowl, cup or open tube at the elbow. The forearm top must be a FILLED rounded navy cloth overlap with no visible opening. The upper sleeve lower end must also be filled fabric.
+3. Replace both bottom elbow patches with FLAT FILLED rounded/elliptical navy fabric patches, about150pxwide by140pxhigh, one subtle bent-elbow cloth crease each. NO rim, hollow opening, conical shape, vertical wall, shield, armor plate or border seam. Each patch is a softly shaded piece of continuous sleeve fabric that can overlap its neighbors.
+Keep all six objects separated in their existing regions. Do not add hands, skin, arm bones, head, labels, words or extra assets.
+Background genuinely transparent, clean alpha, no backdrop, matte or cast shadows outside artwork.

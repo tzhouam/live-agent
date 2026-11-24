@@ -5,8 +5,36 @@ import json
 
 import pytest
 
-from live_agent.exercise import make_exercise
+from live_agent.exercise import Exercise, make_exercise
 from live_agent.llm import ScriptedLLM
+
+
+def test_exercise_presentation_keeps_the_boards_safe_math_fallback(monkeypatch):
+    from latex2mathml import converter
+
+    def unavailable(*args, **kwargs):
+        raise ValueError("controlled conversion failure")
+
+    monkeypatch.setattr(converter, "convert", unavailable)
+    ex = Exercise(concept="比较", question="比较 $x < 3$", answer="不公开", options=["A. $x > 3$", "B. 保留 <文字>"])
+    presentation = ex.presentation()
+    assert presentation["question_html"] == "比较 <code>x &lt; 3</code>"
+    assert presentation["option_html"] == ["A. <code>x &gt; 3</code>", "B. 保留 &lt;文字&gt;"]
+    board = ex.board().view(None)
+    assert board["items"] == [presentation["question_html"], *presentation["option_html"]]
+
+
+def test_exercise_presentation_preserves_leading_decimals_and_numbered_options():
+    from live_agent.lesson import render_item
+
+    ex = Exercise(concept="小数", question="1.5 + 2 = ? <img src=x>", answer="不公开",
+                  options=["1. $3.5$", "2. <script>alert(1)</script>"])
+    presentation = ex.presentation()
+    assert presentation["question_html"] == "1.5 + 2 = ? &lt;img src=x&gt;"
+    assert presentation["option_html"][0].startswith("1. <math")
+    assert presentation["option_html"][1] == "2. &lt;script&gt;alert(1)&lt;/script&gt;"
+    assert ex.board().view(None)["items"] == [presentation["question_html"], *presentation["option_html"]]
+    assert render_item("1. 板书仍自动编号") == "板书仍自动编号"
 
 
 @pytest.mark.parametrize("grade", ["小学三年级", "初中二年级"])

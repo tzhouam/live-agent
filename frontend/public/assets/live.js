@@ -4,11 +4,68 @@ let ws = null, audioCtx = null, playhead = 0, queue = [], pending = null, record
 let lastUtterT = null, verified = 0, repairs = 0, pingTimer = null;
 let connectionAttempt = 0, sessionState = "disconnected", sessionStatus = null, pingTimeouts = [], startupTimer = null;
 let latestAttention = null;
+let latestInputRequestId = null;
 let errorLanguage = null;
+// The custom browser avatar is an opt-in preview. Video remains decoded for immediate fallback.
+const TEACHER_AVATAR_MODEL = "teacher-mesh-v1", TEACHER_AVATAR_URL = "/assets/teacher-mesh/rig-v7.json";
+let teacherAvatar = null, avatarNegotiated = false, avatarEpoch = null, avatarDisabled = false;
+let avatarLastTime = null, avatarMouthOpen = 0, avatarMouthRound = 0;
+let avatarMotionBase = 0, avatarMotionStart = 0;
+let avatarCaptureAt = -Infinity, avatarCaptureCounts = new Map();
+let avatarLastState = null;
+function avatarRequested() {
+  try { return new URL(window.location.href, "http://localhost/").searchParams.get("avatar") === "mesh"; }
+  catch (_) { return false; }
+}
+async function loadTeacherAvatar() { return (await import("/assets/avatar-renderer.js")).createTeacherAvatar; }
+function avatarActive() { return avatarNegotiated && !avatarDisabled && teacherAvatar?.active === true; }
+function avatarPresentation(q) {
+  if (!avatarNegotiated && !q?.meta.avatar) return {};
+  return {renderer: avatarActive() ? "mesh" : "video", ...(avatarActive() ? {model: TEACHER_AVATAR_MODEL} : {}),
+    epoch: q?.meta.avatar?.epoch ?? avatarEpoch};
+}
+function resetTeacherAvatar() {
+  avatarLastTime = null; avatarMouthOpen = avatarMouthRound = 0;
+  avatarMotionBase = 0; avatarMotionStart = audioCtx?.currentTime || 0;
+  avatarCaptureAt = -Infinity; avatarCaptureCounts.clear();
+  avatarLastState = null;
+  try { teacherAvatar?.reset(); } catch (error) { fallbackTeacherAvatar(error); }
+}
+function destroyTeacherAvatar() {
+  teacherAvatar?.destroy(); teacherAvatar = null; avatarNegotiated = false; avatarEpoch = null;
+  avatarDisabled = false; canvas.style.visibility = "visible";
+  $("screenWrap").dataset.renderer = "video";
+}
+function fallbackTeacherAvatar(reason) {
+  if (avatarDisabled && !teacherAvatar) return;
+  const wasNegotiated = avatarNegotiated;
+  const previous = teacherAvatar; teacherAvatar = null; avatarDisabled = true; previous?.destroy();
+  avatarLastTime = null; avatarMouthOpen = avatarMouthRound = 0; avatarLastState = null;
+  canvas.style.visibility = "visible"; $("screenWrap").dataset.renderer = "video";
+  if (wasNegotiated) send({type: "avatar_renderer", renderer: "video", epoch: avatarEpoch});
+  if (sessionStatus) renderBadges(sessionStatus);
+  if (reason) console.warn("Teacher avatar unavailable; using video", reason);
+}
+async function prepareTeacherAvatar(attempt) {
+  if (!avatarRequested()) return;
+  try {
+    const create = await loadTeacherAvatar();
+    if (attempt !== connectionAttempt || sessionState !== "connecting") return;
+    const avatar = await create({container: $("screenWrap"), fallbackCanvas: canvas, modelUrl: TEACHER_AVATAR_URL,
+      onFallback: reason => { if (attempt === connectionAttempt) fallbackTeacherAvatar(reason); }});
+    if (attempt !== connectionAttempt || sessionState !== "connecting") { avatar.destroy(); return; }
+    if (avatarDisabled || !avatar.active || avatar.model !== TEACHER_AVATAR_MODEL) { avatar.destroy(); return; }
+    teacherAvatar = avatar;
+    teacherAvatar.render({gesture: "idle", requestTime: 0, duration: 1, motionTime: 0, mouthOpen: 0, mouthRound: 0});
+  } catch (error) { if (attempt === connectionAttempt) fallbackTeacherAvatar(error); }
+}
 const submissionNamespace = window.crypto?.randomUUID?.() || Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
 let submissionSequence = 0;
 const EXAMPLES = ["请给我讲一道例题", "这一步我还没明白", "给我一道练习题", "请讲慢一点"];
 const ENGLISH = {
+  "board.figureEnlarge": "Enlarge diagram", "board.figureTitle": "Lesson diagram", "board.figureClose": "Close diagram",
+  "board.figurePrevious": "Previous", "board.figureNext": "Next", "board.figureBrowse": "View diagrams",
+  "board.figureCount": "Diagram {current} of {total}",
   "session.connecting": "Connecting…", "session.starting": "Preparing your tutor…",
   "session.ready": "Tutor ready", "session.ended": "Session ended. You can start again.",
   "session.closed": "Disconnected", "session.connectFailed": "We could not connect to your tutor. Please try again.",
@@ -18,6 +75,9 @@ const ENGLISH = {
   "session.started": "Your tutoring session has started.", "session.notReady": "Please wait until your tutor is ready.",
   "session.startTimeout": "Your tutor is taking longer than expected. Please try connecting again.",
   "session.sendFailed": "Your message was not sent. Please reconnect and try again.",
+  "input.voiceEmpty": "No speech was recognized. Try speaking again or type your question.",
+  "input.voiceFailed": "Your voice could not be recognized. Try again or type your question.",
+  "input.responseFailed": "Your tutor could not prepare a response. Please send your question again.",
   "voice.hold": "Hold to speak", "voice.release": "Release to send", "voice.permission": "Waiting for microphone permission…",
   "voice.unavailable": "Voice input is unavailable here. You can type your question instead.",
   "voice.disabled": "Voice recognition is unavailable in this session. Please type your question.",
@@ -41,7 +101,7 @@ const ENGLISH = {
   "profile.source.none": "No recorded evidence", "profile.attempts": "Recorded practice: ", "profile.correct": " correct",
   "profile.level.mastered": "Mastered", "profile.level.partial": "Partly understood", "profile.level.weak": "Needs work", "profile.level.unknown": "Not assessed",
   "badge.generator": "Video", "badge.mock": "Mock video (CPU preview)", "badge.puppet": "Puppet video (skeleton rig, CPU)",
-  "badge.director": "Director",
+  "badge.director": "Director", "badge.mesh": "Custom VTuber (browser mesh)",
   "badge.openLoop": "A1 open loop", "badge.online": "A2 online director", "badge.responder": "Responder",
   "badge.rules": "Rules (preview)", "badge.judge": "Judging", "badge.mockJudge": "Simulated judging (preview)",
   "badge.none": "None", "badge.speech": "Input", "badge.voice": "Voice enabled", "badge.text": "Text only",
@@ -53,6 +113,7 @@ const ENGLISH = {
   "memory.recalled": "Recalled: ", "memory.erased": "This page’s conversation and memory records have been cleared as requested.",
   "attention.label": "Focus check: ", "attention.focused": "Focused", "attention.distracted": "Distracted",
   "attention.absent": "Outside the camera view", "attention.unknown": "Unclear", "attention.off": "Off",
+  "attention.confirming": " · confirming", "attention.checking": "Focus check: analysing…",
   "av.reportOutput": "Reported audio output delay ≈ ", "av.reportRefresh": " ms; display refresh ≈ ", "av.reportCompensated": " ms (automatically compensated)",
   "profile.noConcepts": "Concept records appear after practice.", "exercise.unsure": "I’m not sure",
   "profile.edit": "Edit ↗", "profile.viewAll": "See all records ↗",
@@ -70,7 +131,7 @@ const ENGLISH = {
   "event.figureJudgement": "Figure assessment “{title}”: ",
   "event.figurePoint": "Point {index}, complexity {complexity} {decision}{reason}",
   "event.figureNeeded": "→ figure", "event.figureNotNeeded": "→ no figure",
-  "event.figure": "Figure for point {index} prepared ({kind})", "event.plot": "Plotted figure", "event.illustration": "Illustration",
+  "event.figure": "Figure for point {index} prepared ({kind})", "event.plot": "Plotted figure", "event.illustration": "Illustration", "event.diagram": "Teaching diagram",
   "event.figureFailed": "Figure generation failed: {error}", "event.exercise": "Practice ({concept}): {text}",
   "event.exerciseFailed": "Practice generation failed: {error}",
   "event.exerciseTimeout": "No answer for practice “{concept}”; the tutor will explain and continue",
@@ -88,7 +149,10 @@ function tr(key, fallback) {
 function diagnostic(key, fallback, values = {}) {
   return tr(`event.${key}`, fallback).replace(/\{(\w+)\}/g, (_, name) => String(values[name] ?? ""));
 }
-function productEvent(name, detail) { window.dispatchEvent(new CustomEvent(`live-agent:${name}`, {detail})); }
+function productEvent(name, detail) {
+  if (name === "submitted") latestInputRequestId = detail.request_id ?? null;
+  window.dispatchEvent(new CustomEvent(`live-agent:${name}`, {detail}));
+}
 function nextSubmissionId() { return `client:${submissionNamespace}:${(++submissionSequence).toString(36)}`; }
 function acceptsActivity(requestId) { return window.LiveAgentProduct?.acceptsActivity?.(requestId) !== false; }
 function activeSocket(socket, attempt) { return socket === ws && attempt === connectionAttempt; }
@@ -180,7 +244,7 @@ function finishSession(socket, attempt, state, message) {
   clearStartupTimer();
   clearInterval(pingTimer); pingTimer = null;
   pingTimeouts.forEach(clearTimeout); pingTimeouts = [];
-  cancelSpeech(); camOff(false); stopAll();
+  cancelSpeech(); camOff(false); stopAll(); destroyTeacherAvatar(); clearBoardFigures();
   currentExercise = null; exerciseKey = ""; setChips(idleExamples(), false);
   sessionStatus = null;
   setConn(tr("session.closed", "连接已关闭"));
@@ -188,7 +252,8 @@ function finishSession(socket, attempt, state, message) {
   sessionChanged(state, {message});
 }
 function resetSessionView() {
-  stopAll();
+  latestInputRequestId = null;
+  stopAll(); destroyTeacherAvatar(); clearBoardFigures();
   g.clearRect(0, 0, canvas.width, canvas.height);
   ["chat", "feed", "memory", "chains"].forEach(id => $(id).innerHTML = "");
   $("flags").textContent = "";
@@ -200,6 +265,7 @@ function resetSessionView() {
   $("board").classList.remove("on"); $("boardTitle").textContent = ""; $("boardItems").innerHTML = "";
   $("boardImg").removeAttribute("src"); $("boardCap").textContent = "";
   delete $("board").dataset.key;
+  delete $("board").dataset.content;
 }
 $("connect").onclick = async () => {
   if (sessionState === "connecting" || sessionState === "ready") return;
@@ -219,7 +285,7 @@ $("connect").onclick = async () => {
     const socket = ws;
     if (socket) { finishSession(socket, attempt, "error", message); socket.close(); }
     else {
-      connectionAttempt++; clearStartupTimer();
+      connectionAttempt++; clearStartupTimer(); destroyTeacherAvatar();
       setConn(tr("session.closed", "连接已关闭")); $("overlay").textContent = message;
       sessionChanged("error", {message});
     }
@@ -241,12 +307,14 @@ $("connect").onclick = async () => {
     return;
   }
   if (attempt !== connectionAttempt || sessionState !== "connecting") return;
+  await prepareTeacherAvatar(attempt);
+  if (attempt !== connectionAttempt || sessionState !== "connecting") return;
   let socket;
   try { socket = new WebSocket(window.LiveAgentAPI.websocketUrl()); }
   catch (error) {
     clearStartupTimer();
     const message = tr("session.connectFailed", "暂时连接不上老师，请重试。");
-    feed(null, "bad", "WebSocket", error.message); $("overlay").textContent = message;
+    feed(null, "bad", "WebSocket", error.message); $("overlay").textContent = message; destroyTeacherAvatar();
     setConn(tr("session.closed", "连接已关闭")); sessionChanged("error", {message}); return;
   }
   ws = socket; socket.binaryType = "arraybuffer";
@@ -254,7 +322,9 @@ $("connect").onclick = async () => {
     // H.264 segments need ~1/6 of the bandwidth of per-frame JPEG (a remote bridge cannot carry JPEG in real time)
     const video_codecs = (await h264Supported()) ? ["h264"] : [];
     if (!activeSocket(socket, attempt) || socket.readyState !== 1) return;
-    if (!send({...hello, video_codecs}, socket)) {
+    const avatarHello = teacherAvatar?.active && !avatarDisabled
+      ? {renderer: "mesh", avatar_model: TEACHER_AVATAR_MODEL, avatar_video_frames: true} : {};
+    if (!send({...hello, video_codecs, ...avatarHello}, socket)) {
       finishSession(socket, attempt, "error", tr("session.connectFailed", "暂时连接不上老师，请重试。"));
       socket.close(); return;
     }
@@ -282,7 +352,7 @@ $("disconnect").onclick = () => {
     finishSession(socket, connectionAttempt, "disconnected", tr("session.ended", "会话已结束，可以重新开始。"));
     socket.close();
   } else if (sessionState === "connecting") {
-    connectionAttempt++; clearStartupTimer(); sessionChanged("disconnected");
+    connectionAttempt++; clearStartupTimer(); stopAll(); destroyTeacherAvatar(); sessionChanged("disconnected");
     setConn(tr("session.closed", "连接已关闭")); $("overlay").textContent = tr("session.ended", "会话已结束，可以重新开始。");
   }
 };
@@ -300,10 +370,26 @@ async function onMessage(ev, socket = ws, attempt = connectionAttempt) {
       finishSession(socket, attempt, "error", tr("session.protocolError", "暂时无法读取老师的回应，请重新连接。")); socket.close(); return;
     }
     if (m.type === "chunk") { pending = {meta: m, frames: [], pcm: null, epoch}; }
-    else if (m.type === "stop") { stopAll(); }
+    else if (m.type === "stop") {
+      if (Number.isInteger(m.epoch)) avatarEpoch = m.epoch;
+      stopAll();
+    }
     else if (m.type === "event") { onEvent(m); }
     else if (m.type === "state") { onState(m); }
-    else if (m.type === "transcript") { if (m.text) chat("user", "🎙 " + m.text); }
+    else if (m.type === "transcript") {
+      if (m.text && (m.request_id == null || m.request_id === latestInputRequestId)) chat("user", "🎙 " + m.text);
+    }
+    else if (m.type === "input_error") {
+      if (m.superseded || (m.request_id ?? null) !== latestInputRequestId) return;
+      const messages = {
+        voice_empty: ["input.voiceEmpty", "没有识别到语音，请再说一次，或输入问题。"],
+        voice_failed: ["input.voiceFailed", "这次语音暂时识别失败，请重试或输入问题。"],
+        response_failed: ["input.responseFailed", "老师这次暂时没能准备好回答，请重新发送问题。"],
+      };
+      const [key, fallback] = messages[m.code] || messages.response_failed;
+      notice(key, fallback);
+      productEvent("input-error", m);
+    }
     else if (m.type === "status") { onStatus(m); }
     else if (m.type === "profile") { showProfile(m.profile, lastGraded); }
     else if (m.type === "error") {
@@ -322,36 +408,65 @@ async function onMessage(ev, socket = ws, attempt = connectionAttempt) {
   if (h264 && !pending.video) {
     pending.video = decodeH264(ev.data, pending.meta);  // one Annex-B segment: all of the chunk's frames
     pending.video.catch(() => {});  // handled when the chunk completes (below)
-  } else if (!h264 && pending.frames.length < pending.meta.n_frames) {
+  } else if (!h264 && pending.frames.length < (pending.meta.video_frames ?? pending.meta.n_frames)) {
     pending.frames.push(createImageBitmap(new Blob([ev.data], {type: "image/jpeg"})));
   } else {
     pending.pcm = new Int16Array(ev.data);
     const c = pending; pending = null;
-    decoding.push(c);  // arrival order = presentation order; decodes may finish out of order
-    try {
-      c.frames = h264 ? await c.video : await Promise.all(c.frames);
-    } catch (e) {  // this browser cannot decode the segment: ask for JPEG from now on
-      console.warn("H.264 decode failed, falling back to JPEG", e);
-      if (activeSocket(socket, attempt) && c.epoch === epoch) send({type: "video_codec", codec: "jpeg"}, socket);
-      c.frames = [];
-    }
-    if (!activeSocket(socket, attempt) || c.epoch !== epoch) {
-      c.frames.forEach(frame => frame.close?.()); return;
-    }
-    c.decoded = true;
-    // arrival + decode time of the chunk: the server adds it to its lock lead (transport over a remote bridge)
-    send({type: "chunk_received", request: c.meta.request, chunk: c.meta.chunk, tp: performance.now()});
-    while (decoding.length && decoding[0].decoded) {  // schedule only the contiguous head
-      const h = decoding.shift();
-      if (h.epoch === epoch) schedule(h);
-    }
+    const video = h264 ? c.video : decodeJpegFrames(c.frames);
+    c.frames = [];
+    if (currentChunk(c, socket, attempt)) decoding.push(c);  // preserve PCM arrival order
+    const completed = finishChunkDecode(c, video, socket, attempt);
+    if (avatarActive() && currentChunk(c, socket, attempt)) {
+      // Browser speech and mesh motion need PCM, not the hidden fallback video.
+      makeChunkReady(c);
+    } else await completed;  // video clients still start with a fully decoded picture
   }
+}
+
+function currentChunk(c, socket, attempt) {
+  return activeSocket(socket, attempt) && c.epoch === epoch &&
+    !(avatarNegotiated && c.meta.avatar && c.meta.avatar.epoch !== avatarEpoch);
+}
+async function decodeJpegFrames(promises) {
+  const frames = await Promise.allSettled(promises);
+  const failed = frames.find(frame => frame.status === "rejected");
+  if (failed) {
+    frames.forEach(frame => { if (frame.status === "fulfilled") frame.value.close?.(); });
+    throw failed.reason;
+  }
+  return frames.map(frame => frame.value);
+}
+function makeChunkReady(c) {
+  if (c.decoded) return;
+  c.decoded = true;
+  // For mesh, receipt means PCM is available; video clients include decode time.
+  send({type: "chunk_received", request: c.meta.request, chunk: c.meta.chunk, tp: performance.now(), ...avatarPresentation(c)});
+  while (decoding.length && decoding[0].decoded) {
+    const head = decoding.shift();
+    if (head.epoch === epoch) head.queued = schedule(head);
+  }
+}
+async function finishChunkDecode(c, video, socket, attempt) {
+  let frames;
+  try { frames = await video; }
+  catch (error) {
+    console.warn("Video decode failed, falling back to JPEG", error);
+    if (currentChunk(c, socket, attempt)) send({type: "video_codec", codec: "jpeg"}, socket);
+    frames = [];
+  }
+  if (!currentChunk(c, socket, attempt) || c.queued?.retired) {
+    frames.forEach(frame => frame.close?.()); return;
+  }
+  c.frames = frames;
+  if (c.queued) c.queued.frames = frames;  // schedule() returns a separate playback object
+  else makeChunkReady(c);
 }
 
 function renderBadges(m) {
   const b = $("badges"); b.querySelectorAll(".badge:not(#conn)").forEach(x => x.remove());
   const items = [
-    [tr("badge.generator", "生成"), m.generator === "mock" ? tr("badge.mock", "占位视频（CPU 演示）")
+    [tr("badge.generator", "生成"), avatarActive() ? tr("badge.mesh", "定制 VTuber（浏览器网格动画）") : m.generator === "mock" ? tr("badge.mock", "占位视频（CPU 演示）")
       : m.generator === "puppet" ? tr("badge.puppet", "木偶视频（骨架动画，CPU）") : m.generator],
     [tr("badge.director", "导演"), m.director === "open_loop" ? tr("badge.openLoop", "A1 开环") : tr("badge.online", "A2 在线导演")],
     [tr("badge.responder", "应答"), m.responder === "rules" ? tr("badge.rules", "规则（演示）") : m.responder],
@@ -371,13 +486,21 @@ function renderFocusLabel() {
     const st = d.stable || d.state;
     const names = {focused: "专注", distracted: "走神", absent: "不在画面", unknown: "无法判断"};
     $("focus").className = "focusline " + (st || "");
-    $("focus").textContent = tr("attention.label", "专注检测：") + tr(`attention.${st}`, names[st] || st) + (d.reason ? ` (${d.reason})` : "");
+    const confirming = d.state !== "unknown" && d.state !== st;
+    const observed = confirming ? d.state : st;
+    $("focus").textContent = tr("attention.label", "专注检测：") + tr(`attention.${observed}`, names[observed] || observed)
+      + (confirming || !d.stable && d.state !== "unknown" ? tr("attention.confirming", " · 确认中") : "")
+      + (d.reason ? ` (${d.reason})` : "");
   } else {
     $("focus").className = "focusline";
-    $("focus").textContent = camStream && !d ? tr("camera.enabled", "专注检测已开启：画面用于判断，不保存。") : tr("camera.disabled", "专注检测未开启");
+    $("focus").textContent = camStream && !d ? tr("attention.checking", "专注检测：正在分析…") : tr("camera.disabled", "专注检测未开启");
   }
+  $("focusLive").className = $("focus").className + " focus-live";
+  $("focusLive").textContent = $("focus").textContent;
+  $("focusLive").hidden = d ? d.state === "off" : !camStream;
 }
 function refreshLanguage() {
+  refreshBoardFigureLabels();
   setConn(sessionState === "ready" ? tr("session.ready", "老师已就绪") : sessionState === "connecting"
     ? tr("session.connecting", "连接中…") : connectionAttempt ? tr("session.closed", "连接已关闭") : tr("idle", "待开始"), sessionState === "ready");
   const language = window.LiveAgentProduct?.edition === "university" ? "en" : "zh";
@@ -416,6 +539,14 @@ function refreshLanguage() {
 function onStatus(m) {
   clearStartupTimer();
   const firstReady = sessionState !== "ready";
+  if (firstReady && teacherAvatar) {
+    const avatar = m.avatar;
+    if (avatar?.renderer === "mesh" && avatar.model === TEACHER_AVATAR_MODEL && Number.isInteger(avatar.epoch)) {
+      avatarNegotiated = true; avatarEpoch = avatar.epoch;
+      $("screenWrap").dataset.renderer = "mesh";
+      $("overlay").style.display = "none";
+    } else fallbackTeacherAvatar("The server did not negotiate this avatar model");
+  }
   sessionStatus = m;
   setConn(tr("session.ready", "老师已就绪"), true);
   if (Array.isArray(m.examples) && m.examples.length) personaChips = m.examples;
@@ -465,6 +596,14 @@ $("profEdit").onclick = () => {
   const id = profile ? profile.id : $("sid").value;
   window.location.href = `/profile?student=${encodeURIComponent(id)}&edition=${encodeURIComponent(window.LiveAgentProduct?.edition || "primary")}`;
 };
+function renderExerciseQuestion(node, ex) {
+  const question = ex.question || ex.concept || "", options = ex.option_texts || [];
+  // These optional fields are escaped text/MathML from the same server renderer as the board.
+  // Legacy packets and missing rendered options retain safely escaped plain text.
+  node.innerHTML = [typeof ex.question_html === "string" && ex.question_html ? ex.question_html : esc(question),
+    ...options.map((option, index) => typeof ex.option_html?.[index] === "string" && ex.option_html[index]
+      ? ex.option_html[index] : esc(option))].join("\n");
+}
 function showExercise(ex, requestId = ex?.request_id ?? null) {  // answer buttons while an exercise waits; the persona's examples otherwise
   if (!acceptsActivity(requestId)) {
     if (currentExercise && !acceptsActivity(currentExercise.request_id ?? null)) {
@@ -554,6 +693,7 @@ function onEvent(m) {
       break;
     case "playback_stop":
       if (d.erasure) {
+        clearBoardFigures();
         if (d.erasure_complete) {
           // this page kept its own copy of what was typed and recalled: clear it too
           $("chat").innerHTML = ""; $("memory").innerHTML = ""; $("caption").textContent = "";
@@ -570,6 +710,7 @@ function onEvent(m) {
       break;
     case "error": feed(t, "bad", "错误", `${d.where || ""} ${d.error || ""}`); break;
     case "lesson": {
+      if (d.stage === "figure" && d.figure) boardFigureReady(d);
       const s = {outline: diagnostic("outline", "课程大纲：{title}（{count} 节）", {title: d.title, count: (d.sections || []).length}),
                  section: diagnostic("section", "第 {index} 节已备好：{title}（{lines} 句，{points} 条板书）", {index: (d.section ?? 0) + 1, title: d.title, lines: d.lines, points: d.points}),
                  section_failed: diagnostic("sectionFailed", "第 {index} 节生成失败{next}", {index: (d.section ?? 0) + 1, next: d.attempt ? diagnostic("skipped", "，已跳过") : diagnostic("retrying", "，重试中")}),
@@ -577,7 +718,7 @@ function onEvent(m) {
                  figure_judgement: diagnostic("figureJudgement", "配图判断「{title}」：", {title: d.title}) + (d.judgements || []).map(j =>
                    diagnostic("figurePoint", "第 {index} 条 复杂度 {complexity} {decision}{reason}", {index: j.point + 1, complexity: j.complexity ?? "?",
                      decision: j.need ? diagnostic("figureNeeded", "→ 配图") : diagnostic("figureNotNeeded", "→ 不配"), reason: j.why ? ` (${j.why})` : ""})).join("; "),
-                 figure: diagnostic("figure", "第 {index} 条的配图已画好（{kind}）", {index: (d.point ?? 0) + 1, kind: d.kind === "plot" ? diagnostic("plot", "精确作图") : diagnostic("illustration", "插图")}),
+                 figure: diagnostic("figure", "第 {index} 条的配图已画好（{kind}）", {index: (d.point ?? 0) + 1, kind: d.kind === "plot" ? diagnostic("plot", "精确作图") : d.kind === "diagram" ? diagnostic("diagram", "示意图") : diagnostic("illustration", "插图")}),
                  figure_failed: diagnostic("figureFailed", "配图失败：{error}", {error: d.error}),
                  exercise: diagnostic("exercise", "出题（{concept}）：{text}", {concept: d.concept, text: d.exercise}),
                  exercise_failed: diagnostic("exerciseFailed", "出题失败：{error}", {error: d.error}),
@@ -603,6 +744,7 @@ function onEvent(m) {
       break;
     }
     case "attention": {
+      if (d.state !== "off" && !camStream) break;  // no stale verdict after opt-out
       latestAttention = d;
       renderFocusLabel();
       if (d.nudge) feed(t, "warn", "提醒学生", `「${d.nudge}」`);
@@ -644,18 +786,199 @@ addEventListener("resize", layoutStage);
 addEventListener("load", layoutStage);
 
 let shownBoard = null;  // the board view on display (the chunk on screen switches it only when it differs)
+const boardFigures = new Map();  // unique lesson/answer board key -> point -> completed figure
+let failedBoardFigure = null;
+let enlargedBoardFigure = null;
+let displayedBoardFigure = null;
+let boardGallerySelection = null;  // a learner's selection lasts until the board or spoken point changes
+let boardGalleryContext = null;
+function refreshBoardFigureLabels() {
+  $("boardEnlarge").textContent = tr("board.figureEnlarge", "放大配图");
+  $("boardFigureTitle").textContent = tr("board.figureTitle", "课程配图");
+  $("boardFigureClose").setAttribute("aria-label", tr("board.figureClose", "关闭配图"));
+  $("boardImg").setAttribute("aria-label", tr("board.figureEnlarge", "放大配图"));
+  $("boardImg").alt = tr("board.figureTitle", "课程配图");
+  $("boardFigureLarge").alt = $("boardFigureCaption").textContent || tr("board.figureTitle", "课程配图");
+  $("boardPrevious").textContent = tr("board.figurePrevious", "上一张");
+  $("boardNext").textContent = tr("board.figureNext", "下一张");
+  renderBoardGallery();
+}
+function clearEnlargedBoardFigure() {
+  $("boardFigureLarge").removeAttribute("src"); $("boardFigureCaption").textContent = "";
+  $("boardFigureLarge").alt = tr("board.figureTitle", "课程配图");
+  enlargedBoardFigure = null;
+}
+function closeBoardFigure() {
+  if ($("boardFigureDialog").open) $("boardFigureDialog").close();
+  clearEnlargedBoardFigure();
+}
+function openBoardFigure() {
+  const fig = displayedBoardFigure;
+  if (!validBoardFigure(fig) || !$("board").classList.contains("hasfig")) return;
+  enlargedBoardFigure = {key: shownBoard.key, url: fig.url};
+  $("boardFigureLarge").src = fig.url;
+  $("boardFigureCaption").innerHTML = fig.caption || "";
+  $("boardFigureLarge").alt = $("boardFigureCaption").textContent || tr("board.figureTitle", "课程配图");
+  if (!$("boardFigureDialog").open) $("boardFigureDialog").showModal();
+}
+$("boardEnlarge").onclick = openBoardFigure;
+$("boardImg").onclick = openBoardFigure;
+$("boardImg").setAttribute("role", "button"); $("boardImg").tabIndex = 0;
+$("boardImg").setAttribute("aria-haspopup", "dialog"); $("boardImg").setAttribute("aria-controls", "boardFigureDialog");
+$("boardImg").onkeydown = event => {
+  if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openBoardFigure(); }
+};
+$("boardFigureClose").onclick = closeBoardFigure;
+$("boardFigureDialog").oncancel = event => { event.preventDefault(); closeBoardFigure(); };
+$("boardFigureDialog").onclose = () => {
+  // Native close events are queued: an old event must not clear a reopened viewer.
+  if (!$("boardFigureDialog").open) clearEnlargedBoardFigure();
+};
+$("boardFigureLarge").onerror = closeBoardFigure;
+refreshBoardFigureLabels();
+function validBoardFigure(figure) {
+  return figure && typeof figure.url === "string" && /^\/board\/img\/(?:[0-9a-f]{16}|[pd][0-9a-f]{15})\.png$/.test(figure.url);
+}
+function applyBoardFigure(b) {
+  if (!b) return b;
+  if (Array.isArray(b.figures)) {
+    if (!boardFigures.has(b.key)) boardFigures.set(b.key, new Map());
+    const cache = boardFigures.get(b.key);
+    b.figures.forEach(fig => {
+      if (!validBoardFigure(fig) || (fig.point != null && (!Number.isInteger(fig.point) || fig.point < 0))) return;
+      const point = fig.point ?? null;
+      // A completed event can arrive after this playback snapshot was made.
+      // Keep that newer event's image/caption when an older snapshot returns.
+      if (!cache.get(point)?._readyEvent) cache.set(point, {url: fig.url,
+        caption: typeof fig.caption === "string" ? fig.caption : ""});
+    });
+    if (boardFigures.size > 32) boardFigures.delete(boardFigures.keys().next().value);
+  }
+  const figures = boardFigures.get(b.key);
+  const currentMembers = (b.figures || []).filter(fig => validBoardFigure(fig) && fig.url === b.figure?.url
+    && (fig.point == null || (Number.isInteger(fig.point) && fig.point >= 0)));
+  const currentMember = currentMembers.find(fig => (fig.point ?? null) === (b.reveal ?? null)) || currentMembers[0];
+  const snapshotPoint = b._figurePoint !== undefined ? b._figurePoint
+    : currentMember ? currentMember.point ?? null : b.reveal ?? null;
+  if (validBoardFigure(b.figure) && figures && !figures.get(snapshotPoint)?._readyEvent) {
+    figures.set(snapshotPoint, {url: b.figure.url, caption: typeof b.figure.caption === "string" ? b.figure.caption : ""});
+  }
+  const exact = figures?.get(b.reveal), whole = figures?.get(null);
+  if (!exact && b._figurePoint != null && b._figurePoint !== b.reveal) {
+    delete b.figure; delete b._figurePoint;
+  }
+  if (exact) { b.figure = exact; b._figurePoint = b.reveal; }
+  else if (whole && (!b.figure || b._figurePoint === null || b.figure.url === whole.url)) {
+    b.figure = whole; b._figurePoint = null;
+  }
+  const ready = new Map();
+  figures?.forEach((fig, point) => ready.set(point, {url: fig.url, caption: fig.caption, point}));
+  if (validBoardFigure(b.figure)) {
+    const point = b._figurePoint !== undefined ? b._figurePoint : snapshotPoint;
+    // An explicit current snapshot also supports servers sending a single figure.
+    if (!ready.has(point)) ready.set(point, {url: b.figure.url,
+      caption: typeof b.figure.caption === "string" ? b.figure.caption : "", point});
+  }
+  b.figures = [...ready.values()].sort((a, z) => (a.point ?? -1) - (z.point ?? -1));
+  return b;
+}
+function boardGalleryFigures() {
+  const unique = new Map();
+  (shownBoard?.figures || []).forEach(fig => { if (validBoardFigure(fig) && !unique.has(fig.url)) unique.set(fig.url, fig); });
+  return [...unique.values()];
+}
+function renderBoardGallery() {
+  const figures = boardGalleryFigures(), index = figures.findIndex(fig => fig.url === displayedBoardFigure?.url);
+  $("boardGallery").hidden = !figures.length;
+  $("boardBrowse").hidden = index >= 0 && $("board").classList.contains("hasfig");
+  $("boardBrowse").textContent = `${tr("board.figureBrowse", "查看配图")} ${figures.length}`;
+  $("boardPrevious").hidden = $("boardNext").hidden = index < 0 || figures.length < 2;
+  $("boardPrevious").disabled = index <= 0;
+  $("boardNext").disabled = index < 0 || index >= figures.length - 1;
+  $("boardFigureCount").hidden = index < 0;
+  $("boardFigureCount").textContent = index < 0 ? "" : `${index + 1} / ${figures.length}`;
+  $("boardFigureCount").setAttribute("aria-label", index < 0 ? "" :
+    tr("board.figureCount", "配图 {current} / {total}").replace("{current}", index + 1).replace("{total}", figures.length));
+}
+function selectBoardFigure(index) {
+  const figures = boardGalleryFigures();
+  if (!shownBoard || !Number.isInteger(index) || index < 0 || index >= figures.length) return;
+  boardGallerySelection = {key: shownBoard.key, url: figures[index].url};
+  showBoard(shownBoard);
+}
+function stepBoardFigure(direction) {
+  const figures = boardGalleryFigures(), index = figures.findIndex(fig => fig.url === displayedBoardFigure?.url);
+  selectBoardFigure(index < 0 ? 0 : index + direction);
+}
+$("boardBrowse").onclick = () => selectBoardFigure(0);
+$("boardPrevious").onclick = () => stepBoardFigure(-1);
+$("boardNext").onclick = () => stepBoardFigure(1);
+function boardFigureReady(d) {
+  if (typeof d.board !== "string" || !d.board || !validBoardFigure(d.figure)
+      || (d.point != null && (!Number.isInteger(d.point) || d.point < 0))) return;
+  if (!boardFigures.has(d.board)) boardFigures.set(d.board, new Map());
+  boardFigures.get(d.board).set(d.point ?? null, {url: d.figure.url,
+    caption: typeof d.figure.caption === "string" ? d.figure.caption : "", _readyEvent: true});
+  if (boardFigures.size > 32) boardFigures.delete(boardFigures.keys().next().value);
+  [shownBoard, lastBoard, onScreen?.board, pending?.meta.board, ...queue.map(q => q.board),
+    ...decoding.map(c => c.meta.board)].forEach(b => { if (b?.key === d.board) applyBoardFigure(b); });
+  if (shownBoard?.key === d.board) showBoard(shownBoard);
+}
+function clearBoardFigures() {
+  closeBoardFigure();
+  boardFigures.clear(); failedBoardFigure = null;
+  displayedBoardFigure = boardGallerySelection = boardGalleryContext = null;
+  delete $("board").dataset.content;
+  [shownBoard, lastBoard, onScreen?.board, pending?.meta.board, ...queue.map(q => q.board),
+    ...decoding.map(c => c.meta.board)].forEach(b => {
+    if (b) { delete b.figure; delete b.figures; delete b._figurePoint; }
+  });
+  $("boardImg").removeAttribute("src"); $("boardCap").textContent = "";
+  $("board").classList.remove("hasfig");
+  renderBoardGallery();
+}
+$("boardImg").onload = () => { if (displayedBoardFigure?.url === $("boardImg").getAttribute("src")) fitBoard(); };
+$("boardImg").onerror = () => {
+  failedBoardFigure = $("boardImg").getAttribute("src");
+  closeBoardFigure();
+  $("board").classList.remove("hasfig"); $("boardCap").textContent = "";
+  renderBoardGallery(); fitBoard();
+};
 function showBoard(b) {
+  const context = JSON.stringify([b.key, b.reveal ?? null]);
+  if (boardGalleryContext !== context) boardGallerySelection = null;
+  boardGalleryContext = context;
+  applyBoardFigure(b);
   shownBoard = b;
   const el = $("board");
   if (!el.classList.contains("on")) { el.classList.add("on"); layoutStage(); }
-  if (el.dataset.key !== b.key) {
+  const content = JSON.stringify([b.title, b.items]);
+  if (el.dataset.key !== b.key || el.dataset.content !== content) {
     el.dataset.key = b.key;
+    el.dataset.content = content;
     $("boardTitle").innerHTML = b.title;
     $("boardItems").innerHTML = b.items.map(x => `<li>${x}</li>`).join("");
   }
-  const fig = b.figure;
+  const manual = boardGallerySelection?.key === b.key
+    ? boardGalleryFigures().find(fig => fig.url === boardGallerySelection.url) : null;
+  if (boardGallerySelection && !manual) boardGallerySelection = null;
+  const fig = manual || (validBoardFigure(b.figure) ? b.figure : null);
+  displayedBoardFigure = fig;
+  if (enlargedBoardFigure && (enlargedBoardFigure.key !== b.key || enlargedBoardFigure.url !== fig?.url)) closeBoardFigure();
+  else if (enlargedBoardFigure && fig) {
+    $("boardFigureCaption").innerHTML = fig.caption || "";
+    $("boardFigureLarge").alt = $("boardFigureCaption").textContent || tr("board.figureTitle", "课程配图");
+  }
   el.classList.toggle("hasfig", !!fig);
-  if (fig && $("boardImg").getAttribute("src") !== fig.url) { $("boardImg").src = fig.url; $("boardCap").innerHTML = fig.caption || ""; }
+  if (fig) {
+    if ($("boardImg").getAttribute("src") !== fig.url || failedBoardFigure === fig.url) {
+      failedBoardFigure = null; $("boardImg").src = fig.url;
+    }
+    $("boardCap").innerHTML = fig.caption || "";
+  } else {
+    $("boardImg").removeAttribute("src"); $("boardCap").textContent = "";
+  }
+  renderBoardGallery();
   const lis = [...$("boardItems").children];
   lis.forEach((li, i) => {
     li.classList.toggle("hidden", b.reveal !== null && b.reveal !== undefined && i > b.reveal);
@@ -683,23 +1006,104 @@ async function h264Supported() {
 }
 function decodeH264(buf, meta) {
   return new Promise((resolve, reject) => {
-    const out = [];
-    const dec = new VideoDecoder({
-      output: f => out.push(createImageBitmap(f).finally(() => f.close())),
-      error: e => reject(e),
-    });
-    dec.configure({codec: H264, codedWidth: meta.width, codedHeight: meta.height, optimizeForLatency: true});
-    let off = 0;
-    meta.sizes.forEach((n, i) => {
-      dec.decode(new EncodedVideoChunk({type: i === 0 ? "key" : "delta", timestamp: Math.round(i * 1e6 / meta.fps),
-                                        data: new Uint8Array(buf, off, n)}));
-      off += n;
-    });
-    dec.flush().then(() => Promise.all(out)).then(frames => { dec.close(); resolve(frames); }, reject);
+    const out = []; let dec = null, finished = false;
+    const close = () => { try { dec?.close(); } catch (_) {} };
+    const fail = error => {
+      if (finished) return;
+      finished = true; close();
+      out.forEach(frame => frame.then(image => image.close?.()).catch(() => {}));
+      reject(error);
+    };
+    try {
+      dec = new VideoDecoder({
+        output: f => {
+          if (finished) { f.close(); return; }
+          try {
+            const image = createImageBitmap(f).finally(() => f.close());
+            image.catch(() => {}); out.push(image);
+          } catch (error) { f.close(); fail(error); }
+        },
+        error: fail,
+      });
+      dec.configure({codec: H264, codedWidth: meta.width, codedHeight: meta.height, optimizeForLatency: true});
+      let off = 0;
+      meta.sizes.forEach((n, i) => {
+        const sourceFrame = meta.video_frame_indices?.[i] ?? i;
+        dec.decode(new EncodedVideoChunk({type: i === 0 ? "key" : "delta", timestamp: Math.round(sourceFrame * 1e6 / meta.fps),
+                                          data: new Uint8Array(buf, off, n)}));
+        off += n;
+      });
+      dec.flush().then(() => Promise.all(out)).then(frames => {
+        if (finished) return;  // fail() owns the output bitmap cleanup
+        finished = true; close(); resolve(frames);
+      }, fail);
+    } catch (error) { fail(error); }
   });
 }
 
 // ---------------------------------------------------------------- playback (master clock = AudioContext)
+function avatarMouthAt(q, elapsed) {
+  const pcm = q?.pcm, sr = q?.meta.sample_rate;
+  if (!pcm?.length || !sr || elapsed < 0 || elapsed >= pcm.length / sr) return {open: 0, round: 0};
+  const center = Math.floor(elapsed * sr), radius = Math.max(1, Math.floor(sr * 0.02));
+  const begin = Math.max(0, center - radius), end = Math.min(pcm.length, center + radius);
+  let energy = 0, crossings = 0;
+  for (let i = begin; i < end; i++) {
+    const sample = pcm[i] / 32768; energy += sample * sample;
+    if (i > begin && (pcm[i] >= 0) !== (pcm[i - 1] >= 0)) crossings++;
+  }
+  const rms = Math.sqrt(energy / Math.max(1, end - begin));
+  const open = Math.min(1, Math.max(0, (rms - 0.009) / 0.13));
+  // A restrained acoustic approximation, rather than a claim of phoneme recognition.
+  const voiced = Math.max(0, 1 - crossings / Math.max(1, end - begin) / 0.18);
+  return {open: Math.sqrt(open) * 0.88, round: open > 0.06 ? voiced * 0.35 : 0};
+}
+function captureTeacherAvatar(q, t) {
+  const now = performance.now(), count = avatarCaptureCounts.get(q.meta.request) || 0;
+  if (document.hidden || !ready() || now - avatarCaptureAt < 500 || (q.avatarCaptures || 0) >= 12 || count >= 24) return;
+  avatarCaptureAt = now;  // failed captures are bounded too; never substitute a video frame
+  let image;
+  try { image = teacherAvatar.capture(); } catch (_) { return; }
+  if (typeof image !== "string" || !image.startsWith("data:image/jpeg;base64,") || image.length > 160000) return;
+  const elapsed = Math.max(0, t - q.start), meta = q.meta.avatar;
+  const frame = Math.max(0, Math.min(q.meta.n_frames - 1, Math.floor(elapsed / (q.end - q.start) * q.meta.n_frames)));
+  if (send({type: "avatar_frame", renderer: "mesh", model: TEACHER_AVATAR_MODEL, epoch: meta.epoch,
+    request: q.meta.request, chunk: q.meta.chunk, frame, tp: now,
+    request_time_s: meta.request_time_s + elapsed, mime: "image/jpeg", image})) {
+    q.avatarCaptures = (q.avatarCaptures || 0) + 1; avatarCaptureCounts.set(q.meta.request, count + 1);
+    while (avatarCaptureCounts.size > 32) avatarCaptureCounts.delete(avatarCaptureCounts.keys().next().value);
+  }
+}
+function renderTeacherAvatar(q, t) {
+  if (!avatarActive()) return;
+  let state = {gesture: "idle", requestTime: 0, duration: 1,
+    motionTime: Math.max(0, avatarMotionBase + t - avatarMotionStart), mouthOpen: 0, mouthRound: 0};
+  if (q) {
+    const meta = q.meta.avatar;
+    if (!meta || meta.renderer !== "mesh" || meta.model !== TEACHER_AVATAR_MODEL || meta.epoch !== avatarEpoch ||
+        ![meta.request_time_s, meta.request_duration_s, meta.motion_time_s].every(Number.isFinite) || meta.request_duration_s <= 0) {
+      fallbackTeacherAvatar("Avatar timing metadata was unavailable"); return;
+    }
+    const elapsed = Math.max(0, t - q.start), mouth = avatarMouthAt(q, elapsed);
+    const dt = avatarLastTime == null ? refreshS : Math.max(0, Math.min(0.1, t - avatarLastTime));
+    const smooth = 1 - Math.exp(-dt / (mouth.open > avatarMouthOpen ? 0.035 : 0.055));
+    avatarMouthOpen += smooth * (mouth.open - avatarMouthOpen);
+    avatarMouthRound += smooth * (mouth.round - avatarMouthRound);
+    state = {gesture: typeof meta.gesture === "string" ? meta.gesture : "idle",
+      requestTime: meta.request_time_s + elapsed, duration: meta.request_duration_s,
+      motionTime: meta.motion_time_s + elapsed, mouthOpen: avatarMouthOpen, mouthRound: avatarMouthRound};
+    avatarMotionBase = meta.motion_time_s; avatarMotionStart = q.start;
+  } else {
+    avatarMouthOpen = avatarMouthRound = 0;
+  }
+  avatarLastTime = t;
+  try {
+    teacherAvatar.render(state);
+    if (!teacherAvatar?.active) { fallbackTeacherAvatar("The avatar renderer stopped"); return; }
+    avatarLastState = {...state, request: q?.meta.request ?? null, chunk: q?.meta.chunk ?? null};
+    if (q && !q.endedSent) captureTeacherAvatar(q, t);
+  } catch (error) { fallbackTeacherAvatar(error); }
+}
 function schedule(c) {
   const m = c.meta, sr = m.sample_rate;
   if (canvas.width !== m.width || canvas.height !== m.height) { canvas.width = m.width; canvas.height = m.height; layoutStage(); }
@@ -727,18 +1131,24 @@ function schedule(c) {
     check();
   };
   queue.push(q);
+  return q;
 }
 
 function ackChunk(q) {  // start/end acks with their scheduled times; painted frames only as actually painted
   if (!q.startedSent) {
     q.startedSent = true;
-    send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.start)});
+    send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.start), ...avatarPresentation(q)});
   }
   if (!q.endedSent) {
     q.endedSent = true;
     send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.end),
-          painted: Array.from(q.painted || []), tp_last_paint: q.lastPaint});
+          painted: Array.from(q.painted || []), tp_last_paint: q.lastPaint, ...avatarPresentation(q)});
   }
+}
+
+function retireChunk(q) {
+  q.retired = true;
+  q.frames.forEach(frame => frame.close?.()); q.frames = [];
 }
 
 function stopAll() {
@@ -748,13 +1158,15 @@ function stopAll() {
     pending.frames.forEach(frame => Promise.resolve(frame).then(image => image.close?.()).catch(() => {}));
     pending.video?.then(frames => frames.forEach(image => image.close?.())).catch(() => {});
   }
-  pending = null; decoding = [];
+  pending = null;
+  decoding.forEach(retireChunk); decoding = [];
   $("caption").textContent = "";  // the scripted caption must not outlive a barge-in or erasure
   for (const q of queue) {
     try { q.src.stop(); } catch (e) {}
-    q.frames.forEach(frame => frame.close?.());
+    retireChunk(q);
   }
   queue = []; playhead = audioCtx ? audioCtx.currentTime : 0;
+  onScreen = null; resetTeacherAvatar();
 }
 
 // AudioContext time -> performance clock (ms) at the audio *output* (includes output latency).
@@ -848,23 +1260,33 @@ function renderFrame(ts) {
   }
   if (audioCtx) {
     const t = mediaTime();  // frames, caption and board follow the sound as heard (lip sync)
+    if (avatarNegotiated && !avatarDisabled && teacherAvatar?.active !== true) fallbackTeacherAvatar("WebGL became unavailable");
+    let speakingChunk = null;
     for (const q of queue) {
       if (!q.startedSent && t >= q.start) {
         q.startedSent = true; $("overlay").style.display = "none";
-        send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.start)});
+        send({type: "chunk_start", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.start), ...avatarPresentation(q)});
       }
+      if (t >= q.start && t < q.end) speakingChunk = q;
       if (t >= q.start && t < q.end && onScreen !== q) {  // caption and board of the chunk on screen, in either
         onScreen = q;                                      // direction (the slider can move the picture back)
         if (q.meta.transcript) $("caption").innerHTML = `<small>${esc(tr("caption.label", "老师"))}</small>${esc(q.meta.transcript)}`;
         if (q.board && q.board !== shownBoard) showBoard(q.board);  // the board point being spoken
       }
-      if (q.startedSent && t >= q.start && t < q.end && q.frames.length) {  // t can move back (offset change)
-        const idx = Math.max(0, Math.min(q.frames.length - 1, Math.floor((t - q.start) / (q.end - q.start) * q.frames.length)));
+      if (!avatarActive() && q.startedSent && t >= q.start && t < q.end && q.frames.length) {  // t can move back (offset change)
+        const logical = Math.max(0, Math.min(q.meta.n_frames - 1, Math.floor((t - q.start) / (q.end - q.start) * q.meta.n_frames)));
+        const sources = q.meta.video_frame_indices;
+        let idx = Math.max(0, Math.min(q.frames.length - 1, Math.floor((t - q.start) / (q.end - q.start) * q.frames.length)));
+        if (Array.isArray(sources) && sources.length === q.frames.length) {
+          idx = 0;
+          while (idx + 1 < sources.length && sources[idx + 1] <= logical) idx++;
+        }
+        const sourceIndex = Array.isArray(sources) ? sources[idx] : idx;
         g.drawImage(q.frames[idx], 0, 0, canvas.width, canvas.height);
-        (q.painted = q.painted || new Set()).add(idx);  // frames actually shown (QC evidence)
+        (q.painted = q.painted || new Set()).add(sourceIndex);  // native source indices actually shown (QC evidence)
         q.lastPaint = performance.now();
         if (window.__avTrace) window.__avTrace.push({t, heard: heardTime(), ctx: audioCtx.currentTime, p: performance.now(),
-                                                     start: q.start, end: q.end, idx, n: q.frames.length,
+                                                     start: q.start, end: q.end, idx: sourceIndex, n: q.meta.n_frames,
                                                      key: `${q.meta.request}/${q.meta.chunk}`, line: q.meta.transcript || "",
                                                      cap: $("caption").textContent, ended: q.endedSent,
                                                      board: q.board ? q.board.key : null,
@@ -873,20 +1295,25 @@ function renderFrame(ts) {
       if (!q.endedSent && t >= q.end) {  // a snapshot: if the slider later takes the picture back into this chunk,
         q.endedSent = true;              // those paints are not reported (painted stays conservative, E a lower bound)
         send({type: "chunk_end", request: q.meta.request, chunk: q.meta.chunk, tp: ctxToPerf(q.end),
-              painted: Array.from(q.painted || []), tp_last_paint: q.lastPaint});
+              painted: Array.from(q.painted || []), tp_last_paint: q.lastPaint, ...avatarPresentation(q)});
       }
     }
+    renderTeacherAvatar(speakingChunk, t);
     // a chunk leaves only when its picture is done plus the slider's whole range: moving the slider can take the
     // picture back into a chunk that ended, and its frames must still be there
-    queue = queue.filter(q => !(q.endedSent && t >= q.end + RETAIN_S));
+    queue = queue.filter(q => {
+      if (!(q.endedSent && t >= q.end + RETAIN_S)) return true;
+      retireChunk(q); return false;
+    });
   }
 }
 
 // ---------------------------------------------------------------- camera focus check (opt-in)
-// A 320x240 frame every 3 s goes to the server only while the student has switched this on; the server analyses it
+// Aspect-preserving frames up to 640x480 every 1.5 s (configured targets), while explicitly enabled; analysed
 // in memory (focused / distracted / absent) and never stores or records it.
 let camStream = null, camTimer = null, camPending = false, camRequest = 0;
-const camCanvas = document.createElement("canvas"); camCanvas.width = 320; camCanvas.height = 240;
+const camCanvas = document.createElement("canvas");
+const CAMERA_INTERVAL_MS = 1500;
 async function camOn() {
   if (!ready() || !sessionStatus?.attention || camStream || camPending) return;
   const request = ++camRequest, socket = ws, attempt = connectionAttempt;
@@ -894,7 +1321,7 @@ async function camOn() {
   let stream;
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera unavailable");
-    stream = await navigator.mediaDevices.getUserMedia({video: {width: {ideal: 320}, height: {ideal: 240}, facingMode: "user"}, audio: false});
+    stream = await navigator.mediaDevices.getUserMedia({video: {width: {ideal: 640}, height: {ideal: 480}, facingMode: "user"}, audio: false});
   } catch (e) {
     if (request === camRequest && activeSocket(socket, attempt)) {
       camPending = false; $("cam").disabled = false; $("cam").textContent = tr("camera.on", "开启专注检测");
@@ -906,14 +1333,19 @@ async function camOn() {
     stream.getTracks().forEach(track => track.stop()); return;
   }
   camPending = false; camStream = stream; latestAttention = null; $("cam").disabled = false;
-  const v = $("camView"); v.srcObject = camStream; v.hidden = false; v.play().catch(() => {});
-  camTimer = setInterval(() => {
-    if (!activeSocket(socket, attempt) || !ready() || !v.videoWidth) return;
-    camCanvas.getContext("2d").drawImage(v, 0, 0, 320, 240);
-    send({type: "camera", jpeg: camCanvas.toDataURL("image/jpeg", 0.6).split(",")[1]});
-  }, 3000);
+  const v = $("camView"); v.srcObject = camStream; v.hidden = false;
+  const capture = () => {
+    if (request !== camRequest || !camStream || !activeSocket(socket, attempt) || !ready() || !v.videoWidth || !v.videoHeight) return;
+    const scale = Math.min(1, 640 / v.videoWidth, 480 / v.videoHeight);
+    camCanvas.width = Math.max(1, Math.round(v.videoWidth * scale));
+    camCanvas.height = Math.max(1, Math.round(v.videoHeight * scale));
+    camCanvas.getContext("2d").drawImage(v, 0, 0, camCanvas.width, camCanvas.height);
+    send({type: "camera", jpeg: camCanvas.toDataURL("image/jpeg", 0.75).split(",")[1]});
+  };
+  camTimer = setInterval(capture, CAMERA_INTERVAL_MS);
+  v.play().then(capture).catch(() => {});
   $("cam").textContent = tr("camera.off", "关闭专注检测");
-  $("focus").textContent = tr("camera.enabled", "专注检测已开启：画面用于判断，不保存。");
+  renderFocusLabel();
 }
 function camOff(tell = true) {
   camRequest++; camPending = false; latestAttention = null;
@@ -924,7 +1356,7 @@ function camOff(tell = true) {
   $("camView").srcObject = null; $("camView").hidden = true; $("cam").textContent = tr("camera.on", "开启专注检测");
   if (was && tell) send({type: "camera_off"});
   $("cam").disabled = !ready() || !sessionStatus?.attention;
-  $("focus").className = "focusline"; $("focus").textContent = tr("camera.disabled", "专注检测未开启");
+  renderFocusLabel();
 }
 $("cam").onclick = () => camStream ? camOff() : camOn();
 
@@ -1048,5 +1480,8 @@ function sendText(v, lessonContext, requestId) {
 $("send").onclick = () => sendText();
 $("text").onkeydown = e => { if (e.key === "Enter" && !e.isComposing && !e.shiftKey) { e.preventDefault(); sendText(); } };
 addEventListener("pagehide", () => { $("disconnect").onclick(); cancelSpeech(); camOff(false); });
-window.LiveAgentMedia = {...window.LiveAgentMedia, refreshLanguage, restoreExercise: showExercise};
+window.LiveAgentMedia = {...window.LiveAgentMedia, refreshLanguage, restoreExercise: showExercise, renderExerciseQuestion,
+  avatarState: () => ({renderer: avatarActive() ? "mesh" : "video", model: avatarActive() ? TEACHER_AVATAR_MODEL : null,
+    epoch: avatarEpoch, ...(avatarLastState || {})}),
+  captureAvatar: () => { try { return avatarActive() ? teacherAvatar.capture() : null; } catch (_) { return null; } }};
 refreshLanguage();

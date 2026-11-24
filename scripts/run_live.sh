@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # One-command launcher for the live agent (proposal v2.11 A2 system).
 #
+#   scripts/run_live.sh live         # the realtime live agent: puppet-full with PERSONA=hanfu (no classroom features)
 #   scripts/run_live.sh demo        # CPU only: mock video generator + rule-based responder (no GPUs, no models)
 #   scripts/run_live.sh puppet      # CPU only: skeleton-controlled cartoon persona + TTS (no GPUs, no model servers)
 #                                   PUPPET_TTS=edge (default) | synth | piper; TTS_URL + TTS_MODEL + TTS_API_KEY
 #                                   select a remote OpenAI-compatible TTS; a hosted responder with LLM_URL
+#   scripts/run_live.sh puppet-full # CPU VTuber + hosted Qwen teaching, speech recognition and visual checks
+#                                   reads .cache/llm_api_key; no GPUs or MiniMax models
 #   scripts/run_live.sh hybrid      # real Qwen3-8B responder + Qwen3-ASR (1 GPU), placeholder video
 #   scripts/run_live.sh packed      # TaoMate-H3 (colocated teacher) + all helper models on 4 GPUs
 #   scripts/run_live.sh full        # TaoMate-H3 (6 GPUs) + Qwen3-8B / Qwen3-VL-8B / Qwen3-ASR (1 GPU)
@@ -15,15 +18,24 @@
 #                BACKEND_PORT (default 8201), BACKEND_HOST (default 127.0.0.1), HOURS (default 2h),
 #                DIRECTOR (closed_loop | open_loop), ALLOW_UNCALIBRATED (1 = accept `documented` actions; default 1
 #                because no capability is calibrated yet — see docs/e1_pilot.md)
+#                STUDENT (default profile: learner in puppet-full, demo otherwise),
+#                STUDENTS (comma-separated allowed profiles: learner,demo in puppet-full)
+#                STUDENT_STORE, MEMORY_DB, SESSION_LOG_DIR (optional backend storage paths)
 # Then open http://HOST:PORT (from a laptop: ssh -L 8200:127.0.0.1:8200 <this host>).
 # Stop with Ctrl-C: every process and GPU reservation started here is released.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PYTHONPATH=.
 mode=${1:-demo}
+if [ "$mode" = "live" ]; then  # D-068: the realtime live agent — the CPU VTuber stack with the hanfu persona
+  mode=puppet-full
+  export PERSONA="${PERSONA:-hanfu}"
+fi
 PORT=${PORT:-8200}; HOST=${HOST:-127.0.0.1}; HOURS=${HOURS:-2h}
 BACKEND_PORT=${BACKEND_PORT:-8201}; BACKEND_HOST=${BACKEND_HOST:-127.0.0.1}
-case "$mode" in demo|puppet|hybrid|packed|full|omni) ;; *) echo "usage: $0 demo|puppet|hybrid|packed|full|omni"; exit 2 ;; esac
+case "$mode" in demo|puppet|puppet-full|hybrid|packed|full|omni) ;; *) echo "usage: $0 demo|puppet|puppet-full|hybrid|packed|full|omni"; exit 2 ;; esac
+cpu_only=0
+case "$mode" in demo|puppet|puppet-full) cpu_only=1 ;; esac
 for tool in node python3 curl; do command -v "$tool" >/dev/null || { echo "$tool not found"; exit 1; }; done
 node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 18 || (major === 18 && minor >= 2) ? 0 : 1)' || { echo "Node.js 18.2 or newer is required"; exit 1; }
 listener_ports=("$PORT" "$BACKEND_PORT")
@@ -44,9 +56,20 @@ if [ "$mode" = "omni" ]; then READY_TIMEOUT=${READY_TIMEOUT:-1800}; else READY_T
 [[ "$READY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "READY_TIMEOUT must be a positive number of seconds"; exit 2; }
 DIRECTOR=${DIRECTOR:-closed_loop}; ALLOW_UNCALIBRATED=${ALLOW_UNCALIBRATED:-1}
 PERSONA=${PERSONA:-teacher}  # configs/persona_<name>: teacher (student classroom) | hanfu (reading host)
+if [ "$mode" = "puppet-full" ]; then
+  STUDENT=${STUDENT:-learner}; STUDENTS=${STUDENTS:-$STUDENT,demo}
+else
+  STUDENT=${STUDENT:-demo}; STUDENTS=${STUDENTS:-$STUDENT}
+fi
 # Responder LLM: local Qwen3-8B by default; a hosted OpenAI-compatible model with LLM_URL + LLM_MODEL, its key read
 # from LLM_API_KEY_FILE (default .cache/llm_api_key, git-ignored) into the backend environment
-LLM_URL=${LLM_URL:-http://127.0.0.1:8101/v1}; LLM_MODEL=${LLM_MODEL:-qwen3-8b}
+if [ "$mode" = "puppet-full" ]; then
+  # The owner-selected hosted responder (D-033); private learner context reaches this provider.
+  LLM_URL=${LLM_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic}
+  LLM_MODEL=${LLM_MODEL:-qwen3.8-flash}
+else
+  LLM_URL=${LLM_URL:-http://127.0.0.1:8101/v1}; LLM_MODEL=${LLM_MODEL:-qwen3-8b}
+fi
 LLM_API_KEY_FILE=${LLM_API_KEY_FILE:-.cache/llm_api_key}
 if [ -z "${LLM_API_KEY:-}" ] && [ -s "$LLM_API_KEY_FILE" ]; then LLM_API_KEY=$(tr -d '[:space:]' < "$LLM_API_KEY_FILE"); fi
 export LLM_API_KEY=${LLM_API_KEY:-}
@@ -54,13 +77,22 @@ export LLM_API_KEY=${LLM_API_KEY:-}
 [ "$LLM_URL" != "http://127.0.0.1:8101/v1" ] && export SKIP_LLM=1
 # board images (Qwen-Image on the helper card): default on for the teacher persona
 # HELPERS=0 (omni mode): no helper GPU; the VLM checks and speech recognition use the hosted API with the LLM key
-# (qwen3.8-flash sees images; qwen-audio-3.0-realtime-plus transcribes), and board illustrations are off
+# (qwen3.8-flash sees images; qwen-audio-3.0-realtime-plus transcribes).
+# With no image server, teaching figures use the hosted LLM and local CPU diagrams.
 HELPERS=${HELPERS:-1}
 HOSTED_VLM_URL=${HOSTED_VLM_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
 HOSTED_ASR_URL=${HOSTED_ASR_URL:-wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime}
+HOSTED_VLM_MODEL=${HOSTED_VLM_MODEL:-$LLM_MODEL}
+HOSTED_ASR_MODEL=${HOSTED_ASR_MODEL:-qwen-audio-3.0-realtime-plus}
+if [ "$mode" = "puppet-full" ]; then
+  [ -n "$LLM_API_KEY" ] || { echo "puppet-full needs LLM_API_KEY or a nonempty LLM_API_KEY_FILE (default .cache/llm_api_key)"; exit 2; }
+  case "$LLM_URL" in http://*|https://*) ;; *) echo "puppet-full needs an HTTP(S) LLM_URL"; exit 2 ;; esac
+  case "$HOSTED_VLM_URL" in http://*|https://*) ;; *) echo "puppet-full needs an HTTP(S) HOSTED_VLM_URL"; exit 2 ;; esac
+  case "$HOSTED_ASR_URL" in http://*|https://*|ws://*|wss://*) ;; *) echo "puppet-full needs an HTTP(S) or WebSocket HOSTED_ASR_URL"; exit 2 ;; esac
+fi
 IMAGES=${IMAGES:-$([ "$PERSONA" = "teacher" ] && [ "$HELPERS" = "1" ] && echo 1 || echo 0)}; export IMAGE=$IMAGES
 helper_ports=()
-if [ "$mode" != "demo" ] && [ "$mode" != "puppet" ] && { [ "$mode" != "omni" ] || [ "$HELPERS" = "1" ]; }; then
+if [ "$cpu_only" = "0" ] && { [ "$mode" != "omni" ] || [ "$HELPERS" = "1" ]; }; then
   helper_ports=(8102 8103); [ "${SKIP_LLM:-0}" != "1" ] && helper_ports+=(8101); [ "$IMAGES" = "1" ] && helper_ports+=(8104)
 fi
 model_ports=("${helper_ports[@]}")
@@ -74,10 +106,36 @@ mkdir -p .cache/logs .cache/sessions
 extra=()
 [ -d "configs/persona_$PERSONA" ] || { echo "unknown PERSONA=$PERSONA (no configs/persona_$PERSONA)"; exit 2; }
 extra+=(--config "configs/persona_$PERSONA")
-[ "$mode" != "demo" ] && [ "$mode" != "puppet" ] && extra+=(--llm-url "$LLM_URL" --llm-model "$LLM_MODEL")
-[ "$IMAGES" = "1" ] && [ "$mode" != "demo" ] && [ "$mode" != "puppet" ] && extra+=(--image-url "http://127.0.0.1:8104")
+extra+=(--student "$STUDENT" --students "$STUDENTS")
+[ -n "${STUDENT_STORE:-}" ] && extra+=(--student-store "$STUDENT_STORE")
+[ -n "${MEMORY_DB:-}" ] && extra+=(--memory-db "$MEMORY_DB")
+[ -n "${SESSION_LOG_DIR:-}" ] && extra+=(--log-dir "$SESSION_LOG_DIR")
+if [ "$mode" = "puppet-full" ] && [ "$PERSONA" = "teacher" ]; then
+  # Review before presentation, including the first section and ordinary knowledge answers.
+  extra+=(--lesson-self-check "${LESSON_SELF_CHECK:-revise}")
+  [ "${ANSWER_SELF_CHECK:-1}" = "1" ] && extra+=(--answer-self-check)
+fi
+[ "$cpu_only" = "0" ] && extra+=(--llm-url "$LLM_URL" --llm-model "$LLM_MODEL")
+[ "$IMAGES" = "1" ] && [ "$cpu_only" = "0" ] && extra+=(--image-url "http://127.0.0.1:8104")
 [ "$ALLOW_UNCALIBRATED" = "1" ] && extra+=(--dev-allow-uncalibrated)
 [ "${RECORD:-1}" = "1" ] && extra+=(--record)  # traces: event log + presented video per session (/traces)
+case "$mode" in puppet|puppet-full)
+  PUPPET_TTS=${PUPPET_TTS:-edge}
+  tts_args=(--puppet-tts "$PUPPET_TTS" --puppet-tts-voice "${TTS_VOICE:-zh-CN-XiaoxiaoNeural}")
+  tts_args+=(--puppet-tts-rate="${TTS_RATE:--4%}" --puppet-tts-pitch="${TTS_PITCH:--8Hz}"
+             --puppet-tts-volume="${TTS_VOLUME:-+0%}" --puppet-speech-timing "${PUPPET_SPEECH_TIMING:-natural}")
+  if [ -n "${TTS_URL:-}" ]; then
+    tts_args=(--puppet-tts url --tts-url "$TTS_URL" --tts-model "${TTS_MODEL:-tts-1}" --puppet-tts-voice "${TTS_VOICE:-alloy}")
+    tts_args+=(--puppet-speech-timing "${PUPPET_SPEECH_TIMING:-natural}")
+  else
+    case "$PUPPET_TTS" in edge|synth|piper) ;; *) echo "PUPPET_TTS must be edge, synth or piper (or set TTS_URL)"; exit 2 ;; esac
+    if [ "$PUPPET_TTS" = "piper" ]; then
+      [ -n "${PUPPET_MODEL:-}" ] || { echo "puppet + piper needs PUPPET_MODEL=<path to .onnx voice>"; exit 2; }
+      tts_args+=(--puppet-piper-model "$PUPPET_MODEL")
+    fi
+  fi
+  ;;
+esac
 pids=()
 set -m  # job control: each background child gets its own process group (cleanup kills whole trees)
 RUN_ID=$(date +%Y%m%dT%H%M%S)-$$  # per-invocation logs: a run never parses (or releases) another run's GPUs
@@ -105,7 +163,7 @@ cleanup() {
   for p in "${pids[@]:-}"; do [ -n "$p" ] && { kill -9 -- "-$p" 2>/dev/null || kill -9 "$p" 2>/dev/null; } || true; done
   # canhazgpu can keep a reservation after its supervisor is interrupted: release exactly ours. A card can be
   # lost (idle release) and re-reserved by another job: release only cards still marked with this RUN_ID
-  if [ "$mode" != "demo" ] && [ "$mode" != "puppet" ] && command -v gpu >/dev/null; then
+  if [ "$cpu_only" = "0" ] && command -v gpu >/dev/null; then
     ids=$(reserved_ids "$SERVER_LOG" "$HELPER_LOG" "$OMNI_LOG" | sort -u | still_ours | paste -sd, -)
     if [ -n "$ids" ]; then gpu release --gpu-ids "$ids" >/dev/null 2>&1 && echo "[run_live] released GPUs $ids"; fi
   fi
@@ -140,7 +198,7 @@ processes_alive() {
     kill -0 "$p" 2>/dev/null || { echo "[run_live] a process exited; see $FRONTEND_LOG and $SERVER_LOG"; return 1; }
   done
 }
-env -u LLM_API_KEY HOST="$HOST" PORT="$PORT" BACKEND_URL="$BACKEND_URL" node frontend/server.mjs > "$FRONTEND_LOG" 2>&1 &
+env -u LLM_API_KEY -u TTS_API_KEY HOST="$HOST" PORT="$PORT" BACKEND_URL="$BACKEND_URL" node frontend/server.mjs > "$FRONTEND_LOG" 2>&1 &
 pids+=($!)
 echo "[run_live] frontend log: $FRONTEND_LOG; backend: $BACKEND_URL"
 
@@ -151,28 +209,25 @@ case "$mode" in
       --director-mode "$DIRECTOR" --host "$BACKEND_HOST" --port "$BACKEND_PORT" "${extra[@]}" > "$SERVER_LOG" 2>&1 &
     pids+=($!)
     ;;
-  puppet)
+  puppet|puppet-full)
     # skeleton-controlled cartoon persona (D-047): CPU rig + TTS voice, no GPUs and no model servers.
     # PUPPET_TTS=edge (free Microsoft neural voices; needs the network and the edge-tts package) |
     # synth (offline pseudo-speech) | piper (local, PUPPET_MODEL=path.onnx). TTS_URL (+ TTS_MODEL,
     # TTS_VOICE, TTS_API_KEY in the environment) routes to a remote OpenAI-compatible TTS instead.
-    PUPPET_TTS=${PUPPET_TTS:-edge}
-    tts_args=(--puppet-tts "$PUPPET_TTS" --puppet-tts-voice "${TTS_VOICE:-zh-CN-XiaoxiaoNeural}")
-    if [ -n "${TTS_URL:-}" ]; then
-      tts_args=(--puppet-tts url --tts-url "$TTS_URL" --tts-model "${TTS_MODEL:-tts-1}" --puppet-tts-voice "${TTS_VOICE:-alloy}")
-    elif [ "$PUPPET_TTS" = "piper" ]; then
-      [ -n "${PUPPET_MODEL:-}" ] || { echo "puppet + piper needs PUPPET_MODEL=<path to .onnx voice>"; exit 1; }
-      tts_args+=(--puppet-piper-model "$PUPPET_MODEL")
+    perception_args=(--vlm-url mock --asr-url "")
+    if [ "$mode" = "puppet-full" ]; then
+      perception_args=(--vlm-url "$HOSTED_VLM_URL" --vlm-model "$HOSTED_VLM_MODEL"
+                       --asr-url "$HOSTED_ASR_URL" --asr-model "$HOSTED_ASR_MODEL")
     fi
-    if [ "$LLM_URL" != "http://127.0.0.1:8101/v1" ]; then  # hosted responder (the local default has no server here)
+    if [ "$mode" = "puppet-full" ] || [ "$LLM_URL" != "http://127.0.0.1:8101/v1" ]; then  # hosted responder (the local default has no server here)
       llm_args=(--llm-url "$LLM_URL" --llm-model "$LLM_MODEL")
-      echo "[run_live] puppet: skeleton persona + TTS ($([ -n "${TTS_URL:-}" ] && echo url || echo "$PUPPET_TTS")), hosted responder (CPU only)"
+      echo "[run_live] $mode: VTuber + TTS ($([ -n "${TTS_URL:-}" ] && echo url || echo "$PUPPET_TTS")), hosted responder (CPU only)"
     else
       llm_args=(--llm-url scripted)
       echo "[run_live] puppet: skeleton persona + TTS ($([ -n "${TTS_URL:-}" ] && echo url || echo "$PUPPET_TTS")), rule responder, simulated judge (CPU only)"
     fi
     python3 -m live_agent.backend.app --generator puppet "${tts_args[@]}" "${llm_args[@]}" \
-      --vlm-url mock --asr-url "" --director-mode "$DIRECTOR" --host "$BACKEND_HOST" --port "$BACKEND_PORT" \
+      "${perception_args[@]}" --director-mode "$DIRECTOR" --host "$BACKEND_HOST" --port "$BACKEND_PORT" \
       "${extra[@]}" > "$SERVER_LOG" 2>&1 &
     pids+=($!)
     ;;
@@ -265,7 +320,7 @@ case "$mode" in
     pids+=($!)
     echo "[run_live] server log: $SERVER_LOG"
     ;;
-  *) echo "usage: $0 demo|puppet|hybrid|packed|full|omni"; exit 2 ;;
+  *) echo "usage: $0 demo|puppet|puppet-full|hybrid|packed|full|omni"; exit 2 ;;
 esac
 
 ready=0
@@ -277,7 +332,7 @@ while [ $((SECONDS - t0)) -lt "$READY_TIMEOUT" ]; do  # raise it when gpu run ma
     ready=1
     break
   fi
-  if [ "$mode" != "demo" ] && grep -q "reservation lost" "$SERVER_LOG" "$HELPER_LOG" "$OMNI_LOG" 2>/dev/null; then
+  if [ "$cpu_only" = "0" ] && grep -q "reservation lost" "$SERVER_LOG" "$HELPER_LOG" "$OMNI_LOG" 2>/dev/null; then
     echo "[run_live] a GPU reservation was lost during start-up"; exit 1
   fi
   sleep 1

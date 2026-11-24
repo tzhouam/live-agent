@@ -334,8 +334,9 @@ class Curriculum:
         if p.get("encouragement"):
             parts.append(f"表扬与纠错：{clean(p['encouragement'])}")
         if chars:
-            parts.append(f"台词硬性限制：每句不超过{chars}个字（视频每段只能说这么多），这条优先于上面的句长建议；"
-                         "长句拆成几句说。")
+            parts.append(f"台词长度限制：每句不超过{chars}个字，按完整意思和自然停顿组织；"
+                         "长句在合适的语义边界分段，不要机械地切成短口号。"
+                         "语气平和、直接，反馈针对学生的具体思路，不反复空泛夸奖或假装学生已经回答。")
         return "\n".join(parts)
 
     def exercise_style(self, grade: int | None) -> str:

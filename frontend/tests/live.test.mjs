@@ -14,24 +14,32 @@ function assertRequestId(value) {
   assert.ok(value.trim().length > 0 && value.length <= 64);
 }
 
-function page({ edition = 'primary', codec, bitmap } = {}) {
+function page({ edition = 'primary', codec, bitmap, href = '/', avatar, videoDecoder } = {}) {
   const elements = new Map(), sockets = [], events = [], transitions = [], permissions = [];
-  const timers = new Map();
+  const dialogCloseEvents = [];
+  const timers = new Map(), intervals = [];
   let nextTimer = 0;
   function element(id) {
     if (!elements.has(id)) {
       const node = { id, value: '', textContent: '', className: '', children: [], style: {}, dataset: {},
-        hidden: false, disabled: false, width: 480, height: 864, clientWidth: 1000,
+        hidden: false, disabled: false, open: false, width: 480, height: 864, clientWidth: 1000,
         clientHeight: 500, scrollHeight: 0, scrollTop: 0,
         appendChild(child) { child.parent = this; this.children.push(child); },
         contains(child) { return this.children.includes(child); },
         focus() { document.activeElement = this; },
+        showModal() { this.returnFocus = document.activeElement; this.open = true; element('boardFigureClose').focus(); },
+        close() {
+          if (!this.open) return;
+          this.open = false; this.returnFocus?.focus();
+          dialogCloseEvents.push(() => this.onclose?.());
+        },
         remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
         querySelector() { return null; },
         querySelectorAll(selector) { return selector.includes('.badge') ? this.children.filter(child => child.className === 'badge') : []; },
         setAttribute(name, value) { this[name] = value; },
         getAttribute(name) { return this[name] ?? null; }, removeAttribute(name) { delete this[name]; },
         getContext() { return { drawImage() {}, clearRect() {} }; },
+        toDataURL() { return 'data:image/jpeg;base64,anBlZw=='; },
         setPointerCapture() {}, hasPointerCapture() { return false; },
         play() { return Promise.resolve(); }, scrollIntoView() {},
       };
@@ -76,7 +84,7 @@ function page({ edition = 'primary', codec, bitmap } = {}) {
   }
   const window = {
     AudioContext,
-    location: { href: '/' },
+    location: { href },
     dispatchEvent(event) { events.push(event); },
     LiveAgentAPI: { websocketUrl() { return 'ws://frontend.test/ws'; } },
     LiveAgentProduct: {
@@ -85,7 +93,7 @@ function page({ edition = 'primary', codec, bitmap } = {}) {
       sessionChanged(state, detail) { transitions.push({ state, detail }); },
     },
   };
-  const context = vm.createContext({ document, window, WebSocket, MediaRecorder, Blob,
+  const context = vm.createContext({ document, window, WebSocket, MediaRecorder, Blob, URL,
     AudioContext, CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
     navigator: { mediaDevices: {
       addEventListener() {},
@@ -94,14 +102,17 @@ function page({ edition = 'primary', codec, bitmap } = {}) {
     console: { warn() {}, error() {} }, performance: { now: () => 1000 },
     localStorage: { getItem() { return null; }, setItem() {} },
     innerHeight: 800, innerWidth: 1200, addEventListener() {}, requestAnimationFrame() {},
-    setInterval(callback) { const id = ++nextTimer; timers.set(id, callback); return id; },
+    setInterval(callback, ms) { const id = ++nextTimer; timers.set(id, callback); intervals.push({id, ms}); return id; },
     clearInterval(id) { timers.delete(id); },
     setTimeout(callback) { const id = ++nextTimer; timers.set(id, callback); return id; },
     clearTimeout(id) { timers.delete(id); },
     createImageBitmap: bitmap || (() => Promise.resolve({ close() {} })),
-    ...(codec ? { VideoDecoder: { isConfigSupported: codec } } : {}),
+    ...(avatar ? { createAvatarMock: avatar } : {}),
+    ...(videoDecoder ? {VideoDecoder:videoDecoder,EncodedVideoChunk:class{constructor(data){Object.assign(this,data);}}}
+      : codec ? { VideoDecoder: { isConfigSupported: codec } } : {}),
   });
   vm.runInContext(source, context);
+  if (avatar) vm.runInContext('loadTeacherAvatar = async () => createAvatarMock', context);
   element('mode').value = 'private'; element('uid').value = 'actual-user'; element('sid').value = 'actual-student';
   const run = code => vm.runInContext(code, context);
   async function connect() { await element('connect').onclick(); return sockets.at(-1); }
@@ -111,13 +122,604 @@ function page({ edition = 'primary', codec, bitmap } = {}) {
       generator: 'mock', responder: 'rules', director: 'online', judge: 'mock',
       asr: false, attention: false, board: false, student: null, ...extra }) });
   }
-  return { element, sockets, events, transitions, permissions, timers, run, connect, open, status };
+  const flushDialogCloseEvents = () => { while (dialogCloseEvents.length) dialogCloseEvents.shift()(); };
+  return { element, sockets, events, transitions, permissions, timers, intervals, run, connect, open, status, flushDialogCloseEvents };
 }
 
 function stream() {
   let stopped = 0;
   return { getTracks: () => [{ stop() { stopped++; } }], stopped: () => stopped };
 }
+
+function meshFixture({create, href = '/?avatar=mesh', bitmap} = {}) {
+  const states = [], calls = {reset:0,destroy:0,capture:0};
+  const rig = {active:true,model:'teacher-mesh-v1',render(state) {states.push({...state});},
+    capture() {calls.capture++; return 'data:image/jpeg;base64,anBlZw==';},
+    reset() {calls.reset++;},destroy() {calls.destroy++; this.active=false;}};
+  let options;
+  const app = page({href,bitmap,avatar:async value => {options=value; return create ? create(value,rig) : rig;}});
+  return {...app,rig,states,calls,options:()=>options};
+}
+const meshStatus = {avatar:{renderer:'mesh',model:'teacher-mesh-v1',epoch:0,supported_capabilities:['idle_teach','explain']}};
+async function readyMesh(app) { await app.connect(); await app.open(); await app.status(meshStatus); }
+function meshChunk(app, chunk, {offset = chunk,duration = 2,request = 7,epoch = 0} = {}) {
+  app.run(`schedule({meta:{request:${request},chunk:${chunk},width:480,height:864,sample_rate:16000,
+    duration:1,n_frames:24,fps:24,avatar:{renderer:'mesh',model:'teacher-mesh-v1',gesture:'explain',
+      request_time_s:${offset},request_duration_s:${duration},motion_time_s:${8+offset},epoch:${epoch}}},
+    frames:[{close(){}}],pcm:new Int16Array(16000).fill(7000),epoch});`);
+}
+async function startJpegChunk(app, chunk=0, {mesh=true,nFrames=1,videoFrames,frameIndices}={}) {
+  const socket=app.sockets.at(-1);
+  const avatar=mesh?{avatar:{renderer:'mesh',model:'teacher-mesh-v1',epoch:0,gesture:'explain',
+    request_time_s:chunk,request_duration_s:2,motion_time_s:chunk}}:{};
+  const sparse=videoFrames==null?{}:{video_frames:videoFrames,video_frame_indices:frameIndices};
+  await socket.onmessage({data:JSON.stringify({type:'chunk',request:7,chunk,width:480,height:864,
+    sample_rate:16000,duration:1,n_frames:nFrames,fps:nFrames,...avatar,...sparse})});
+  for(let i=0;i<(videoFrames??nFrames);i++)await socket.onmessage({data:new ArrayBuffer(4)});
+  return {completion:socket.onmessage({data:new Int16Array(16000).buffer})};
+}
+
+test('mesh PCM schedules in order before hidden video decode and eventual frames support fallback', async () => {
+  const first=deferred(),second=deferred(); let call=0;
+  const app=meshFixture({bitmap:()=>[first.promise,second.promise][call++]});await readyMesh(app);
+  const a=await startJpegChunk(app),b=await startJpegChunk(app,1);
+  await a.completion;await b.completion;
+  assert.equal(app.run('queue.length'),2);
+  assert.equal(app.run('queue[0].frames.length'),0);
+  assert.equal(app.run('queue[1].start===queue[0].end'),true);
+  const start=app.run('queue[0].start');
+  second.resolve({close(){}});await new Promise(setImmediate);
+  assert.equal(app.run('queue[0].frames.length'),0);assert.equal(app.run('queue[1].frames.length'),1);
+  app.rig.active=false;app.run('audioCtx.currentTime=.3;renderFrame(300);');
+  assert.equal(app.run('window.LiveAgentMedia.avatarState().renderer'),'video');
+  first.resolve({close(){}});await new Promise(setImmediate);
+  app.run('audioCtx.currentTime=.6;renderFrame(600);');
+  assert.equal(app.run('queue[0].frames.length'),1);
+  assert.equal(app.run('queue[0].start'),start);
+  assert.ok(app.run('queue[0].painted.size')>0);
+});
+
+test('legacy video keeps its decode gate and ordered playback when later chunks decode first', async () => {
+  const first=deferred();let call=0;
+  const app=page({bitmap:()=>call++===0?first.promise:Promise.resolve({close(){}})});
+  await app.connect();await app.open();await app.status();
+  const a=await startJpegChunk(app,0,{mesh:false}),b=await startJpegChunk(app,1,{mesh:false});
+  await b.completion;assert.equal(app.run('queue.length'),0);
+  first.resolve({close(){}});await a.completion;
+  assert.equal(app.run('queue.length'),2);assert.equal(app.run('queue[0].meta.chunk'),0);
+  assert.equal(app.run('queue[1].meta.chunk'),1);assert.equal(app.run('queue[1].start===queue[0].end'),true);
+});
+
+test('mesh reset closes late fallback decodes without restoring playback', async () => {
+  const decoded=deferred();let closed=0;
+  const app=meshFixture({bitmap:()=>decoded.promise});await readyMesh(app);
+  const c=await startJpegChunk(app);await c.completion;assert.equal(app.run('queue.length'),1);
+  app.run('stopAll()');decoded.resolve({close(){closed++;}});await new Promise(setImmediate);
+  assert.equal(closed,1);assert.equal(app.run('queue.length'),0);assert.equal(app.run('decoding.length'),0);
+});
+
+test('retired mesh chunks close a late decode and completed video frames are released after AV retention', async () => {
+  const decoded=deferred();let lateClosed=0;
+  const mesh=meshFixture({bitmap:()=>decoded.promise});await readyMesh(mesh);
+  const c=await startJpegChunk(mesh);await c.completion;
+  mesh.run('audioCtx.currentTime=2;renderFrame(2000)');assert.equal(mesh.run('queue.length'),0);
+  decoded.resolve({close(){lateClosed++;}});await new Promise(setImmediate);assert.equal(lateClosed,1);
+  let closed=0;
+  const video=page({bitmap:()=>Promise.resolve({close(){closed++;}})});
+  await video.connect();await video.open();await video.status();
+  const v=await startJpegChunk(video,0,{mesh:false});await v.completion;
+  video.run('audioCtx.currentTime=1.3;renderFrame(1300)');assert.equal(closed,0);
+  video.run('audioCtx.currentTime=2;renderFrame(2000)');assert.equal(closed,1);assert.equal(video.run('queue.length'),0);
+});
+
+test('reset also closes already decoded legacy chunks waiting behind an unresolved predecessor', async () => {
+  const first=deferred();let calls=0,closed=0;
+  const app=page({bitmap:()=>calls++===0?first.promise:Promise.resolve({close(){closed++;}})});
+  await app.connect();await app.open();await app.status();
+  const a=await startJpegChunk(app,0,{mesh:false}),b=await startJpegChunk(app,1,{mesh:false});
+  await b.completion;assert.equal(app.run('decoding.length'),2);
+  app.run('stopAll()');assert.equal(closed,1);
+  first.resolve({close(){closed++;}});await a.completion;
+  assert.equal(closed,2);assert.equal(app.run('queue.length'),0);
+});
+
+test('failed JPEG chunks release successful bitmaps while mesh speech continues', async () => {
+  const failure=deferred();let calls=0,closed=0;
+  const app=meshFixture({bitmap:()=>calls++===0?Promise.resolve({close(){closed++;}}):failure.promise});
+  await readyMesh(app);const c=await startJpegChunk(app,0,{nFrames:2});await c.completion;
+  assert.equal(app.run('queue.length'),1);
+  failure.reject(new Error('Bad JPEG'));await new Promise(setImmediate);
+  assert.equal(closed,1);assert.equal(app.run('queue.length'),1);assert.equal(app.run('queue[0].frames.length'),0);
+});
+
+test('failed H264 decoding closes its decoder, native frames, and partial bitmap output', async () => {
+  let decoderClosed=0,frameClosed=0,bitmapClosed=0;
+  class Decoder {
+    constructor(callbacks){this.callbacks=callbacks;}
+    configure(){}
+    decode(){this.callbacks.output({close(){frameClosed++;}});}
+    flush(){return Promise.reject(new Error('Invalid H264 segment'));}
+    close(){decoderClosed++;}
+  }
+  const app=page({videoDecoder:Decoder,bitmap:()=>Promise.resolve({close(){bitmapClosed++;}})});
+  await assert.rejects(app.run('decodeH264(new ArrayBuffer(4),{width:480,height:864,fps:24,sizes:[4]})'),/Invalid H264/);
+  await new Promise(setImmediate);
+  assert.equal(decoderClosed,1);assert.equal(frameClosed,1);assert.equal(bitmapClosed,1);
+});
+
+test('mesh preview is opt-in and negotiates only a loaded matching model', async () => {
+  const legacy = meshFixture({href:'/'}); await legacy.connect(); await legacy.open();
+  assert.equal(legacy.options(),undefined);
+  assert.equal(Object.hasOwn(JSON.parse(legacy.sockets[0].sent[0]),'renderer'),false);
+  const app = meshFixture(); await readyMesh(app);
+  assert.equal(app.options().modelUrl,'/assets/teacher-mesh/rig-v7.json');
+  assert.equal(app.options().fallbackCanvas,app.element('screen'));
+  const hello = JSON.parse(app.sockets[0].sent[0]);
+  assert.equal(hello.renderer,'mesh'); assert.equal(hello.avatar_model,'teacher-mesh-v1');
+  assert.equal(hello.avatar_video_frames,true);
+  assert.equal(app.run('window.LiveAgentMedia.avatarState().renderer'),'mesh');
+  assert.equal(app.element('screenWrap').dataset.renderer,'mesh');
+  assert.equal(app.element('overlay').style.display,'none');
+  assert.equal(app.run('sessionStatus.avatar.supported_capabilities[1]'),'explain');
+});
+
+test('sparse standby JPEG frame counts preserve full PCM and fallback reports native painted indices', async () => {
+  const app=meshFixture();await readyMesh(app);
+  const c=await startJpegChunk(app,0,{nFrames:24,videoFrames:2,frameIndices:[0,12]});await c.completion;
+  await new Promise(setImmediate);
+  assert.equal(app.run('queue[0].frames.length'),2);assert.equal(app.run('queue[0].pcm.length'),16000);
+  assert.equal(app.run('queue[0].meta.n_frames'),24);
+  app.run('audioCtx.currentTime=.3;renderFrame(300)');
+  const capture=app.sockets[0].sent.map(value=>JSON.parse(value)).find(packet=>packet.type==='avatar_frame');
+  assert.equal(capture.frame,6);  // actual mesh evidence still uses the full native clock
+  app.rig.active=false;app.run('audioCtx.currentTime=.4;renderFrame(400)');
+  app.run('audioCtx.currentTime=.8;renderFrame(800)');
+  assert.deepEqual(JSON.parse(app.run('JSON.stringify([...queue[0].painted])')),[0,12]);
+  app.run('audioCtx.currentTime=1.2;renderFrame(1200)');
+  const end=app.sockets[0].sent.map(value=>JSON.parse(value)).find(packet=>packet.type==='chunk_end');
+  assert.equal(end.renderer,'video');assert.deepEqual(end.painted,[0,12]);
+});
+
+test('sparse H264 timestamps follow original frame positions without changing the full audio clock', async () => {
+  const timestamps=[];
+  class Decoder{
+    constructor(callbacks){this.callbacks=callbacks;}
+    configure(){}close(){}
+    decode(chunk){timestamps.push(chunk.timestamp);this.callbacks.output({close(){}});}
+    flush(){return Promise.resolve();}
+  }
+  const app=page({videoDecoder:Decoder});
+  const frames=await app.run('decodeH264(new ArrayBuffer(8),{width:480,height:864,fps:24,n_frames:24,video_frames:2,video_frame_indices:[0,12],sizes:[4,4]})');
+  assert.equal(frames.length,2);assert.deepEqual(timestamps,[0,500000]);frames.forEach(frame=>frame.close());
+});
+
+test('a failed model load and an older server preserve working video without changing legacy hello', async () => {
+  const failed = meshFixture({create:async()=>{throw new Error('Missing model');}});
+  await failed.connect(); await failed.open();
+  assert.equal(Object.hasOwn(JSON.parse(failed.sockets[0].sent[0]),'renderer'),false);
+  assert.equal(failed.element('screen').style.visibility,'visible');
+  const oldServer = meshFixture(); await oldServer.connect(); await oldServer.open(); await oldServer.status();
+  assert.equal(oldServer.calls.destroy,1);
+  assert.equal(oldServer.run('window.LiveAgentMedia.avatarState().renderer'),'video');
+  assert.equal(oldServer.run('window.LiveAgentMedia.captureAvatar()'),null);
+  assert.equal(oldServer.run('sessionState'),'ready');
+});
+
+test('cancelled asynchronous model loading destroys its renderer without opening a stale socket', async () => {
+  const pending = deferred(), started=deferred();
+  const app = meshFixture({create:async(_options,rig)=>{started.resolve();await pending.promise;return rig;}});
+  const connecting = app.connect();
+  await started.promise;
+  app.element('disconnect').onclick(); pending.resolve(); await connecting;
+  assert.equal(app.calls.destroy,1); assert.equal(app.sockets.length,0);
+  assert.equal(app.run('sessionState'),'disconnected');
+});
+
+test('mesh uses the heard audio clock across chunk seams and sends actual canvas evidence without puppet paints', async () => {
+  const app = meshFixture(); await readyMesh(app); meshChunk(app,0); meshChunk(app,1);
+  app.run('audioCtx.currentTime=0.8; renderFrame(800);');
+  const first = app.states.at(-1);
+  assert.ok(first.requestTime > 0.7 && first.requestTime < 0.8);
+  assert.ok(first.mouthOpen > 0); assert.ok(first.motionTime > 8.7);
+  const frames = app.sockets[0].sent.map(value=>JSON.parse(value)).filter(packet=>packet.type==='avatar_frame');
+  assert.equal(frames.length,1); assert.equal(frames[0].renderer,'mesh');
+  assert.equal(frames[0].image,'data:image/jpeg;base64,anBlZw==');
+  assert.equal(frames[0].epoch,0); assert.equal(frames[0].frame,18);
+  assert.ok(frames[0].request_time_s > 0.7);
+  app.run('audioCtx.currentTime=1.04; renderFrame(1040);');
+  const before = app.states.at(-1);
+  app.run('audioCtx.currentTime=1.05; renderFrame(1050);');
+  const after = app.states.at(-1);
+  assert.ok(after.requestTime > before.requestTime);
+  assert.ok(after.requestTime-before.requestTime < 0.02);
+  assert.ok(after.motionTime-before.motionTime < 0.02);
+  assert.ok(Math.abs(after.mouthOpen-before.mouthOpen) < 0.1);
+  const end = app.sockets[0].sent.map(value=>JSON.parse(value)).find(packet=>packet.type==='chunk_end');
+  assert.equal(end.renderer,'mesh'); assert.equal(end.model,'teacher-mesh-v1'); assert.deepEqual(end.painted,[]);
+  app.run('audioCtx.currentTime=2.2; renderFrame(2200);');
+  assert.equal(app.states.at(-1).mouthOpen,0);
+  assert.equal(app.states.at(-1).gesture,'idle');
+});
+
+test('decoded mesh chunks report receipt with the negotiated epoch before scheduling', async () => {
+  const app=meshFixture(); await readyMesh(app);
+  const socket=app.sockets[0];
+  await socket.onmessage({data:JSON.stringify({type:'chunk',request:7,chunk:0,width:480,height:864,
+    sample_rate:16000,duration:1,n_frames:1,fps:1,avatar:{renderer:'mesh',model:'teacher-mesh-v1',epoch:0,
+      gesture:'explain',request_time_s:0,request_duration_s:1,motion_time_s:0}})});
+  await socket.onmessage({data:new ArrayBuffer(4)});
+  await socket.onmessage({data:new Int16Array(16000).buffer});
+  const received=socket.sent.map(value=>JSON.parse(value)).find(packet=>packet.type==='chunk_received');
+  assert.equal(received.renderer,'mesh'); assert.equal(received.model,'teacher-mesh-v1'); assert.equal(received.epoch,0);
+  assert.equal(app.run('queue.length'),1);
+});
+
+test('mesh stop resets speech immediately and rejects a stale decoded epoch before scheduling', async () => {
+  const app = meshFixture(); await readyMesh(app); meshChunk(app,0);
+  app.run('audioCtx.currentTime=0.5;renderFrame(500);');
+  const before = app.calls.reset;
+  await app.sockets[0].onmessage({data:JSON.stringify({type:'stop',epoch:1})});
+  assert.equal(app.calls.reset,before+1); assert.equal(app.run('queue.length'),0);
+  assert.equal(app.run('avatarMouthOpen'),0); assert.equal(app.run('window.LiveAgentMedia.avatarState().request'),undefined);
+  // A chunk from an earlier server epoch arriving after stop must not resurrect the gesture.
+  await app.sockets[0].onmessage({data:JSON.stringify({type:'chunk',request:7,chunk:2,width:480,height:864,
+    sample_rate:16000,duration:1,n_frames:0,fps:24,avatar:{...meshStatus.avatar,epoch:0}})});
+  await app.sockets[0].onmessage({data:new Int16Array([0]).buffer});
+  assert.equal(app.run('queue.length'),0);
+  app.run('audioCtx.currentTime=0.7;renderFrame(700);');
+  assert.equal(app.states.at(-1).mouthOpen,0); assert.equal(app.states.at(-1).gesture,'idle');
+  app.element('disconnect').onclick(); assert.equal(app.calls.destroy,1);
+  assert.equal(app.run('window.LiveAgentMedia.captureAvatar()'),null);
+});
+
+test('runtime WebGL loss switches to decoded video and reports its real renderer in acknowledgements', async () => {
+  const app = meshFixture(); await readyMesh(app); meshChunk(app,0);
+  app.run('audioCtx.currentTime=0.3;renderFrame(300);');
+  app.rig.active=false;
+  app.run('audioCtx.currentTime=0.6;renderFrame(600);');
+  assert.equal(app.run('window.LiveAgentMedia.avatarState().renderer'),'video');
+  assert.equal(app.element('screen').style.visibility,'visible');
+  assert.ok(app.run('queue[0].painted.size')>0);
+  const fallback = app.sockets[0].sent.map(value=>JSON.parse(value)).find(packet=>packet.type==='avatar_renderer');
+  assert.deepEqual(fallback,{type:'avatar_renderer',renderer:'video',epoch:0});
+  app.run('audioCtx.currentTime=1.2;renderFrame(1200);');
+  const end=app.sockets[0].sent.map(value=>JSON.parse(value)).find(packet=>packet.type==='chunk_end');
+  assert.equal(end.renderer,'video'); assert.ok(end.painted.length>0);
+});
+
+test('avatar captures are bounded and missing captures never use decoded server frames', async () => {
+  const app = meshFixture(); await readyMesh(app); meshChunk(app,0);
+  app.rig.capture=()=>{throw new Error('No WebGL capture');};
+  app.run('audioCtx.currentTime=0.3;renderFrame(300);');
+  assert.equal(app.sockets[0].sent.map(value=>JSON.parse(value)).some(packet=>packet.type==='avatar_frame'),false);
+  assert.equal(app.run('queue[0].painted'),undefined);
+  app.rig.capture=()=>`data:image/jpeg;base64,${'a'.repeat(160000)}`;
+  app.run('performance.now=()=>2000;audioCtx.currentTime=0.8;renderFrame(800);');
+  assert.equal(app.sockets[0].sent.map(value=>JSON.parse(value)).some(packet=>packet.type==='avatar_frame'),false);
+  assert.equal(app.run('window.LiveAgentMedia.avatarState().renderer'),'mesh');
+});
+
+const galleryImages = [
+  {url:'/board/img/d000000000000001.png',caption:'Overview',point:null},
+  {url:'/board/img/d000000000000002.png',caption:'First process',point:0},
+  {url:'/board/img/p000000000000003.png',caption:'Second comparison',point:1},
+];
+function galleryFixture(app, {key = 'gallery-a', reveal = 0, figures = galleryImages, figure} = {}) {
+  const active = figure === undefined ? figures.find(fig => fig.point === reveal) || figures.find(fig => fig.point === null) : figure;
+  app.run(`showBoard(${JSON.stringify({key,title:'Visual lesson',items:['First','Second'],reveal,
+    progress:[1,3],figures,figure:active || null})})`);
+}
+
+test('ready board visuals form a bounded navigation gallery with a current caption and enlarged selected image', () => {
+  const app = page(); galleryFixture(app);
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[1].url);
+  assert.equal(app.element('boardCap').innerHTML, 'First process');
+  assert.equal(app.element('boardFigureCount').textContent, '2 / 3');
+  assert.equal(app.element('boardPrevious').disabled, false);
+  app.element('boardNext').onclick();
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[2].url);
+  assert.equal(app.element('boardCap').innerHTML, 'Second comparison');
+  assert.equal(app.element('boardNext').disabled, true);
+  assert.equal(app.run('shownBoard.figure.url'), galleryImages[1].url);
+  assert.equal(app.run('JSON.stringify(shownBoard.progress)'), '[1,3]');
+  app.run('openBoardFigure()');
+  assert.equal(app.element('boardFigureLarge').getAttribute('src'), galleryImages[2].url);
+  app.element('boardPrevious').onclick();
+  assertDiagramClosed(app);
+  app.element('boardPrevious').onclick();
+  assert.equal(app.element('boardFigureCount').textContent, '1 / 3');
+  assert.equal(app.element('boardPrevious').disabled, true);
+});
+
+test('manual gallery selection survives unchanged playback snapshots and new images but a point or board change restores automatic choice', () => {
+  const app = page(); galleryFixture(app); app.element('boardNext').onclick();
+  galleryFixture(app);  // a new chunk object carrying the same spoken point
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[2].url);
+  app.run(`boardFigureReady({board:'gallery-a',point:2,figure:{url:'/board/img/d000000000000004.png',caption:'Later detail'}})`);
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[2].url);
+  assert.equal(app.element('boardFigureCount').textContent, '3 / 4');
+  galleryFixture(app, {reveal:1});
+  assert.equal(app.run('boardGallerySelection'), null);
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[2].url);
+  app.element('boardPrevious').onclick();
+  app.run('shownBoard.reveal=0; showBoard(shownBoard)'); // in-place point changes also restore alignment
+  assert.equal(app.run('boardGallerySelection'), null);
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[1].url);
+  galleryFixture(app, {key:'gallery-b',reveal:1});
+  assert.equal(app.run('boardGallerySelection'), null);
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[2].url);
+});
+
+test('future-point images are reachable without showing them automatically and late current images do not override manual browsing', () => {
+  const app = page(); galleryFixture(app, {figures:[galleryImages[2]],figure:null});
+  assert.equal(app.element('board').classList.contains('hasfig'), false);
+  assert.equal(app.element('boardGallery').hidden, false);
+  assert.equal(app.element('boardBrowse').hidden, false);
+  assert.equal(app.element('boardBrowse').textContent, '查看配图 1');
+  app.element('boardBrowse').onclick();
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[2].url);
+  app.run(`boardFigureReady({board:'gallery-a',point:0,figure:${JSON.stringify(galleryImages[1])}})`);
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[2].url);
+  assert.equal(app.element('boardFigureCount').textContent, '2 / 2');
+  assert.equal(app.run('shownBoard.figure.url'), galleryImages[1].url);
+});
+
+test('a new spoken point without an image leaves earlier images available without automatically retaining the previous point', () => {
+  const app = page(); galleryFixture(app, {figures:[galleryImages[1],galleryImages[2]]});
+  app.element('boardNext').onclick();
+  app.run('shownBoard.reveal=2; showBoard(shownBoard)');
+  assert.equal(app.run('boardGallerySelection'), null);
+  assert.equal(app.element('board').classList.contains('hasfig'), false);
+  assert.equal(app.element('boardImg').getAttribute('src'), null);
+  assert.equal(app.element('boardGallery').hidden, false);
+  assert.equal(app.element('boardBrowse').textContent, '查看配图 2');
+});
+
+test('late gallery images populate matching queued boards without mixing other lessons or regressing to stale snapshots', () => {
+  const app = page(); galleryFixture(app, {figures:[galleryImages[1]]});
+  app.run(`queue.push({board:{key:'gallery-a',title:'Visual lesson',items:['First','Second'],reveal:1}});
+    boardFigureReady({board:'other-lesson',point:1,figure:{url:'/board/img/d000000000000009.png',caption:'Other lesson'}});
+    boardFigureReady({board:'gallery-a',point:1,figure:${JSON.stringify(galleryImages[2])}});`);
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[1].url);
+  assert.equal(app.element('boardFigureCount').textContent, '1 / 2');
+  assert.equal(app.run('queue[0].board.figures.length'), 2);
+  app.run(`boardFigureReady({board:'gallery-a',point:1,figure:{url:'/board/img/p000000000000003.png',caption:'New caption'}})`);
+  galleryFixture(app, {reveal:1,figures:[galleryImages[1],galleryImages[2]]});
+  assert.equal(app.element('boardCap').innerHTML, 'New caption');
+  assert.equal(app.run('JSON.stringify(shownBoard.figures)').includes('Other lesson'), false);
+});
+
+test('a whole-board collection fallback stays a whole-board figure when its late replacement arrives', () => {
+  const app = page(); galleryFixture(app, {figures:[galleryImages[0],galleryImages[2]],figure:galleryImages[0]});
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[0].url);
+  app.run(`boardFigureReady({board:'gallery-a',point:null,figure:{url:'/board/img/d000000000000004.png',caption:'Revised overview'}})`);
+  assert.equal(app.element('boardImg').getAttribute('src'), '/board/img/d000000000000004.png');
+  assert.equal(app.element('boardCap').innerHTML, 'Revised overview');
+  assert.equal(app.element('boardFigureCount').textContent, '1 / 2');
+  assert.equal(app.run('shownBoard._figurePoint'), null);
+});
+
+test('gallery validates ready paths and positions, deduplicates reused visuals and keeps navigation after an image failure', () => {
+  const app = page();
+  galleryFixture(app, {figures:[...galleryImages, {...galleryImages[1],point:2},
+    {url:'javascript:alert(1)',caption:'Unsafe',point:3},
+    {url:'/board/img/d000000000000004.png',caption:'Invalid point',point:-1}]});
+  assert.equal(app.element('boardFigureCount').textContent, '2 / 3');
+  app.element('boardImg').onerror();
+  assert.equal(app.element('board').classList.contains('hasfig'), false);
+  assert.equal(app.element('boardGallery').hidden, false);
+  assert.equal(app.element('boardBrowse').hidden, false);
+  app.element('boardNext').onclick();
+  assert.equal(app.element('board').classList.contains('hasfig'), true);
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[2].url);
+  assert.equal(app.element('boardCap').innerHTML, 'Second comparison');
+});
+
+test('gallery labels localize without changing its manual choice or opening viewer', () => {
+  const app = page({edition:'university'}); galleryFixture(app); app.element('boardNext').onclick();
+  assert.equal(app.element('boardPrevious').textContent, 'Previous');
+  assert.equal(app.element('boardNext').textContent, 'Next');
+  assert.equal(app.element('boardFigureCount').getAttribute('aria-label'), 'Diagram 3 of 3');
+  app.run('window.LiveAgentProduct.edition="secondary"; window.LiveAgentMedia.refreshLanguage()');
+  assert.equal(app.element('boardPrevious').textContent, '上一张');
+  assert.equal(app.element('boardNext').textContent, '下一张');
+  assert.equal(app.element('boardFigureCount').getAttribute('aria-label'), '配图 3 / 3');
+  assert.equal(app.element('boardImg').getAttribute('src'), galleryImages[2].url);
+  assert.equal(app.element('boardFigureDialog').open, false);
+});
+
+test('privacy cleanup removes gallery snapshots, manual choice and enlarged private content from pending playback', () => {
+  for (const cleanup of ['clearBoardFigures()', 'resetSessionView()',
+    `onEvent({event:'playback_stop',t:0,request:0,data:{erasure:true,erasure_complete:false}})`]) {
+    const app = page(); galleryFixture(app); app.element('boardNext').onclick(); app.run('openBoardFigure()');
+    app.run(`pending={frames:[],meta:{board:{...shownBoard}}}; decoding=[{frames:[],meta:{board:{...shownBoard}}}]; ${cleanup}`);
+    assertDiagramClosed(app);
+    assert.equal(app.run('boardGallerySelection'), null);
+    assert.equal(app.element('boardGallery').hidden, true);
+    assert.equal(app.element('boardFigureCount').textContent, '');
+    assert.equal(app.element('boardImg').getAttribute('src'), null);
+    assert.equal(app.run('JSON.stringify(pending?.meta.board || {}).includes("figures")'), false);
+    assert.equal(app.run('JSON.stringify(decoding[0]?.meta.board || {}).includes("figures")'), false);
+  }
+});
+
+test('late figure readiness updates only its board point and queued playback retains it', () => {
+  const app = page();
+  app.run(`showBoard({key:'lesson-a-s0',title:'Lesson A',items:['first','second'],reveal:0,progress:[1,2]});
+    onScreen={board:shownBoard}; queue.push({board:{key:'lesson-a-s0',title:'Lesson A',items:['first','second'],reveal:1}});`);
+  app.run(`boardFigureReady({board:'lesson-b-s0',point:0,figure:{url:'/board/img/d000000000000001.png',caption:'Other lesson'}});
+    boardFigureReady({board:'lesson-a-s0',point:1,figure:{url:'/board/img/d000000000000002.png',caption:'Second point'}});`);
+  assert.equal(app.element('board').classList.contains('hasfig'), false);
+  assert.equal(app.run('queue[0].board.figure.caption'), 'Second point');
+  app.run(`onEvent({event:'lesson',t:0,request:0,data:{stage:'figure',board:'lesson-a-s0',point:0,
+    figure:{url:'/board/img/d000000000000003.png',caption:'First &lt;point&gt;'}}});`);
+  assert.equal(app.element('boardImg').getAttribute('src'), '/board/img/d000000000000003.png');
+  assert.equal(app.element('boardCap').innerHTML, 'First &lt;point&gt;');
+  assert.equal(app.run('shownBoard.reveal'), 0);
+  assert.equal(app.run('JSON.stringify(shownBoard.progress)'), '[1,2]');
+  app.run('showBoard(queue[0].board)');
+  assert.equal(app.element('boardImg').getAttribute('src'), '/board/img/d000000000000002.png');
+});
+
+test('figures ready before playback are cached while a whole-board figure cannot replace a point figure', () => {
+  const app = page();
+  app.run(`boardFigureReady({board:'unique-a',point:1,figure:{url:'/board/img/p000000000000001.png',caption:'Point one'}});
+    showBoard({key:'unique-a',title:'A',items:[],reveal:0,figure:{url:'/board/img/p000000000000002.png',caption:'Point zero'}});
+    boardFigureReady({board:'unique-a',point:null,figure:{url:'/board/img/d000000000000003.png',caption:'Whole board'}});`);
+  assert.equal(app.element('boardImg').getAttribute('src'), '/board/img/p000000000000002.png');
+  app.run(`showBoard({key:'unique-a',title:'A',items:[],reveal:1})`);
+  assert.equal(app.element('boardImg').getAttribute('src'), '/board/img/p000000000000001.png');
+  app.run(`showBoard({key:'unique-a',title:'A',items:[],reveal:2})`);
+  assert.equal(app.element('boardImg').getAttribute('src'), '/board/img/d000000000000003.png');
+});
+
+test('board content and captions refresh even when their key or image URL stays the same', () => {
+  const app = page();
+  app.run(`showBoard({key:'same',title:'Old',items:['Old item'],reveal:null,
+    figure:{url:'/board/img/p000000000000001.png',caption:'Old caption'}});
+    showBoard({key:'same',title:'Updated',items:['Updated item'],reveal:null,
+    figure:{url:'/board/img/p000000000000001.png',caption:'Updated caption'}});`);
+  assert.equal(app.element('boardTitle').innerHTML, 'Updated');
+  assert.equal(app.element('boardItems').innerHTML, '<li>Updated item</li>');
+  assert.equal(app.element('boardCap').innerHTML, 'Updated caption');
+});
+
+test('figure cache and displayed images are erased on disconnect and privacy deletion', async () => {
+  const app = page(); await app.connect(); await app.open(); await app.status({board:true});
+  app.run(`boardFigureReady({board:'private',point:0,figure:{url:'/board/img/d000000000000001.png',caption:'Private'}});
+    showBoard({key:'private',title:'Private',items:[],reveal:0});`);
+  app.element('disconnect').onclick();
+  assert.equal(app.run('boardFigures.size'), 0);
+  assert.equal(app.element('boardImg').getAttribute('src'), null);
+  assert.equal(app.element('board').dataset.content, undefined);
+  app.run(`boardFigureReady({board:'private',point:0,figure:{url:'/board/img/d000000000000001.png',caption:'Private'}});
+    showBoard({key:'private',title:'Private',items:[],reveal:0});
+    onEvent({event:'playback_stop',t:0,request:0,data:{erasure:true,erasure_complete:false}});`);
+  assert.equal(app.run('boardFigures.size'), 0);
+  assert.equal(app.run('shownBoard.figure'), undefined);
+  assert.equal(app.element('board').classList.contains('hasfig'), false);
+});
+
+test('unsafe figure paths are rejected and failed images fall back to board text then retry', () => {
+  const app = page();
+  app.run(`showBoard({key:'a',title:'A',items:['Explanation'],reveal:null});
+    boardFigureReady({board:'a',point:null,figure:{url:'javascript:alert(1)',caption:'Unsafe'}});`);
+  assert.equal(app.element('boardImg').getAttribute('src'), null);
+  app.run(`boardFigureReady({board:'a',point:null,figure:{url:'/board/img/d000000000000001.png',caption:'Diagram'}})`);
+  assert.equal(app.element('board').classList.contains('hasfig'), true);
+  app.run('openBoardFigure()');
+  assert.equal(app.element('boardFigureDialog').open, true);
+  app.element('boardImg').onerror();
+  assert.equal(app.element('board').classList.contains('hasfig'), false);
+  assert.equal(app.element('boardFigureDialog').open, false);
+  assert.equal(app.element('boardFigureLarge').getAttribute('src'), null);
+  assert.equal(app.element('boardItems').innerHTML, '<li>Explanation</li>');
+  app.run('showBoard(shownBoard)');
+  assert.equal(app.element('board').classList.contains('hasfig'), true);
+});
+
+function diagramFixture(app, { key = 'diagram-a', url = '/board/img/d000000000000001.png', caption = 'Diagram &lt;caption&gt;' } = {}) {
+  app.run(`showBoard(${JSON.stringify({ key, title: 'Diagram lesson', items: ['Explanation'], reveal: 0, figure: { url, caption } })})`);
+}
+
+function assertDiagramClosed(app) {
+  assert.equal(app.element('boardFigureDialog').open, false);
+  assert.equal(app.element('boardFigureLarge').getAttribute('src'), null);
+  assert.equal(app.element('boardFigureCaption').textContent, '');
+  assert.equal(app.run('enlargedBoardFigure'), null);
+}
+
+test('diagram button and image keyboard controls open a labeled viewer with Close and Escape', () => {
+  const app = page(); diagramFixture(app);
+  assert.equal(app.element('boardImg').getAttribute('role'), 'button');
+  assert.equal(app.element('boardImg').getAttribute('aria-controls'), 'boardFigureDialog');
+  app.element('boardEnlarge').focus(); app.element('boardEnlarge').onclick();
+  assert.equal(app.element('boardFigureDialog').open, true);
+  assert.equal(app.run('document.activeElement.id'), 'boardFigureClose');
+  assert.equal(app.element('boardFigureCaption').innerHTML, 'Diagram &lt;caption&gt;');
+  app.element('boardFigureClose').onclick();
+  assertDiagramClosed(app);
+  assert.equal(app.run('document.activeElement.id'), 'boardEnlarge');
+  app.flushDialogCloseEvents();
+  for (const key of ['Enter', ' ']) {
+    let prevented = false;
+    app.element('boardImg').focus();
+    app.element('boardImg').onkeydown({ key, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(app.element('boardFigureDialog').open, true);
+    prevented = false;
+    app.element('boardFigureDialog').oncancel({ preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assertDiagramClosed(app);
+    assert.equal(app.run('document.activeElement.id'), 'boardImg');
+    app.flushDialogCloseEvents();
+  }
+  app.element('boardImg').onkeydown({ key: 'ArrowRight', preventDefault() { assert.fail('unrelated key prevented'); } });
+  assertDiagramClosed(app);
+});
+
+test('an asynchronous close event cannot close or clear a newly reopened diagram', () => {
+  const app = page(); diagramFixture(app); app.run('openBoardFigure(); closeBoardFigure()');
+  diagramFixture(app, { key: 'diagram-b', url: '/board/img/p000000000000002.png', caption: 'New diagram' });
+  app.run('openBoardFigure()');
+  app.flushDialogCloseEvents();
+  assert.equal(app.element('boardFigureDialog').open, true);
+  assert.equal(app.element('boardFigureLarge').getAttribute('src'), '/board/img/p000000000000002.png');
+  assert.equal(app.element('boardFigureCaption').innerHTML, 'New diagram');
+  assert.equal(app.run('enlargedBoardFigure.key'), 'diagram-b');
+});
+
+test('a native dialog close clears enlarged image state and alternative text', () => {
+  const app = page(); diagramFixture(app); app.run('openBoardFigure()');
+  app.element('boardFigureLarge').alt = 'Private image description';
+  app.element('boardFigureDialog').close(); app.flushDialogCloseEvents();
+  assertDiagramClosed(app);
+  assert.equal(app.element('boardFigureLarge').alt, '课程配图');
+});
+
+test('switching board or figure closes the viewer while same-image captions stay current', () => {
+  const app = page(); diagramFixture(app); app.run('openBoardFigure()');
+  diagramFixture(app, { caption: 'Updated caption' });
+  assert.equal(app.element('boardFigureDialog').open, true);
+  assert.equal(app.element('boardFigureCaption').innerHTML, 'Updated caption');
+  diagramFixture(app, { url: '/board/img/p000000000000002.png' }); assertDiagramClosed(app);
+  app.run('openBoardFigure()'); diagramFixture(app, { key: 'diagram-b', url: '/board/img/p000000000000002.png' });
+  assertDiagramClosed(app);
+  app.run('openBoardFigure(); showBoard({key:"diagram-b",title:"No figure",items:[],reveal:1})');
+  assertDiagramClosed(app);
+});
+
+test('disconnect, privacy deletion and new-session reset clear the enlarged diagram', async () => {
+  const app = page(); await app.connect(); await app.open(); await app.status({ board: true });
+  diagramFixture(app); app.run('openBoardFigure()'); app.element('disconnect').onclick();
+  assertDiagramClosed(app); assert.equal(app.run('boardFigures.size'), 0);
+  await app.connect(); await app.open(); await app.status({ board: true });
+  diagramFixture(app); app.run(`openBoardFigure();
+    onEvent({event:'playback_stop',t:0,request:0,data:{erasure:true,erasure_complete:false}})`);
+  assertDiagramClosed(app);
+  diagramFixture(app); app.run('openBoardFigure(); resetSessionView()');
+  assertDiagramClosed(app);
+  assert.equal(app.element('board').dataset.content, undefined);
+  assert.equal(app.element('boardTitle').textContent, '');
+  app.flushDialogCloseEvents(); assertDiagramClosed(app);
+});
+
+test('diagram controls localize on language refresh without closing the current image', () => {
+  const app = page({ edition: 'university' });
+  assert.equal(app.element('boardEnlarge').textContent, 'Enlarge diagram');
+  assert.equal(app.element('boardFigureTitle').textContent, 'Lesson diagram');
+  assert.equal(app.element('boardFigureClose').getAttribute('aria-label'), 'Close diagram');
+  assert.equal(app.element('boardImg').getAttribute('aria-label'), 'Enlarge diagram');
+  diagramFixture(app, { caption: '' }); app.run('openBoardFigure()');
+  assert.equal(app.element('boardFigureLarge').alt, 'Lesson diagram');
+  app.run('window.LiveAgentProduct.edition="secondary"; window.LiveAgentMedia.refreshLanguage()');
+  assert.equal(app.element('boardEnlarge').textContent, '放大配图');
+  assert.equal(app.element('boardFigureTitle').textContent, '课程配图');
+  assert.equal(app.element('boardFigureClose').getAttribute('aria-label'), '关闭配图');
+  assert.equal(app.element('boardFigureLarge').alt, '课程配图');
+  assert.equal(app.element('boardFigureDialog').open, true);
+  assert.equal(app.element('boardFigureLarge').getAttribute('src'), '/board/img/d000000000000001.png');
+});
 
 test('rapid connect clicks produce one socket and input waits for backend status', async () => {
   const app = page();
@@ -607,15 +1209,16 @@ test('English camera controls are localized on load and board progress labels us
 
 test('language refresh translates a connected session without replaying hooks or overwriting profile data', async () => {
   const app = page(); await app.connect(); await app.open(); await app.status({ asr: true, attention: true });
-  app.run('onEvent({event: "attention", data: {state: "focused", stable: "distracted", reason: "raw source reason"}}); profile = {id: "actual-profile"};');
+  app.run('camStream = {}; onEvent({event: "attention", data: {state: "focused", stable: "distracted", reason: "raw source reason"}}); profile = {id: "actual-profile"};');
   const hooks = app.transitions.length, events = app.events.length, packets = app.sockets[0].sent.length, timers = app.timers.size;
   app.run('window.LiveAgentProduct.edition = "university"; window.LiveAgentMedia.refreshLanguage();');
   assert.equal(app.element('conn').textContent, 'Tutor ready');
   const badges = app.element('badges').children.map(node => node.textContent).join('\n');
   assert.match(badges, /Video: Mock video/);
   assert.doesNotMatch(badges, /生成|质检|仅文字/);
-  assert.equal(app.element('focus').textContent, 'Focus check: Distracted (raw source reason)');
-  assert.equal(app.element('cam').textContent, 'Enable focus check');
+  assert.equal(app.element('focus').textContent, 'Focus check: Focused · confirming (raw source reason)');
+  assert.equal(app.element('focusLive').textContent, app.element('focus').textContent);
+  assert.equal(app.element('cam').textContent, 'Stop focus check');
   assert.equal(app.run('profile.id'), 'actual-profile');
   assert.equal(app.transitions.length, hooks);
   assert.equal(app.events.length, events);
@@ -783,4 +1386,50 @@ test('English diagnostics retain original backend reasons, curriculum titles and
   assert.match(feed, /后端配图依据/);
   assert.match(feed, /Removed unverified completion wording: “原始说法”/);
   assert.match(app.element('memory').children[0].innerHTML, /Recalled: 原始记忆/);
+});
+
+test('exercise presentation uses server MathML and safely preserves legacy or missing option text', () => {
+  const app = page();
+  app.run(`renderExerciseQuestion(document.getElementById('exerciseQuestion'), {
+    question: '计算 $358 + 247$', question_html: '计算 <math><mn>358</mn><mo>+</mo><mn>247</mn></math>',
+    option_texts: ['A. $605$', 'B. <img src=x>'], option_html: ['A. <math><mn>605</mn></math>']
+  });`);
+  assert.equal(app.element('exerciseQuestion').innerHTML,
+    '计算 <math><mn>358</mn><mo>+</mo><mn>247</mn></math>\nA. <math><mn>605</mn></math>\nB. &lt;img src=x&gt;');
+  app.run(`renderExerciseQuestion(document.getElementById('exerciseQuestion'), {
+    question: '旧版 $x^2$ <script>x</script>', option_texts: ['A. <文字>']
+  });`);
+  assert.equal(app.element('exerciseQuestion').innerHTML, '旧版 $x^2$ &lt;script&gt;x&lt;/script&gt;\nA. &lt;文字&gt;');
+});
+
+test('camera sends a sharper aspect-preserving frame immediately and at a responsive cadence, then stops', async () => {
+  const app = page(); await app.connect(); await app.open(); await app.status({attention:true});
+  app.element('camView').videoWidth = 1280; app.element('camView').videoHeight = 720;
+  const start = app.run('camOn()'), camera = stream(); app.permissions[0].resolve(camera);
+  await start; await Promise.resolve();
+  const packets = () => app.sockets[0].sent.map(v => JSON.parse(v)).filter(v => v.type === 'camera');
+  assert.equal(packets().length, 1);
+  assert.equal(app.run('camCanvas.width'), 640); assert.equal(app.run('camCanvas.height'), 360);
+  assert.equal(app.permissions[0].options.video.width.ideal, 640);
+  assert.equal(app.element('focusLive').hidden, false);
+  const capture = app.intervals.find(v => v.ms === 1500);
+  assert.ok(capture); const tick = app.timers.get(capture.id); tick();
+  assert.equal(packets().length, 2);
+  app.run('camOff()'); tick();
+  assert.equal(packets().length, 2); assert.equal(camera.stopped(), 1);
+  assert.equal(app.element('focusLive').hidden, true);
+  app.run('onEvent({event:"attention",data:{state:"distracted",stable:"distracted",reason:"late result"}})');
+  assert.equal(app.element('focusLive').hidden, true); assert.equal(app.run('latestAttention'), null);
+});
+
+test('visible focus feedback distinguishes confirming evidence and uncertainty from a stale confirmed verdict', () => {
+  const app = page(); app.run('camStream = {};');
+  app.run('onEvent({event:"attention",data:{state:"distracted",stable:"focused",reason:"转头"}})');
+  assert.match(app.element('focusLive').textContent, /走神.*确认中/);
+  app.run('onEvent({event:"attention",data:{state:"unknown",stable:null,reason:"画面遮挡"}})');
+  assert.match(app.element('focusLive').textContent, /无法判断.*画面遮挡/);
+  assert.doesNotMatch(app.element('focusLive').textContent, /专注\s*\(/);
+  app.run('onEvent({event:"attention",data:{state:"distracted",stable:"distracted",reason:"使用手机"}})');
+  assert.match(app.element('focusLive').textContent, /走神.*使用手机/);
+  assert.doesNotMatch(app.element('focusLive').textContent, /确认中/);
 });

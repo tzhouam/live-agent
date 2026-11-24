@@ -19,3 +19,6 @@ When you are acting as the **independent reviewer** (GPT-6 Sol via `codex exec`)
 When you are acting as a **contributor**: follow `docs/PROJECT.md`. Do not train,
 deploy, or broadcast in the current phase. Label every number as cited,
 measured, estimate, or target.
+
+
+Read and follow [AGENT.md](AGENT.md) for owner operating rules in addition to the existing project guidance.

@@ -68,6 +68,8 @@ class CapabilityManifest:
         self.caps = {c.cap_id: c for c in caps}
         self.min_status = min_status
         self.min_p = min_p
+        # A negotiated renderer may expose a conservative subset of the persona.
+        self.supported_intents: frozenset[str] | None = None
 
     # ------------------------------------------------------------------ io
     @classmethod
@@ -114,6 +116,9 @@ class CapabilityManifest:
         cap = self.by_intent(intent)
         if cap is None:
             return CompileResult(Decision.REFUSE, None, f"no capability for intent {intent!r}")
+        if self.supported_intents is not None and intent not in self.supported_intents:
+            decision = Decision.DEGRADE if cap.degrade_to else Decision.REFUSE
+            return CompileResult(decision, cap, "unsupported by the negotiated renderer")
         if cap.usable(self.min_status, self.min_p):
             return CompileResult(Decision.EMIT, cap, "ok")
         if cap.degrade_to:

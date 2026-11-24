@@ -1,0 +1,3 @@
+Use case: identity-preserve.
+Asset type: EXACTLY registered blink state of the input VTuber head.
+Edit the supplied image in place: change ONLY the two eyes to softly closed natural eyelids for a blink. The silver glasses remain EXACTLY in the same position and keep their frame shape. Keep the whole head, facial proportions, nose, closed smiling mouth, cheeks, jaw, ears, hair, ponytail, gold pin, neck, colors, lighting, canvas framing and transparent background unchanged. Do not shift, rotate, resize, crop or reinterpret the head. Preserve the identical canvas and complete composition. This is one aligned animation state; every pixel outside the immediate eye openings should match the input. No new text or objects. Genuine alpha transparency preserved.

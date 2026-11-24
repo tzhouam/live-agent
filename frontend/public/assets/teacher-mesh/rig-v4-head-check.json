@@ -1,0 +1,600 @@
+{
+  "version": 1,
+  "model": "teacher-mesh-v1",
+  "renderer": "pixi-mesh",
+  "canvas": [
+    480,
+    864
+  ],
+  "description": "Custom mesh-deformed adult anime teacher; not a Live2D/Cubism model.",
+  "head_scale": 1,
+  "neck_mask": null,
+  "hair_physics": {
+    "stiffness": 35,
+    "damping": 10,
+    "max_offset": 2.6
+  },
+  "background": "classroom-v1.png",
+  "tabletop_y": 575,
+  "foreground_y": 690,
+  "supported_gestures": [
+    "idle",
+    "listen",
+    "explain",
+    "present",
+    "point",
+    "smile",
+    "think",
+    "nod",
+    "shake",
+    "wave"
+  ],
+  "limits": {
+    "head_turn": 0.65,
+    "head_tilt": 0.045,
+    "breath": 1.6,
+    "hair_sway": 2.6,
+    "gesture_weight": 1
+  },
+  "layers": [
+    {
+      "id": "face",
+      "group": "head",
+      "asset": "head-neutral-v4.png",
+      "rect": [
+        128.4,
+        193,
+        215.82,
+        236.16
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "body",
+      "group": "body",
+      "rect": [
+        75,
+        325,
+        330,
+        420.68702290076334
+      ],
+      "grid": [
+        15,
+        19
+      ],
+      "asset": "body-v3.png"
+    },
+    {
+      "id": "left-arm",
+      "group": "arm",
+      "side": -1,
+      "rect": [
+        0,
+        0,
+        67,
+        249.21969696969697
+      ],
+      "grid": [
+        9,
+        27
+      ],
+      "anchors": [
+        [
+          0.481,
+          0.074
+        ],
+        [
+          0.327,
+          0.508
+        ],
+        [
+          0.715,
+          0.947
+        ]
+      ],
+      "asset": "left-arm-v3.png"
+    },
+    {
+      "id": "right-arm",
+      "group": "arm",
+      "side": 1,
+      "rect": [
+        0,
+        0,
+        67,
+        252.28076923076924
+      ],
+      "grid": [
+        9,
+        27
+      ],
+      "anchors": [
+        [
+          0.519,
+          0.074
+        ],
+        [
+          0.673,
+          0.508
+        ],
+        [
+          0.285,
+          0.947
+        ]
+      ],
+      "asset": "right-arm-v3.png"
+    },
+    {
+      "id": "lids-half",
+      "group": "head",
+      "asset": "lids-half-v4.png",
+      "rect": [
+        184.2,
+        283.9,
+        111.6,
+        37.8
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "lids",
+      "group": "head",
+      "asset": "lids-v4.png",
+      "rect": [
+        184.2,
+        283.9,
+        111.6,
+        37.8
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "mouth-soft",
+      "group": "head",
+      "asset": "mouth-soft-v4.png",
+      "rect": [
+        214.8,
+        331.6,
+        49.5,
+        27.9
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "mouth-a",
+      "group": "head",
+      "asset": "mouth-a-v4.png",
+      "rect": [
+        214.8,
+        331.6,
+        49.5,
+        27.9
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    },
+    {
+      "id": "mouth-o",
+      "group": "head",
+      "asset": "mouth-o-v4.png",
+      "rect": [
+        214.8,
+        331.6,
+        49.5,
+        27.9
+      ],
+      "grid": [
+        2,
+        2
+      ]
+    }
+  ],
+  "hands": {
+    "relaxed": {
+      "asset": "relaxed-hand-v3.png",
+      "size": [
+        70,
+        66.24708624708624
+      ],
+      "anchor": [
+        0.83,
+        0.12
+      ],
+      "rest_rotation": -0.45,
+      "contact_shadow": true
+    },
+    "open": {
+      "asset": "open-hand-v3.png",
+      "size": [
+        79,
+        63.80047505938242
+      ],
+      "anchor": [
+        0.88,
+        0.2
+      ]
+    },
+    "point": {
+      "asset": "point-hand-v3.png",
+      "size": [
+        66,
+        73.17796610169492
+      ],
+      "anchor": [
+        0.625,
+        0.645
+      ],
+      "skin_mask": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0.55
+        ],
+        [
+          0.695,
+          0.564
+        ],
+        [
+          0.68,
+          0.61
+        ],
+        [
+          0.615,
+          0.68
+        ],
+        [
+          0.555,
+          0.725
+        ],
+        [
+          0,
+          0.725
+        ]
+      ]
+    },
+    "wave": {
+      "asset": "wave-hand-v3.png",
+      "size": [
+        58,
+        91.64885496183206
+      ],
+      "anchor": [
+        0.53,
+        0.76
+      ],
+      "skin_mask": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0.694
+        ],
+        [
+          0.681,
+          0.694
+        ],
+        [
+          0.674,
+          0.739
+        ],
+        [
+          0.519,
+          0.773
+        ],
+        [
+          0.387,
+          0.751
+        ],
+        [
+          0.378,
+          0.694
+        ],
+        [
+          0,
+          0.694
+        ]
+      ]
+    }
+  },
+  "arms": {
+    "shoulders": [
+      [
+        360,
+        375
+      ],
+      [
+        120,
+        375
+      ]
+    ],
+    "elbows": [
+      [
+        369,
+        507
+      ],
+      [
+        111,
+        507
+      ]
+    ],
+    "forearm_length": 112,
+    "rest_angle": -0.55,
+    "explain_angle": -1.1,
+    "present_angle": -0.91,
+    "point_angle": 0.3,
+    "wave_upper_angle": 0.3,
+    "wave_angle": -2.88,
+    "think_upper_angle": -0.42,
+    "think_angle": -2.94
+  },
+  "extraction": {
+    "face": {
+      "source": "head-neutral-v4.png",
+      "size": [
+        1199,
+        1312
+      ],
+      "shared_source_scale_configuration": 0.18
+    },
+    "lids-half": {
+      "source": "head-soft-v4.png",
+      "source_region": [
+        310,
+        505,
+        930,
+        715
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          470,
+          618,
+          129,
+          76
+        ],
+        [
+          744,
+          590,
+          128,
+          79
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        0.0,
+        -1.0,
+        -2.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          0.99945604495166,
+          -0.00019536695287588287,
+          0.23679155613686856
+        ],
+        [
+          0.00019536695287588287,
+          0.99945604495166,
+          0.4084653854115763
+        ]
+      ],
+      "inlier_features_measured": 340,
+      "median_error_source_pixels_measured": 0.6646039485931396
+    },
+    "lids": {
+      "source": "head-blink-v4.png",
+      "source_region": [
+        310,
+        505,
+        930,
+        715
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          470,
+          618,
+          129,
+          76
+        ],
+        [
+          744,
+          590,
+          128,
+          79
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        0.0,
+        0.0,
+        -2.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          0.9991954802305646,
+          0.0005321692173710402,
+          -0.10145915257938207
+        ],
+        [
+          -0.0005321692173710402,
+          0.9991954802305646,
+          0.6613055700581264
+        ]
+      ],
+      "inlier_features_measured": 289,
+      "median_error_source_pixels_measured": 0.6664481163024902
+    },
+    "mouth-soft": {
+      "source": "head-soft-v4.png",
+      "source_region": [
+        480,
+        770,
+        755,
+        925
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          619,
+          844,
+          133,
+          73
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        0.0,
+        0.0,
+        -2.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          0.99945604495166,
+          -0.00019536695287588287,
+          0.23679155613686856
+        ],
+        [
+          0.00019536695287588287,
+          0.99945604495166,
+          0.4084653854115763
+        ]
+      ],
+      "inlier_features_measured": 340,
+      "median_error_source_pixels_measured": 0.6646039485931396
+    },
+    "mouth-a": {
+      "source": "head-mouth-a-v4.png",
+      "source_region": [
+        480,
+        770,
+        755,
+        925
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          619,
+          844,
+          133,
+          73
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        1.0,
+        1.0,
+        0.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          1.0006945787571353,
+          0.0005576033243820758,
+          -0.34737399989886547
+        ],
+        [
+          -0.0005576033243820758,
+          1.0006945787571353,
+          -0.2414439285661923
+        ]
+      ],
+      "inlier_features_measured": 291,
+      "median_error_source_pixels_measured": 0.6197680830955505
+    },
+    "mouth-o": {
+      "source": "head-mouth-o-v4.png",
+      "source_region": [
+        480,
+        770,
+        755,
+        925
+      ],
+      "shared_source_scale_configuration": 0.18,
+      "feather_ellipses_source_configuration": [
+        [
+          619,
+          844,
+          133,
+          73
+        ]
+      ],
+      "skin_border_rgb_offset_measured": [
+        0.0,
+        -1.0,
+        -2.0
+      ],
+      "source_size": [
+        1199,
+        1312
+      ],
+      "similarity_transform": [
+        [
+          0.9992587619488047,
+          -0.0007327622438679177,
+          0.6870011528515199
+        ],
+        [
+          0.0007327622438679177,
+          0.9992587619488047,
+          -0.2277137467865631
+        ]
+      ],
+      "inlier_features_measured": 320,
+      "median_error_source_pixels_measured": 0.7258957624435425
+    }
+  },
+  "asset_revision": 3,
+  "head_pivot": [
+    240,
+    389
+  ],
+  "collar_blend": false,
+  "jaw_width": 0,
+  "coherent_head": true,
+  "expression_states": {
+    "mode": "registered-opaque",
+    "blink_half_threshold": 0.15,
+    "blink_closed_threshold": 0.75,
+    "mouth_soft_threshold": 0.04,
+    "mouth_open_threshold": 0.36,
+    "mouth_round_threshold": 0.55
+  }
+}

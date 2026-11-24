@@ -19,14 +19,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import io
 import random
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 
 TTS_RATE = 32000  # the generator chunk rate; every client resamples to this
+# A restrained conversational profile for the adult Mandarin teacher. These
+# are Edge's supported prosody controls, not a new voice or an expressive style.
+EDGE_RATE = "-4%"
+EDGE_PITCH = "-8Hz"
+EDGE_VOLUME = "+0%"
 
 
 def _resample(a: np.ndarray, sr: int, target: int = TTS_RATE) -> np.ndarray:
@@ -134,10 +141,12 @@ class UrlTTS:
         return decode_audio(data)
 
 
-async def _edge_speak(text: str, voice: str) -> bytes:
-    import edge_tts  # optional dependency
+async def _edge_speak(text: str, voice: str, *, rate: str = EDGE_RATE,
+                      pitch: str = EDGE_PITCH, volume: str = EDGE_VOLUME) -> bytes:
+    # Loading the optional networking stack can block the first live utterance.
+    edge_tts = await asyncio.to_thread(importlib.import_module, "edge_tts")
 
-    com = edge_tts.Communicate(text, voice)
+    com = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume=volume)
     buf = bytearray()
     async for chunk in com.stream():
         if chunk["type"] == "audio":
@@ -149,11 +158,35 @@ async def _edge_speak(text: str, voice: str) -> bytes:
 
 @dataclass
 class EdgeTTS:
+    """Neural Mandarin speech with provider-supported rate, pitch and volume.
+
+    The optional two-argument ``speak`` transport remains injectable for offline
+    decoding tests; normal requests pass all prosody controls to Edge directly.
+    Synthesis returns the entire utterance, including its final release/pause.
+    """
+
     voice: str = "zh-CN-XiaoxiaoNeural"
-    speak: Callable[[str, str], Awaitable[bytes]] = field(default=_edge_speak, repr=False)
+    speak: Callable[[str, str], Awaitable[bytes]] | None = field(default=None, repr=False)
+    rate: str = EDGE_RATE
+    pitch: str = EDGE_PITCH
+    volume: str = EDGE_VOLUME
+
+    def __post_init__(self):
+        # Validate before networking, using the same signed formats as edge-tts.
+        for name, pattern in (("rate", r"[+-]\d+%"), ("pitch", r"[+-]\d+Hz"),
+                              ("volume", r"[+-]\d+%")):
+            value = getattr(self, name)
+            if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
+                raise ValueError(f"Edge TTS {name} must use a signed value such as "
+                                 + ("'-8Hz'" if name == "pitch" else "'-4%'"))
 
     async def synthesize(self, text: str) -> np.ndarray:
-        return decode_audio(await self.speak(text, self.voice))
+        if self.speak is not None:
+            data = await self.speak(text, self.voice)
+        else:
+            data = await _edge_speak(text, self.voice, rate=self.rate, pitch=self.pitch,
+                                     volume=self.volume)
+        return await asyncio.to_thread(decode_audio, data)
 
 
 @dataclass
@@ -179,7 +212,8 @@ class PiperTTS:
 
 
 def make_tts(kind: str, *, voice: str = "", base_url: str = "", model: str = "tts-1",
-             api_key: str = "EMPTY", model_path: str = ""):
+             api_key: str = "EMPTY", model_path: str = "", edge_rate: str = EDGE_RATE,
+             edge_pitch: str = EDGE_PITCH, edge_volume: str = EDGE_VOLUME):
     if kind == "synth":
         return SynthTTS()
     if kind == "url":
@@ -187,7 +221,8 @@ def make_tts(kind: str, *, voice: str = "", base_url: str = "", model: str = "tt
             raise ValueError("url TTS needs --tts-url (OpenAI-compatible base, e.g. http://host:port/v1)")
         return UrlTTS(base_url=base_url, model=model, voice=voice, api_key=api_key)
     if kind == "edge":
-        return EdgeTTS(voice=voice or "zh-CN-XiaoxiaoNeural")
+        return EdgeTTS(voice=voice or "zh-CN-XiaoxiaoNeural", rate=edge_rate,
+                       pitch=edge_pitch, volume=edge_volume)
     if kind == "piper":
         if not model_path:
             raise ValueError("piper TTS needs --puppet-piper-model (path to the .onnx voice)")

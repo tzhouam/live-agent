@@ -6,13 +6,14 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import wave
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from live_agent.generator.puppet import (ANIMATIONS, PuppetGenerator, _ANIM_BY_INTENT,
+from live_agent.generator.puppet import (ANIMATIONS, Pose, PuppetGenerator, _ANIM_BY_INTENT,
                                          mouth_track, render_chunk, render_frame)
 from live_agent.orchestrator import audio_onset_s
 from live_agent.prompt.h3_compiler import compile_prompt, extract_dialogue
@@ -38,6 +39,7 @@ def teacher_caps() -> list[tuple[str, str]]:
 def gen(**kw) -> PuppetGenerator:
     kw.setdefault("capabilities", teacher_caps())
     kw.setdefault("size", (320, 180))  # small frames keep the test fast; the rig scales
+    kw.setdefault("speech_timing", "fixed")  # explicit legacy layout checks
     return PuppetGenerator(**kw)
 
 
@@ -183,6 +185,168 @@ def _pose(**kw):
     return Pose(**kw)
 
 
+def _facial_box(name):
+    """Locate the authored facial region in the neutral portrait, wherever the rig moves it."""
+    from live_agent.generator.puppet_art import _scaled_art
+
+    rig, _, _, _, _, _, _, _, boxes, *_ = _scaled_art(480, 864)
+    x = round(rig["bust_position"][0] - rig["bust_size"][0] / 2)
+    y = round(rig["bust_position"][1])
+    a, b, c, d = boxes[name]
+    return x + a, y + b, x + c, y + d
+
+
+def _assert_changes_inside(a, b, bounds):
+    changed = np.any(a != b, axis=2)
+    y, x = np.where(changed)
+    assert len(x), "the expression must be visible"
+    x0, y0, x1, y1 = bounds
+    assert x.min() >= x0 and x.max() < x1
+    assert y.min() >= y0 and y.max() < y1
+
+
+def test_vtuber_expression_does_not_change_the_hair_or_scene():
+    """Speaking/blinking replace only facial patches, avoiding whole-sprite jitter."""
+    neutral = render_frame(480, 864, _pose())
+    speaking = render_frame(480, 864, _pose(mouth_open=1.0))
+    blinking = render_frame(480, 864, _pose(eye_close=1.0))
+    _assert_changes_inside(neutral, speaking, _facial_box("mouth"))
+    _assert_changes_inside(neutral, blinking, _facial_box("eyes"))
+
+
+def test_vtuber_assets_are_cached_and_rendering_preserves_the_cached_art(monkeypatch):
+    from live_agent.generator import puppet_art
+
+    neutral = render_frame(480, 864, _pose())
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("warm rendering must not reopen artwork files")
+
+    monkeypatch.setattr(puppet_art.Image, "open", unexpected_read)
+    render_frame(480, 864, _pose(head_tilt=0.2, mouth_open=1.0, r_sh=1.2))
+    assert np.array_equal(render_frame(480, 864, _pose()), neutral)
+
+
+def test_smiling_keeps_eyes_open_and_blinking_is_independent():
+    neutral = render_frame(480, 864, _pose())
+    smiling = render_frame(480, 864, _pose(smile=1.0))
+    blinking = render_frame(480, 864, _pose(smile=1.0, eye_close=1.0))
+    x0, y0, x1, y1 = _facial_box("eyes")
+    assert np.array_equal(neutral[y0:y1, x0:x1], smiling[y0:y1, x0:x1])
+    assert not np.array_equal(smiling[y0:y1, x0:x1], blinking[y0:y1, x0:x1])
+    _assert_changes_inside(neutral, smiling, _facial_box("mouth"))
+    _assert_changes_inside(smiling, blinking, _facial_box("eyes"))
+
+
+def test_audio_driven_mouth_has_distinct_speech_apertures():
+    quiet = render_frame(480, 864, _pose(mouth_open=0.25))
+    loud = render_frame(480, 864, _pose(mouth_open=1.0))
+    _assert_changes_inside(quiet, loud, _facial_box("mouth"))
+
+
+def test_gesture_transitions_keep_complete_sprites_and_props_inside_the_portrait(monkeypatch):
+    """Check the renderer's actual transformed art, including margins beyond the joints."""
+    from live_agent.generator.puppet import pose_at
+    from live_agent.generator import puppet_art
+
+    art = puppet_art._scaled_art(480, 864)
+    shadow_ids = {id(part) for part in art[-1].values()}
+    context = None
+    observed = set()
+
+    def inspect(image, part, position, anchor, angle=0.0):
+        if id(part) in shadow_ids:
+            return
+        transformed, origin = puppet_art._joint_placement(part, position, anchor, angle)
+        bounds = transformed.getchannel("A").getbbox()
+        if bounds is None:
+            return
+        x0, y0, x1, y1 = bounds
+        x0 += origin[0]
+        x1 += origin[0]
+        y0 += origin[1]
+        y1 += origin[1]
+        assert 0 <= x0 < x1 <= 480, (context, part.size, angle, (x0, x1))
+        assert 0 <= y0 < y1 <= 864, (context, part.size, angle, (y0, y1))
+        observed.add(id(part))
+
+    monkeypatch.setattr(puppet_art, "_paste_joint", inspect)
+    for anim in ANIMATIONS:
+        for phase in (0.0, 1.7, 4.0):
+            for t in np.linspace(0.0, 5.0, 121):
+                context = (anim, float(t), phase)
+                p = pose_at(anim, float(t), 5.0, 0.0, phase)
+                render_frame(480, 864, p)
+    for name in ("mug", "held_book", "pointer", "open_hand", "elbow_cap"):
+        assert id(art[2][name]) in observed, name
+
+
+def test_drinking_and_book_gestures_keep_their_scene_contacts(monkeypatch):
+    from live_agent.generator.puppet import pose_at
+    from live_agent.generator import puppet_art
+
+    art = puppet_art._scaled_art(480, 864)
+    rig, _, parts, *_ = art
+    calls = []
+    paste = puppet_art._paste_joint
+
+    def capture(image, part, position, anchor, angle=0.0):
+        if part is parts["mug"] or part is parts["held_book"]:
+            transformed, origin = puppet_art._joint_placement(part, position, anchor, angle)
+            calls.append((part, position, origin, transformed))
+        paste(image, part, position, anchor, angle)
+
+    monkeypatch.setattr(puppet_art, "_paste_joint", capture)
+    render_frame(480, 864, _pose())
+    resting_mug_origin = next(origin for part, _, origin, _ in calls if part is parts["mug"])
+    calls.clear()
+    render_frame(480, 864, pose_at("drink", 0.5, 5.0, 0.0, 0.0))
+    pickup = next(call for call in calls if call[0] is parts["mug"])
+    assert np.max(np.abs(np.asarray(pickup[2]) - resting_mug_origin)) <= 3
+
+    calls.clear()
+    drinking = pose_at("drink", 2.5, 5.0, 0.0, 0.0)
+    render_frame(480, 864, drinking)
+    _, _, origin, mug = next(call for call in calls if call[0] is parts["mug"])
+    rim = np.asarray(origin) + (mug.width * 0.5, mug.height * 0.1)
+    x0, y0, x1, y1 = _facial_box("mouth")
+    mouth = puppet_art._motion(rig, drinking)[0](((x0 + x1) / 2, (y0 + y1) / 2))
+    assert np.max(np.abs(rim - mouth)) <= 12
+
+    calls.clear()
+    render_frame(480, 864, pose_at("hold", 2.5, 5.0, 0.0, 0.0))
+    _, position, origin, book = next(call for call in calls if call[0] is parts["held_book"])
+    assert abs(position[0] - rig["bust_position"][0]) <= 3
+    assert abs(position[1] - (rig["tabletop_y"] + 45)) <= 6
+    assert origin[1] < rig["tabletop_y"] < origin[1] + book.height < rig["foreground_y"]
+
+
+def test_globe_gesture_contacts_the_sphere(monkeypatch):
+    from PIL import Image
+    from live_agent.generator.puppet import pose_at
+    from live_agent.generator import puppet_art
+
+    art = puppet_art._scaled_art(480, 864)
+    parts = art[2]
+    palms, globes = [], []
+
+    def capture(image, part, position, anchor, angle=0.0):
+        if part.size == parts["open_hand"].size or part is parts["globe"]:
+            transformed, origin = puppet_art._joint_placement(part, position, anchor, angle)
+            alpha = transformed.getchannel("A")
+            if part is parts["globe"]:
+                # The lower stand is not the sphere that the gesture rotates.
+                alpha.paste(0, (0, round(alpha.height * 0.7), alpha.width, alpha.height))
+            mask = Image.new("L", (480, 864))
+            mask.paste(alpha, origin)
+            (globes if part is parts["globe"] else palms).append(np.asarray(mask))
+
+    monkeypatch.setattr(puppet_art, "_paste_joint", capture)
+    render_frame(480, 864, pose_at("spin", 2.5, 5.0, 0.0, 0.0))
+    assert len(palms) == len(globes) == 1
+    assert np.count_nonzero((palms[0] > 100) & (globes[0] > 100)) >= 20
+
+
 def test_generated_speech_has_a_measurable_onset():
     async def main():
         g = gen()
@@ -242,6 +406,39 @@ def test_edge_tts_decodes_and_resamples():
     assert out.dtype == np.float32 and len(out) == pytest.approx(32000, rel=0.02)  # 1 s at 32 kHz
 
 
+def test_edge_voice_decoding_keeps_the_live_event_loop_responsive(monkeypatch):
+    import threading
+    from live_agent import tts
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_decode(data):
+        started.set()
+        assert release.wait(2), "the event loop could not release the audio decoder"
+        return np.zeros(32, dtype=np.float32)
+
+    async def speak(text, voice):
+        return b"encoded speech"
+
+    monkeypatch.setattr(tts, "decode_audio", slow_decode)
+
+    async def main():
+        task = asyncio.create_task(EdgeTTS(speak=speak).synthesize("你好"))
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            # A live input can be handled while decoding remains unfinished.
+            await asyncio.sleep(0)
+            assert not task.done()
+            release.set()
+            assert len(await task) == 32
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+
+    run(main())
+
+
 def test_url_tts_posts_openai_compatible_speech_request():
     src = np.zeros(8000, dtype=np.float32)
     seen = {}
@@ -277,3 +474,59 @@ def test_from_args_loads_persona_capabilities():
     g = PuppetGenerator.from_args(args)
     assert len(g._caps) == 17  # the teacher manifest
     assert isinstance(g.tts, SynthTTS)
+
+
+def test_partial_blink_and_rounded_speech_stay_inside_facial_regions():
+    neutral = render_frame(480, 864, _pose())
+    partial = render_frame(480, 864, _pose(eye_close=.5))
+    closed = render_frame(480, 864, _pose(eye_close=1))
+    assert np.any(partial != neutral) and np.any(partial != closed)
+    _assert_changes_inside(neutral, partial, _facial_box("eyes"))
+    wide = render_frame(480, 864, _pose(mouth_open=.65))
+    rounded = render_frame(480, 864, _pose(mouth_open=.65, mouth_round=1))
+    _assert_changes_inside(wide, rounded, _facial_box("mouth"))
+
+
+def test_idle_motion_is_continuous_between_requests_and_blink_has_intermediate_states():
+    from live_agent.generator.puppet import pose_at
+    end = pose_at('idle', 5, 5, 0, .3, motion_time=5)
+    start = pose_at('idle', 0, 3, 0, .3, motion_time=5)
+    assert end.head_dx == start.head_dx and end.head_dy == start.head_dy
+    assert end.eye_close == start.eye_close
+    samples = [pose_at('idle', t, 5, 0, 0).eye_close for t in np.arange(0,.25,1/24)]
+    assert any(0 < value < 1 for value in samples)
+
+
+def test_acoustic_mouth_variety_is_smooth_and_silent_audio_has_no_shapes():
+    from live_agent.generator.puppet import speech_shape_track
+    sr=24000; fps=24; t=np.arange(sr)/sr
+    low = speech_shape_track(np.sin(2*np.pi*200*t).astype(np.float32),24,fps,sr)
+    high = speech_shape_track(np.sin(2*np.pi*3000*t).astype(np.float32),24,fps,sr)
+    assert low[-1] > .9 and high[-1] < .1
+    assert np.max(np.abs(np.diff(low))) <= .3
+    assert not speech_shape_track(np.zeros(sr,dtype=np.float32),24,fps,sr).any()
+
+
+def test_teaching_gestures_keep_natural_elbow_direction_and_small_wrist_steps():
+    """Speech gestures must not reverse the resting elbow or sweep off the desk."""
+    from live_agent.generator.puppet import pose_at
+    for anim in ('explain', 'present'):
+        wrists = []
+        for t in np.linspace(0, 3, 73):
+            p = pose_at(anim, float(t), 3, 0, 1.7)
+            assert -1.6 < p.r_el <= -0.85
+            assert p.l_sh == Pose().l_sh and p.l_el == Pose().l_el
+            wrists.append((363 + 145 * math.sin(p.r_sh) + 128 * math.sin(p.r_sh + p.r_el),
+                           377 + 145 * math.cos(p.r_sh) + 128 * math.cos(p.r_sh + p.r_el)))
+        assert np.max(np.linalg.norm(np.diff(wrists, axis=0), axis=1)) < 12
+        assert np.max(np.abs(np.array(wrists[0]) - wrists[-1])) < 1e-8
+
+
+def test_hand_oscillation_fades_at_hold_boundaries():
+    from live_agent.generator.puppet import pose_at
+    for anim in ('explain', 'draw', 'spin', 'wave'):
+        for u in (.16, .82):
+            before = pose_at(anim, 5 * u - 1e-6, 5, 0, 1.7)
+            after = pose_at(anim, 5 * u + 1e-6, 5, 0, 1.7)
+            assert max(abs(getattr(before, f) - getattr(after, f))
+                       for f in ('r_sh', 'r_el', 'l_sh', 'l_el')) < 1e-4

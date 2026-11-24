@@ -1,0 +1,4 @@
+Use case: precise-object-edit.
+Edit target: this exact transparent armless torso image.
+Change ONLY the shoulder arm-attachment artwork: remove both dark oval armhole/socket/ring outlines at the extreme left and right shoulders. Replace the outlined shoulder sockets with smooth, continuously painted navy jacket fabric of the same texture, soft shading, and round normal shoulder slope. Extend this flat fabric a little underneath where separate sleeves will overlap. No rim, oval cavity, open tube, mannequin socket, black hole or vest-like cutout should remain.
+Keep the exact current collar height and neckline opening, bow/brooch, blouse, lapels, embroidery, waist, belt, body proportions, entire object placement and scale, lighting, canvas size and transparency unchanged. Do NOT add arms, sleeves, head, neck, skin or extra objects. This is a small repair of the two attachment edges only. Fine Japanese anime painted fabric, clean transparent alpha.

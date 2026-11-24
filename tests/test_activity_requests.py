@@ -186,6 +186,7 @@ def test_new_input_reports_the_existing_standalone_question_without_reassigning_
         event = next(event for event in lesson_events(orch) if event["stage"] == "exercise_existing")
         assert event == {"stage": "exercise_existing", "concept": "加法", "kind": "choice", "question": "一加一等于几？",
                          "options": ["A", "B"], "option_texts": ["A. 一", "B. 二"],
+                         "question_html": "一加一等于几？", "option_html": ["A. 一", "B. 二"],
                          "request_id": "practice-C", "exercise_request_id": creator}
         assert all(segment.exercise is existing for segment in orch.director.queue if segment.exercise is not None)
 

@@ -1,0 +1,10 @@
+{
+  "torso-modest-v7.png": {
+    "tool": "built-in imagegen",
+    "mode": "edit",
+    "input": "../body-v4.png",
+    "prompt": "Use case: precise-object-edit.\nAsset type: production transparent armless torso texture for an adult Japanese anime VTuber teacher.\nEdit target: the supplied existing armless navy blazer / ivory blouse / sage bow torso layer. Change the chest and ribcage proportions: the current very broad rounded bust is excessive. Repaint a noticeably narrower, modest, much less projected adult chest beneath a comfortable blouse; soft nearly straight blouse drape, no spherical breast contours, no stretched highlights or deep cleavage/breast shading. Bring the blazer's inner sides/lapels inward below the bow and narrow the ribcage silhouette gently, approximately 12-15 percent at the chest while retaining a natural waist (not an hourglass/corset).\nRegistration invariants: preserve this exact front view and the positions/scale of the top neckline opening, ivory collar tips, both rounded shoulder attachment stubs, bow center and brooch. Preserve the canvas aspect/composition and total collar-to-waist height. The neckline must remain a transparent opening for a separately rendered neck. Keep the waist/belt height and central button line; retain navy fabric, fine gold botanical embroidery, sage bow and pearl/gold brooch, ivory blouse, warm upper-left lighting and polished softly painted Japanese anime style.\nThe shoulders must retain smooth painted fabric underlap for separate moving sleeves; no oval sockets or armholes. Do not add sleeves, arms, hands, head, neck, skin, mannequin, chair, background, glow, lettering or guides. ONE intact torso garment only, complete uncut object on genuine transparent alpha. The result should read as an ordinary modest adult teacher with a slim but comfortable torso, rather than a bust-emphasizing costume. Preserve fine garment detail and calm professional style.",
+    "transparent_background": true,
+    "generated_path": "/var/tmp/codex-home-2005/generated_images/01a10b62-750e-79c3-abed-284bfc09772e/exec-a334acc0-74c1-44ed-a5f4-34a9eb397e3b.png"
+  }
+}

@@ -1,8 +1,8 @@
 """LLM / VLM clients.
 
-Production: OpenAI-compatible endpoints served locally with vLLM (e.g. Qwen3-8B for the
-responder/planner, Qwen3-VL-8B-Instruct for the QC judge). Tests: ``ScriptedLLM``.
-Personal memory never leaves the machine: only local endpoints are configured by default.
+Local vLLM and configured hosted providers supply the responder/planner and visual judge.
+Tests use ``ScriptedLLM``. Memory is stored locally; recalled memories, learner-profile
+context and other prompt inputs are sent to the configured provider for each model call.
 """
 
 from __future__ import annotations
@@ -44,6 +44,9 @@ class OpenAICompatLLM:
         except Exception:  # noqa: BLE001 - a server that is down is reported by the first real call
             pass
 
+    async def close(self) -> None:
+        await self._client.close()
+
     async def chat(self, messages, *, max_tokens=512, temperature=0.3, json_mode=False) -> str:
         if "dashscope" in self.base_url or "aliyuncs.com" in self.base_url:  # hosted Qwen: top-level switch
             extra: dict[str, Any] = {"enable_thinking": self.enable_thinking}
@@ -79,6 +82,9 @@ class AnthropicCompatLLM:
             await self.chat([{"role": "user", "content": "hi"}], max_tokens=1)
         except Exception:  # noqa: BLE001 - reported by the first real call
             pass
+
+    async def close(self) -> None:
+        await self._client.aclose()
 
     async def chat(self, messages, *, max_tokens=512, temperature=0.3, json_mode=False) -> str:
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system" and isinstance(m["content"], str))

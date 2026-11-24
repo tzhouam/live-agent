@@ -1,0 +1,8 @@
+Use case: precise-object-edit.
+The provided atlas is the edit target. Preserve 1024x1536 canvas, all six object positions, heights, style, colors, lighting and transparency.
+Fix the sleeve proportions, which are too broad:
+- Repaint BOTH upper sleeves with a noticeably narrower fitted silhouette, about25percent less width at each height. Maximum width about150px, against current roughly200px. Keep current length. Smooth normal rounded shoulder; eliminate all raised/padded cap volume and drooping bulge on top. Only thin fabric ease over a natural arm.
+- Repaint BOTH forearms with a MUCH more pronounced anatomical taper. Keep their current length around480px. At elbow end width should be about155px. At middle width about120px. At the white wrist cuff width about100px. The wrist cuff must visibly be much narrower than elbow end, and the forearm must visibly be thinner than the upper sleeve. Avoid parallel-sided thick tubes, wide cuff or loose ballooning. This is a slender adult teacher's tailored blazer, with realistic comfortable ease, not skintight.
+- Keep each end filled with navy overlap fabric; no open tube, black hole or bowl. Keep TWO tiny gold buttons and ivory cuff on each forearm, re-author their perspective for the narrower wrist.
+- Keep the two flat navy cloth elbow patches unchanged.
+This is an art correction of the silhouette and fabric shading, not simple squeezing of pixels. Preserve source joint centerlines and end positions. No hands, skin, words, grids, torso or head. No background or matte: genuinely transparent clean PNG.

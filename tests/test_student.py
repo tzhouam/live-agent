@@ -156,7 +156,7 @@ def test_the_answer_is_graded_the_profile_updated_and_the_lesson_continues(tmp_p
     before = orch.student.mastery("完全平方公式")
     asyncio.run(orch.on_user_utterance(Utterance(uid="u1", speaker="user", text="选 B", t_end=now())))
     after = [d.next_script(5 + k).transcript for k in range(4)]
-    assert after[0] == "答对了，很好！" and after[2].startswith("第1节")  # feedback, then the next section
+    assert after[0].startswith("答对了") and after[2].startswith("第1节")  # feedback, then the next section
     assert not any(t.startswith("选项在黑板上") for t in after)  # the rest of the question is dropped
     assert orch.student.mastery("完全平方公式") > before
     graded = [e.data for e in tp.events(orch, EventType.LESSON) if e.data["stage"] == "exercise_graded"]
@@ -217,7 +217,7 @@ def test_a_question_line_cut_after_the_answer_is_not_said_again(tmp_path):
     asyncio.run(orch.on_user_utterance(Utterance(uid="u1", speaker="user", text="A", t_end=now())))
     d.on_interrupted([scripts[5]])  # the switch to the feedback drops it
     after = [d.next_script(6 + k).transcript for k in range(5)]
-    assert after[0].startswith("不太对哦") and not any(t.startswith(("选项在黑板上", "好，我们接着讲")) for t in after)
+    assert after[0].startswith("正确答案是") and not any(t.startswith(("选项在黑板上", "好，我们接着讲")) for t in after)
     assert any(t.startswith("第1节") for t in after) and d.exercise is None
 
 

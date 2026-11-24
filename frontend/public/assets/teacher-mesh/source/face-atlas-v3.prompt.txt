@@ -1,0 +1,15 @@
+Use case: identity-preserve.
+Asset type: transparent FACE AND HAIR ATLAS for the same adult VTuber teacher.
+Reference image 1 is the teacher's costume and identity. Reference image 2 is the existing face atlas layout.
+Primary request: refine this same woman into a graceful mature adult Japanese anime teacher with natural facial proportions. Preserve brown layered ponytail, fine silver oval glasses, sage-green eyes, small gold flower hairpin and pearl stud earrings. Retain her approachable quiet smile and soft warm left-hand classroom lighting. Reduce oversized glossy eye openings a little, give the midface a natural nose bridge and the jaw a softly rounded adult shape; avoid a sharply pointed doll chin, heavy makeup or plastic shine.
+Create exactly nine isolated parts on a transparent canvas, same THREE COLUMNS by THREE ROWS layout as image 2:
+TOP LEFT: complete bald skin base, front facing, face, ears with pearl studs, short natural neck and collarbones; nose painted, but NO eyes, brows, mouth, hair or glasses. Maintain anatomically plausible adult head and short neck.
+TOP CENTER: complete front brown hair framing the face with separate cutout face opening; brown side ponytail and small gold flower pin, intricate individual strands. Match the bald face shape at the same scale.
+TOP RIGHT: fine silver oval glasses alone, matching adult face width and eyes, transparent lenses with subtle reflection.
+MIDDLE LEFT: paired natural almond-shaped open sage-green eyes alone, restrained size, delicate lashes, little surrounding feathered skin.
+MIDDLE CENTER: paired brown eyebrows alone.
+MIDDLE RIGHT: paired softly closed eyelids alone with minimal surrounding feathered skin.
+BOTTOM LEFT: softly closed neutral smiling mouth alone.
+BOTTOM CENTER: same mouth open for speaking an A, modest opening, teeth and tongue visible naturally.
+BOTTOM RIGHT: same mouth softly rounded for an O, restrained opening.
+All skin and hair shading must match the same face. Each paired feature has correct bilateral spacing. No facial feature is painted onto the blank skin base. No labels, text, watermark, background gradient, glow or shadows in the empty gutters. Genuinely transparent alpha in every empty area and clean feathered antialiasing on the edges. This atlas will be cut into real animation layers, keep generous gaps between all parts.

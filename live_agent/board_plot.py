@@ -143,7 +143,10 @@ def _render_shapes(spec: dict, polys: list[dict], points: list[dict], path: Path
     for i, poly in enumerate(polys):
         xy = np.array([[float(a), float(b)] for a, b in poly["points"]])
         allxy.append(xy)
-        ax.fill(xy[:, 0], xy[:, 1], facecolor=fills[i % len(fills)], edgecolor="#222", lw=2, alpha=0.95)
+        # Explicit bounded fills support exact equal-part fraction pictures.
+        palette = {"blue": "#b9d9f7", "green": "#bce5d3", "white": "#ffffff"}
+        fill = palette.get(str(poly.get("fill")), fills[i % len(fills)])
+        ax.fill(xy[:, 0], xy[:, 1], facecolor=fill, edgecolor="#222", lw=2, alpha=0.95)
         if poly.get("label"):
             c = xy.mean(axis=0)
             ax.text(c[0], c[1], str(poly["label"]), ha="center", va="center", fontsize=20)

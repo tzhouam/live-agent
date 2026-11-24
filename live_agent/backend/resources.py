@@ -17,7 +17,7 @@ from live_agent.student import ProfileStore
 
 TRACE_NAME = re.compile(r"^sess-[A-Za-z0-9_-]+(\.generated(-part\d+)?)?\.(jsonl|mp4)$")
 TRACE_ID = re.compile(r"^sess-[A-Za-z0-9_-]+$")
-BOARD_IMAGE = re.compile(r"^(p[0-9a-f]{15}|[0-9a-f]{16})\.png$")
+BOARD_IMAGE = re.compile(r"^([pd][0-9a-f]{15}|[0-9a-f]{16})\.png$")
 PRIVATE_HEADERS = {"Cache-Control": "no-store"}
 
 
@@ -72,7 +72,7 @@ def _trace_owner(directory: Path, name: str) -> str | None:
     return None
 
 
-def register_resources(app: FastAPI, args: argparse.Namespace, profiles: ProfileStore) -> None:
+def register_resources(app: FastAPI, args: argparse.Namespace, profiles: ProfileStore, *, teaching: bool = True) -> None:
     def scope_query(student: str | None, mode: str | None) -> tuple[str | None, str | None]:
         if mode not in (None, "private", "public") or mode == "public" and student is not None:
             raise HTTPException(400, "choose a learner or public recordings")
@@ -107,7 +107,9 @@ def register_resources(app: FastAPI, args: argparse.Namespace, profiles: Profile
         sessions = []
         files = [f for f in directory.glob("sess-*.jsonl") if TRACE_NAME.fullmatch(f.name) and f.is_file() and not f.is_symlink()]
         for f in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True):
-            metadata = _trace_metadata(_trace_events(f, metadata_only=True), f.stem)
+            initial_events = _trace_events(f, metadata_only=True)
+            metadata = _trace_metadata(initial_events, f.stem)
+            mesh_recording = any(event.get("data", {}).get("renderer") == "mesh" for event in initial_events)
             if not matches_scope(metadata, mode, student):
                 continue
             stat = f.stat()
@@ -119,7 +121,8 @@ def register_resources(app: FastAPI, args: argparse.Namespace, profiles: Profile
                     continue
                 rest = video.name[len(f.stem):-4].lstrip(".-")
                 label = rest if rest.startswith("generated") else "presented" + (" " + rest if rest else "")
-                videos.append({"name": video.name, "label": label, "url": f"/traces/file/{video.name}{suffix}"})
+                videos.append({"name": video.name, "label": label, "url": f"/traces/file/{video.name}{suffix}",
+                               **({"visual_source": "server_video_fallback"} if mesh_recording else {})})
             sessions.append({"id": f.stem, "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                              "size_bytes": stat.st_size, "trace_url": f"/traces/file/{f.name}{suffix}", "videos": videos,
                              "mode": metadata["mode"] if metadata else "unknown",
@@ -200,6 +203,8 @@ def register_resources(app: FastAPI, args: argparse.Namespace, profiles: Profile
         return FileResponse(path, media_type="image/png", headers=PRIVATE_HEADERS)
 
     def profile_or_404(student_id: str):
+        if not teaching:  # a live persona (no board) exposes no learner profiles (D-068)
+            raise HTTPException(404, "learner profiles are not available for this persona")
         profile = profiles.get(student_id)
         if profile is None:
             raise HTTPException(404, "unknown student")
@@ -210,6 +215,8 @@ def register_resources(app: FastAPI, args: argparse.Namespace, profiles: Profile
 
     @app.get("/api/students")
     async def list_students() -> dict:
+        if not teaching:  # clients keep working: the picker shows no learners instead of erroring
+            return {"students": []}
         return {"students": [{"id": sid, "name": profiles.get(sid).name, "grade": profiles.get(sid).grade,
                               "saved": profiles.exists(sid)} for sid in profiles.allowed]}
 

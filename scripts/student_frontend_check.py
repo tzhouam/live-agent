@@ -268,6 +268,54 @@ def activity_owner_checks(page, results):
                         'outcome': 'matching terminal outcome unlocks both buttons with truthful status and rejects late activity/snapshot'})
 
 
+def recoverable_input_checks(page, results):
+    """Synthetic failure packets use the real media/product handlers on the connected CPU socket."""
+    def fail(owner, code='response_failed', superseded=False):
+        page.evaluate("packet=>onMessage({data:JSON.stringify({type:'input_error',recovered:!packet.superseded,...packet})})",
+                      {'request_id': owner, 'code': code, 'superseded': superseded})
+
+    page.locator('#startLesson').click()
+    lesson_owner = page.evaluate('window.__requestIds.at(-1)')
+    fail(lesson_owner)
+    assert 'could not be prepared' in page.locator('#lessonStatus').inner_text()
+    assert 'send your question again' in page.locator('#chat .msg.sys').last.inner_text()
+    assert page.evaluate("sessionState === 'ready' && ws.readyState === 1")
+    assert not page.locator('#text').is_disabled() and not page.locator('#startLesson').is_disabled()
+
+    page.locator('#practice').click()
+    practice_owner = page.evaluate('window.__requestIds.at(-1)')
+    waiting_status, chat_count = page.locator('#lessonStatus').inner_text(), page.locator('#chat .msg').count()
+    for owner, superseded in ((lesson_owner, False), (practice_owner, True), (None, False)):
+        fail(owner, superseded=superseded)
+        assert page.locator('#lessonStatus').inner_text() == waiting_status
+        assert page.locator('#chat .msg').count() == chat_count
+        assert page.locator('#practice').is_disabled()
+    fail(practice_owner)
+    assert 'practice question could not be prepared' in page.locator('#lessonStatus').inner_text()
+    assert not page.locator('#practice').is_disabled()
+
+    page.locator('#practice').click()
+    question_owner = page.evaluate('window.__requestIds.at(-1)')
+    lesson_fixture(page, stage='exercise_open', **question_fixture(question_owner, 'After input failure'))
+    assert_question(page, question_owner, 'After input failure')
+    page.locator('#text').fill('Answer that needs a retry')
+    page.locator('#text').press('Enter')
+    answer_owner = page.evaluate('window.__requestIds.at(-1)')
+    fail(answer_owner, 'voice_empty')
+    assert 'No speech was recognized' in page.locator('#chat .msg.sys').last.inner_text()
+    assert_question(page, question_owner, 'After input failure')
+    chat_count = page.locator('#chat .msg').count()
+    page.evaluate("packet=>onMessage({data:JSON.stringify({type:'transcript',...packet})})",
+                  {'request_id': lesson_owner, 'text': 'Obsolete voice transcript'})
+    assert page.locator('#chat .msg').count() == chat_count
+    page.locator('#chips .answer').first.click()
+    lesson_fixture(page, request_id=question_owner, stage='exercise_graded', correct=True)
+    assert 'marked this answer correct' in page.locator('#exerciseFeedback').inner_text()
+    lesson_fixture(page, request_id=question_owner, stage='exercise_closed')
+    assert page.evaluate("sessionState === 'ready' && ws.readyState === 1")
+    results.append({'recoverable input': 'matching failures release pending activities, old failures/transcripts are ignored, question survives failed answer and retry succeeds on the same socket'})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--shots', type=Path)
@@ -525,6 +573,7 @@ def main():
                 assert 'question is closed' in page.locator('#lessonStatus').inner_text()
                 results.append({'activity outcomes':'correlated decisions, empty-topic lesson, successful practice and failures resolve status'})
                 activity_owner_checks(page, results)
+                recoverable_input_checks(page, results)
                 page.evaluate("LiveAgentProduct.sessionChanged('ready',{status:{generator:'taomate_h3',responder:'rules',board:true}})")
                 assert 'Video preview' not in page.locator('#runtimeNotice').inner_text()
                 assert page.locator('#startLesson').is_disabled()

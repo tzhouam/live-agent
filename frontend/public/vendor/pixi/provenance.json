@@ -1,0 +1,9 @@
+{
+  "package": "pixi.js",
+  "version": "8.22.0",
+  "source": "https://www.npmjs.com/package/pixi.js/v/8.22.0",
+  "runtime": "pixi-8.22.0.min.mjs",
+  "sha256": "66257bc46776898bf8c54daaed402ed8f9ac109379c47b2dfa8aa048544d2953",
+  "license": "MIT; see LICENSE",
+  "delivery": "same-origin vendored ESM, no runtime CDN"
+}

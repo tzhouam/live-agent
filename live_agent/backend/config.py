@@ -41,7 +41,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--student-store", default=str(BOARD_IMAGES.parent / "students"), help="saved student profiles (personal data)")
     p.add_argument("--lesson-self-check", default="log", choices=["off", "log", "revise"],
                    help="judge every lesson section against the lesson-quality checklist: log only, or rewrite "
-                        "a failing section once before it plays (sections after the first)")
+                        "and re-review every section before it plays")
+    p.add_argument("--answer-self-check", action="store_true",
+                   help="review knowledge answers before presentation; rewrite weak answers and re-review")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8201)
     # Generator options (--taomate-*, --omni-*) are parsed by the adapters (taomate_h3.py, vllm_omni_h3.py).

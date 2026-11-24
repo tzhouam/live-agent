@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import html
 import json
 import random
 import re
@@ -25,7 +26,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from live_agent.director.director import CHARS_PER_REQUEST, Director, DirectorMode
+from live_agent.director.director import CHARS_PER_REQUEST, Director, DirectorMode, board_mentions
 from live_agent.generator.base import Generator
 from live_agent.prompt.h3_compiler import PromptError, compile_prompt
 from live_agent.qc.judge import ForwardCorrector
@@ -94,14 +95,13 @@ class OrchestratorConfig:
     soft_switch: bool = True
     lesson_lookahead: int = 6  # generate the next lesson section once fewer lines than this are waiting (~30 s)
     # self-check of every generated section against the lesson-quality checklist (configs/curriculum/teaching_craft
-    # .json): "off"; "log" (judged in the background, logged only); "revise" (sections after the first are judged
-    # before they play and rewritten once with the judge's problems when they fail; the first section is logged
-    # only, so the lesson still starts as soon as its outline is ready)
+    # .json): "off"; "log" (background editorial scores); "revise" (every section is reviewed before
+    # presentation, rewritten once if weak, and reviewed again; known failed material is withheld).
     lesson_self_check: str = "log"
-    lesson_revise_deadline_s: float = 30.0  # revise: judge + rewrite must finish within this, else the original plays
+    lesson_revise_deadline_s: float = 60.0  # configuration target: bounded review/rewrite/review
     # student attention (opt-in camera): nudge during a lesson after this many consecutive distracted/absent checks
     attention_nudge_after: int = 2
-    attention_cooldown_s: float = 45.0
+    attention_cooldown_s: float = 20.0
     switch_decision_wait_s: float = 10.0  # while old video plays, wait this long for the reply decision
     # the generator waits for every request's prompt (vLLM-Omni taomate_h3_hold_for_prompt): old video does NOT keep
     # playing while we wait, so a pending switch waits no longer than after an interruption (seen live: an 8 s
@@ -176,11 +176,15 @@ class Orchestrator:
         self._switch_plan = 0
         self._lesson_task: asyncio.Task | None = None
         self.attention = None  # attention.AttentionMonitor, set by the app when a VLM is available
+        self._camera_pending: bytes | None = None  # latest frame only, never an unbounded queue
+        self._camera_task: asyncio.Task | None = None
+        self._camera_epoch = 0
         self._last_nudge = -1e9
         self._nudge_i = 0
         self._episode: tuple[str | None, int] = (None, 0)  # (stable state, nudges given in this episode)
         self.image_maker = None  # board_images.ImageMaker (illustrations), set by the app when configured
         self.figure_dir = None  # where exact plots are drawn (board_plot); set by the app
+        self._answer_figure_boards: set[str] = set()  # one visual-planning call per answer
         self.student = None  # student.StudentProfile (private sessions): adapts lessons, records exercise results
         self.profile_store = None  # student.ProfileStore shared with the profile page (set by the app)
         self.curriculum = None  # curriculum.Curriculum: course knowledge base (grade profiles, standards; set by the app)
@@ -188,6 +192,8 @@ class Orchestrator:
         self._exercises = 0
         self._shown_exercise = None  # the exercise the page was last told about
         self.answer_boards = False  # persona with a board: every knowledge answer gets one (set by the app)
+        self.teaching = True  # persona runs classroom features (lessons/exercises/profiles); the app clears it
+        # for a live persona (D-068); direct constructions keep the classroom default
         self._profile_epoch = 0  # bumped by erasure and profile resets: work started before it must not write to the profile
         self._profile_resets = 0  # the store's reset count last seen
         self._rng = random.Random(self.cfg.seed)
@@ -310,7 +316,7 @@ class Orchestrator:
                 self.error = e
                 self._stop.set()
 
-    def _spawn(self, coro, name: str) -> None:
+    def _spawn(self, coro, name: str) -> asyncio.Task:
         """Auxiliary work (QC of one request): a failure is logged, the session continues."""
         t = asyncio.create_task(self._guarded(coro, name, fatal=False))
         self._aux.add(t)
@@ -320,11 +326,13 @@ class Orchestrator:
             self._maybe_finish()
 
         t.add_done_callback(done)
+        return t
 
     async def stop(self, drain_s: float = 30.0) -> None:
         """Cancellation-safe: tasks are cancelled, the generator closed and the log closed even if
         this call is cancelled (the cancellation is re-raised afterwards)."""
         self._stop.set()
+        self.camera_off()
         cancelled = None
         try:
             if self._aux:  # let running QC of already-presented requests finish (bounded)
@@ -364,8 +372,17 @@ class Orchestrator:
                 return
             # Re-evaluate while waiting: V_{k-1} becomes known (or better extrapolated) meanwhile.
             tl = None
+            lock_reason = "scheduled"
             while not self._stop.is_set():
                 tl = self.sched.lock_time(k)
+                # A reviewed reply can arrive after the restart wait expired
+                # and a silent filler was locked. Do not wait for that filler's
+                # playback deadline: the soft switch already drops old media
+                # once the reply is ready. Holding generators retain JIT pacing.
+                if self._switch_pending and self._switch_target is None \
+                        and self._decisions != self._decisions_at_interrupt and not self.cfg.generator_holds:
+                    lock_reason = "ready_soft_switch"
+                    break
                 if tl is not None and tl <= now():
                     break
                 await asyncio.sleep(0.01 if tl is None else min(0.05, tl - now()))
@@ -415,6 +432,7 @@ class Orchestrator:
                     self._switch_pending = False  # decided, but nothing to say or do: no switch, nothing cut
             self.log.emit(EventType.LOCK, t, request_index=k, plan_version=script.plan_version,
                           lambda_est=self.sched.lambda_estimate(), planned_lock=tl,
+                          lock_reason=lock_reason,
                           action=script.action, transcript=script.transcript,
                           chain_ids=script.chain_ids, corrections=script.corrections,
                           capability_ids=script.capability_ids, prompt=prompt,
@@ -511,6 +529,12 @@ class Orchestrator:
     async def _chunk_loop(self) -> None:
         async for ch in self.gen.chunks():
             self.chunks[ch.request_index].append(ch)
+            # A speech-timed generator knows the full utterance length before
+            # rendering chunk 0. Use it before playback can start, even when
+            # later chunks take longer to render or deliver.
+            duration = ch.meta.get("request_duration_s") if ch.chunk_index == 0 else None
+            if type(duration) in (int, float) and np.isfinite(duration) and duration > 0:
+                self.sched.on_duration(ch.request_index, duration)
             if self.gen_recorder is not None:
                 self.gen_recorder.write(ch)  # background-thread encoding
             self.log.emit(EventType.CHUNK_READY, ch.t_ready, request_index=ch.request_index,
@@ -616,6 +640,10 @@ class Orchestrator:
     def _evidence_time(self, k: int, t_end: float) -> float:
         """E = presentation time of the last *painted* frame of the request, searched backwards
         over all chunks (a chunk without painted-frame reports counts as shown to its end)."""
+        if getattr(self.transport, "avatar_mesh", False):
+            capture_time = self.transport.avatar_evidence_time(k)
+            if capture_time is not None:
+                return capture_time
         for ci in range(self.n_chunks - 1, -1, -1):
             idx = self.painted.get((k, ci))
             start, end = self.chunk_start.get((k, ci)), self.chunk_end.get((k, ci))
@@ -682,6 +710,17 @@ class Orchestrator:
         """The request's chunks restricted to frames the client reported as painted."""
         from dataclasses import replace
 
+        if getattr(self.transport, "avatar_mesh", False):
+            chunks, issue = self.transport.visual_evidence(k, self.chunks.get(k, []), self.painted)
+            out, shown, total = [], 0, 0
+            for ch in chunks:
+                n = 0 if ch.video is None else len(ch.video)
+                shown += n
+                original = next((original for original in self.chunks.get(k, [])
+                                 if original.chunk_index == ch.chunk_index), ch)
+                total += original.n_frames if ch.meta.get("visual_source") == "server_video" else n
+                out.append(replace(ch, meta={**ch.meta, "visual_evidence_issue": issue}))
+            return out, shown, total
         out, shown, total = [], 0, 0
         for ch in self.chunks.get(k, []):
             n = 0 if ch.video is None else len(ch.video)
@@ -703,6 +742,8 @@ class Orchestrator:
         """Media is kept only until presentation and QC are done (a 30-min session would otherwise
         hold ~50 GiB of RGB frames [derived])."""
         self.chunks.pop(k, None)
+        if getattr(self.transport, "avatar_mesh", False):
+            self.transport.evict_request(k)
         for ci in range(self.n_chunks):
             self.painted.pop((k, ci), None)
 
@@ -725,7 +766,7 @@ class Orchestrator:
         if not expected or count is None or k in self.dropped or self.director.mode == DirectorMode.OPEN_LOOP:
             return
         chunks, shown, total = await asyncio.to_thread(self._presented_media, k)  # large frame copies
-        if not chunks or (total and shown / total < 0.5):
+        if not chunks or any(ch.meta.get("visual_evidence_issue") for ch in chunks) or (total and shown / total < 0.5):
             return
         try:
             counts = await asyncio.wait_for(count(chunks, list(expected)), timeout=self.cfg.qc_timeout_s)
@@ -775,7 +816,11 @@ class Orchestrator:
         if script is None or not script.checks or self.director.mode == DirectorMode.OPEN_LOOP:
             return
         chunks, shown, total = await asyncio.to_thread(self._presented_media, k)  # large frame copies
-        if total and shown / total < 0.5:
+        evidence_issue = next((ch.meta.get("visual_evidence_issue") for ch in chunks
+                               if ch.meta.get("visual_evidence_issue")), None)
+        if getattr(self.transport, "avatar_mesh", False) and not chunks:
+            evidence_issue = "avatar_frames_missing"
+        if not evidence_issue and total and shown / total < 0.5:
             # presentation of the visual evidence cannot be established: abstain (no verdict)
             self.log.emit(EventType.AUDIT, now(), request_index=k, ok=False, issues=["frames_not_presented"],
                           painted_fraction=shown / total)
@@ -799,7 +844,10 @@ class Orchestrator:
         for q in actions:
             if self.judge is None:
                 break
-            v = await self._one_check(q, self.judge.judge(q, chunks, k, t_evidence), k, t_evidence, deadline)
+            if evidence_issue:
+                v = Verdict(q.qid, k, VerdictLabel.UNKNOWN, 0.0, str(evidence_issue), t_evidence, now())
+            else:
+                v = await self._one_check(q, self.judge.judge(q, chunks, k, t_evidence), k, t_evidence, deadline)
             if k in self.dropped or qc_epoch != self._qc_epoch:
                 return  # interrupted, or invalidated by an erasure
             if v is None:
@@ -899,6 +947,28 @@ class Orchestrator:
                       arm_drawn=self.cfg.correction_mode == CorrectionMode.RANDOMIZED)
 
     # ------------------------------------------------------------------ user input
+    def on_input_failed(self, epoch: int) -> bool:
+        """Release a failed input's listening state without changing a newer input or an erasure.
+
+        An empty chat decision resumes the interrupted lesson/instruction and its deferred
+        verification bookkeeping. It supplies no user text, dialogue turn or memory fact.
+        Retained segments keep their original recall lineage when they are re-queued.
+        """
+        if epoch != self._input_epoch or not self._ready.is_set():
+            return False
+        d = self.director
+        retained = [*d.queue, *d.deferred, *d.interrupted.values(),
+                    *(segment for steps in d.held.values() for segments in steps.values() for segment in segments)]
+        lineage = [(segment, segment.memory_ids, segment.recall_id) for segment in retained]
+        recall_id = self._no_recall() if self.memory is not None and hasattr(self.memory, "no_recall") else None
+        d.apply(Utterance("", "user", "", now(), session_id=self.cfg.session_id, scope=self.cfg.scope),
+                {"relation": "chat", "kind": "chat", "steps": []}, memory_ids=[], recall_id=recall_id)
+        for segment, memory_ids, original_recall in lineage:
+            segment.memory_ids, segment.recall_id = memory_ids, original_recall
+        self._decisions += 1  # release the same post-interruption wait as a successful input
+        self._drain_director_events(now())
+        return True
+
     async def on_speech_start(self, t: float | None = None) -> None:
         """Barge-in: stop playback now; stop planning ahead; mark unshown generated content.
         The plan changes and locking pauses *before* the first await, so no old-plan request
@@ -927,34 +997,69 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ attention (opt-in camera)
     def on_camera(self, jpeg: bytes) -> None:
-        """One camera frame from the page; analysed in memory only, dropped while the previous one is analysed."""
-        if self.attention is not None and not self.attention.busy:
-            self._spawn(self._attention_check(jpeg), "attention")
+        """Keep the freshest camera frame while one inference is in flight."""
+        if self.attention is None or self._stop.is_set() or not self._ready.is_set():
+            return
+        self._camera_pending = jpeg
+        if self._camera_task is None or self._camera_task.done():
+            self._start_camera_worker()
+
+    def _start_camera_worker(self) -> None:
+        task = self._spawn(self._drain_camera(self._camera_epoch), "attention")
+        self._camera_task = task
+        def done(completed: asyncio.Task) -> None:
+            if self._camera_task is completed:
+                self._camera_task = None
+                if self._camera_pending is not None and not self._stop.is_set() and self._ready.is_set():
+                    self._start_camera_worker()
+        task.add_done_callback(done)
+
+    async def _drain_camera(self, epoch: int) -> None:
+        while self._camera_pending is not None and epoch == self._camera_epoch:
+            jpeg, self._camera_pending = self._camera_pending, None
+            await self._attention_check(jpeg, epoch=epoch)
 
     def camera_off(self) -> None:
+        self._camera_epoch += 1
+        self._camera_pending = None
+        if self._camera_task is not None:
+            self._camera_task.cancel()
+        self._episode = (None, 0)
         if self.attention is not None:
             self.attention.reset()
             self.log.emit(EventType.ATTENTION, now(), state="off")
 
-    async def _attention_check(self, jpeg: bytes) -> None:
+    async def _attention_check(self, jpeg: bytes, *, epoch: int | None = None) -> None:
         from live_agent.attention import NUDGES, check_frame
 
+        epoch = self._camera_epoch if epoch is None else epoch
+        monitor = self.attention
+        if monitor is None or epoch != self._camera_epoch:
+            return
         try:
-            r = await check_frame(self.attention, jpeg)
+            r = await check_frame(monitor, jpeg)
         except Exception as e:  # noqa: BLE001 - no verdict this time
+            if epoch != self._camera_epoch or monitor is not self.attention:
+                return
+            monitor.update({"state": "unknown"})
             self.log.emit(EventType.ATTENTION, now(), state="unknown", reason=f"check failed: {str(e)[:80]}")
             return
-        if r is None:
+        if r is None or epoch != self._camera_epoch or monitor is not self.attention:
             return
         nudge = None
         d = self.director
-        if self._episode[0] != r["stable"]:
+        if r["stable"] is not None and self._episode[0] != r["stable"]:
             self._episode = (r["stable"], 0)  # a new episode: the student came back, or drifted off again
         cap = {"absent": 1, "distracted": 3}.get(r["stable"], 0)  # asking an empty room again helps nobody
-        if (r["stable"] in NUDGES and r["run"] >= self.cfg.attention_nudge_after and d.lesson_title
+        queued_teaching = any(s.board is not None for s in d.queue)
+        playing_teaching = any(sc.board and k not in self.dropped and len(self.presented.get(k, ())) < self.n_chunks
+                               for k, sc in self.scripts.items())
+        teaching = d.lesson_title or queued_teaching or playing_teaching
+        can_insert = all(s.board is not None or s.lesson for s in d.queue)
+        if (r["stable"] in NUDGES and r["run"] >= self.cfg.attention_nudge_after and teaching
                 and self._episode[1] < cap
                 and now() - self._last_nudge >= self.cfg.attention_cooldown_s
-                and not d.queue and not d.awaiting_decision):
+                and can_insert and not d.awaiting_decision and not d.listening):
             lines = NUDGES[r["stable"]]
             nudge = lines[self._nudge_i % len(lines)]
             self._nudge_i += 1
@@ -974,8 +1079,7 @@ class Orchestrator:
         self._lesson_task.add_done_callback(lambda t: (self._aux.discard(t), self._maybe_finish()))
 
     def _make_figures(self) -> None:
-        """Generate the images boards asked for, in the background (a board shows its figure on requests locked
-        after the image exists; without an image model the figure is simply left out)."""
+        """Render requested figures in the background and publish their ready state."""
         d = self.director
         figs, d.pending_figures = d.pending_figures, []
         for fig in figs:
@@ -993,7 +1097,8 @@ class Orchestrator:
         try:
             name = await asyncio.to_thread(render_plot, fig.plot, self.figure_dir)
             fig.url = f"/board/img/{name}"
-            self.log.emit(EventType.LESSON, now(), stage="figure", board=fig.board_key, point=fig.point, kind="plot")
+            self.log.emit(EventType.LESSON, now(), stage="figure", board=fig.board_key, point=fig.point, kind="plot",
+                          figure={"url": fig.url, "caption": html.escape(fig.caption)})
         except Exception as e:  # noqa: BLE001 - a bad spec leaves the board without its graph
             self.log.emit(EventType.LESSON, now(), stage="figure_failed", board=fig.board_key, point=fig.point,
                           error=str(e)[:160])
@@ -1011,7 +1116,7 @@ class Orchestrator:
         for attempt in range(attempts):
             try:
                 url = await self.image_maker.make(fig.prompt, seed=42 + attempt)
-                if want and vlm is not None:
+                if want and vlm is not None and not getattr(self.image_maker, "exact_labels", False):
                     try:
                         seen = await read_labels(vlm, self.image_maker.out_dir / url.rsplit("/", 1)[1])
                     except Exception:  # noqa: BLE001 - the reader failed (e.g. a looping reply), not the image
@@ -1021,7 +1126,9 @@ class Orchestrator:
                         continue
                 fig.url = url
                 self.log.emit(EventType.LESSON, now(), stage="figure", board=fig.board_key, point=fig.point,
-                              seconds=round(now() - t0, 2), attempt=attempt, labels=want, kind="illustration")
+                              seconds=round(now() - t0, 2), attempt=attempt, labels=want,
+                              kind="diagram" if getattr(self.image_maker, "exact_labels", False) else "illustration",
+                              figure={"url": fig.url, "caption": html.escape(fig.caption)})
                 return
             except Exception as e:  # noqa: BLE001 - the board works without its picture
                 self.log.emit(EventType.LESSON, now(), stage="figure_failed", board=fig.board_key, point=fig.point,
@@ -1043,6 +1150,51 @@ class Orchestrator:
         self.log.emit(EventType.LESSON, now(), stage="figure_judgement", board=board.key, title=board.title,
                       judgements=verdicts, **correlation)
         self.director.pending_figures += [f for f in board.figures if not f.url]
+        self._make_figures()
+
+    async def _judge_answer_figures(self, board, spoken: list[str], request_id: str | None = None) -> None:
+        """Illustrate ordinary knowledge answers without waiting for a request to draw.
+
+        Answer sentences explain the board as a whole; their indexes are not board
+        point indexes. Keep this shared context separate in the figure planner.
+        """
+        if self.image_maker is None or board.key in self._answer_figure_boards:
+            return
+        self._answer_figure_boards.add(board.key)
+        from live_agent.lesson import LessonLine, LessonPlanner
+
+        planner = LessonPlanner(self.director.llm, name=self.director.persona_name, bio=self.director.persona_bio)
+        lines = [LessonLine(text, board, None) for text in spoken if text] or [LessonLine("", board, None)]
+        existing = list(board.figures)
+        correlation = {"request_id": request_id} if request_id is not None else {}
+        try:
+            verdicts = await asyncio.wait_for(planner.judge_figures(lines, max_figs=4), timeout=20)
+        except Exception as error:  # auxiliary visuals never prevent the spoken answer
+            self.log.emit(EventType.LESSON, now(), stage="figure_judgement_failed", board=board.key,
+                          error=str(error)[:160] or type(error).__name__, **correlation)
+            return
+
+        def signature(figure):
+            return (figure.prompt, json.dumps(figure.plot, sort_keys=True, ensure_ascii=False))
+
+        seen = {signature(figure) for figure in existing}
+        added = []
+        for figure in list(board.figures):
+            if any(figure is original for original in existing):
+                continue
+            identity = signature(figure)
+            if identity in seen:
+                board.figures.remove(figure)
+                continue
+            seen.add(identity)
+            added.append(figure)
+        # Quick answers have no reveal index. An overview gives them an automatic
+        # image, while the remaining point figures can be browsed in the gallery.
+        if added and not any(figure.point is None for figure in existing):
+            added[0].point = None
+        self.log.emit(EventType.LESSON, now(), stage="figure_judgement", board=board.key,
+                      title=board.title, judgements=verdicts, **correlation)
+        self.director.pending_figures += [figure for figure in added if not figure.url]
         self._make_figures()
 
     # ------------------------------------------------------------------ exercises
@@ -1174,7 +1326,7 @@ class Orchestrator:
             correlation = {"request_id": ex.request_id} if ex.request_id is not None else {}
             self.log.emit(EventType.LESSON, now(), stage="exercise_open", concept=ex.concept,
                           kind=ex.kind, question=ex.question, option_texts=list(ex.options),
-                          options=[o[:1] for o in ex.options], **correlation)
+                          options=[o[:1] for o in ex.options], **ex.presentation(), **correlation)
 
     def _remind_existing_exercise(self, request_id: str | None) -> None:
         """Tell the current input owner which authoritative question must be answered first."""
@@ -1183,7 +1335,7 @@ class Orchestrator:
         correlation = {"request_id": request_id} if request_id is not None else {}
         self.log.emit(EventType.LESSON, now(), stage="exercise_existing", concept=ex.concept,
                       kind=ex.kind, question=ex.question, options=[o[:1] for o in ex.options],
-                      option_texts=list(ex.options), exercise_request_id=ex.request_id, **correlation)
+                      option_texts=list(ex.options), exercise_request_id=ex.request_id, **ex.presentation(), **correlation)
 
     def _erase_learning(self, terms: list[str]) -> int:
         """Erasure of teaching state: the student profile, a pending exercise that mentions a term (with its queued
@@ -1202,7 +1354,7 @@ class Orchestrator:
         self._lesson_mistakes = [m for m in self._lesson_mistakes if not any(x in m for x in terms)]
         return n
 
-    async def _answer_board(self, question: str, segs: list) -> None:
+    async def _answer_board(self, question: str, segs: list, request_id: str | None = None) -> None:
         from live_agent.llm import parse_json
 
         d = self.director
@@ -1217,6 +1369,8 @@ class Orchestrator:
         for x in waiting:
             x.board = b
         self._make_figures()
+        if waiting:
+            self._spawn(self._judge_answer_figures(b, [x.line for x in segs], request_id), "answer_figures")
         self.log.emit(EventType.LESSON, now(), stage="answer_board", title=b.title, board=b.key,
                       seconds=round(now() - t0, 2), lines=len(waiting))
 
@@ -1285,6 +1439,12 @@ class Orchestrator:
             self.log.emit(EventType.LESSON, now(), stage="outline_failed", topic=topic, error=str(e)[:160], **correlation)
             d.add_lesson_lines([LessonLine("抱歉，这节课我还没准备好，你可以先问我问题。", None, None)])
             return
+        if self.cfg.lesson_self_check == "revise":
+            outline = await self._review_outline(planner, outline, topic, context, profile=lesson_profile,
+                                                  request_id=request_id)
+            if outline is None:
+                d.add_lesson_lines([LessonLine("这节课的安排还需要核对，你可以先问一个具体问题。", None, None)])
+                return
         d.lesson_title = outline.title
         d.add_lesson_lines(planner.intro_lines(outline))
         self.log.emit(EventType.LESSON, now(), stage="outline", topic=topic, title=outline.title,
@@ -1298,7 +1458,7 @@ class Orchestrator:
         waiting_for = None  # the previous section's exercise: its result shapes the next section
         for i in range(len(outline.sections)):
             # a judged-and-rewritten section takes about twice as long to produce: start it earlier
-            lookahead = self.cfg.lesson_lookahead * (2 if self.cfg.lesson_self_check == "revise" and i > 0 else 1)
+            lookahead = self.cfg.lesson_lookahead * (2 if self.cfg.lesson_self_check == "revise" else 1)
             while not self._stop.is_set() and (
                     len(d.lesson_backlog) >= lookahead
                     or (waiting_for is not None and (d.exercise is waiting_for
@@ -1315,13 +1475,17 @@ class Orchestrator:
                 except Exception as e:  # noqa: BLE001 - retry once, then skip the section
                     self.log.emit(EventType.LESSON, now(), stage="section_failed", section=i, attempt=attempt,
                                   error=str(e)[:160], **correlation)
-            if lines and self.cfg.lesson_self_check == "revise" and i > 0:
+            if lines and self.cfg.lesson_self_check == "revise":
                 lines = await self._revise_section(planner, outline, i, covered, lines, profile=lesson_profile, request_id=request_id)
+                if not lines:
+                    self.log.emit(EventType.LESSON, now(), stage="quality_hold", section=i, **correlation)
+                    d.add_lesson_lines([LessonLine("这一节的讲解还需要核对，我们先停在这里。", None, None)])
+                    return
             if lines:
                 for line in lines:
                     if getattr(line, "exercise", None) is not None:
                         line.exercise.request_id = request_id
-                if self.cfg.lesson_self_check == "log" or (self.cfg.lesson_self_check == "revise" and i == 0):
+                if self.cfg.lesson_self_check == "log":
                     self._spawn(self._check_section(planner, outline, i, lines, profile=lesson_profile, request_id=request_id), "lesson_check")
                 self._lesson_mistakes.clear()  # addressed by this section
                 d.add_lesson_lines(lines)
@@ -1336,49 +1500,82 @@ class Orchestrator:
                               title=outline.sections[i]["title"], lines=len(lines),
                               points=len(lines[0].board.items), depth=outline.sections[i].get("depth"),
                               exercise=(ex.question if ex is not None else None), **correlation)
-            covered.append(outline.sections[i]["title"])
+                covered.append(outline.sections[i]["title"])
         self.log.emit(EventType.LESSON, now(), stage="planned", title=outline.title, **correlation)
+
+    async def _review_outline(self, planner, outline, topic: str, context: str, *, profile=None,
+                              request_id: str | None = None):
+        from live_agent.teaching_quality import revision_feedback
+        correlation = {"request_id": request_id} if request_id is not None else {}
+        async def workflow():
+            candidate = outline
+            for attempt in range(2):
+                verdict = await planner.review_outline(candidate, topic, profile=profile)
+                self.log.emit(EventType.LESSON, now(), stage="outline_check", passed=verdict["pass"],
+                              scores=verdict["scores"], evidence=verdict.get("evidence"),
+                              problems=verdict["problems"], revised=bool(attempt), **correlation)
+                if verdict["pass"]:
+                    return candidate
+                if attempt == 0:
+                    candidate = await planner.outline(topic, context, profile=profile,
+                                                      feedback=revision_feedback(verdict))
+            return None
+        try:
+            candidate = await asyncio.wait_for(workflow(), timeout=self.cfg.lesson_revise_deadline_s)
+        except Exception as exc:
+            self.log.emit(EventType.LESSON, now(), stage="outline_check_failed", error=str(exc)[:160], **correlation)
+            candidate = None
+        if candidate is None:
+            self.log.emit(EventType.LESSON, now(), stage="plan_hold", **correlation)
+        return candidate
 
     async def _check_section(self, planner, outline, i: int, lines, *, revised: bool = False, profile=None,
                              request_id: str | None = None) -> dict:
         """Judge a section against the lesson-quality checklist and log the verdict (never raises)."""
         correlation = {"request_id": request_id} if request_id is not None else {}
         try:
-            v = await planner.check_section(outline, i, lines, profile=profile if profile is not None else self.student)
+            check = planner.review_section if self.cfg.lesson_self_check == "revise" else planner.check_section
+            v = await check(outline, i, lines, profile=profile if profile is not None else self.student)
         except Exception as e:  # noqa: BLE001 - the check is advisory
             self.log.emit(EventType.LESSON, now(), stage="check_failed", section=i, error=str(e)[:160], **correlation)
             return {}
         if v:
             self.log.emit(EventType.LESSON, now(), stage="check", section=i, title=outline.sections[i]["title"],
-                          passed=v["pass"], scores=v["scores"], problems=v["problems"], fix=v["fix"], revised=revised, **correlation)
+                          passed=v["pass"], scores=v["scores"], problems=v["problems"], fix=v["fix"], revised=revised,
+                          evidence=v.get("evidence"), critical_errors=v.get("critical_errors"), **correlation)
         return v
 
     async def _revise_section(self, planner, outline, i: int, covered: list[str], lines, *, profile=None,
                               request_id: str | None = None):
-        """Self-check before the section plays; on a fail, one rewrite with the judge's problems. The rewrite is
-        kept only if it keeps the planned exercise and the opening correction of the last mistake, and only if
-        judge and rewrite finish within ``lesson_revise_deadline_s`` (else the original plays: the check is
-        advisory, the lesson's continuity is not). A second opinion on the rewrite is logged, not enforced."""
+        """Review before presentation; one rewrite must preserve exercise/correction and pass re-review.
+        Failure or timeout holds the section rather than presenting known weak material."""
         from live_agent.lesson import rewrite_keeps
+        from live_agent.teaching_quality import revision_feedback
         correlation = {"request_id": request_id} if request_id is not None else {}
 
         async def judge_and_rewrite():
             v = await self._check_section(planner, outline, i, lines, profile=profile, request_id=request_id)
-            if not v or v["pass"]:
+            if not v:
+                return []
+            if v["pass"]:
                 return lines
-            feedback = "；".join(v["problems"]) + (f"；改法：{v['fix']}" if v["fix"] else "")
+            feedback = revision_feedback(v)
             try:
                 new = await planner.section(outline, i, covered, profile=profile if profile is not None else self.student,
                                             mistakes=list(self._lesson_mistakes), feedback=feedback)
             except Exception as e:  # noqa: BLE001 - keep the first version
                 self.log.emit(EventType.LESSON, now(), stage="revise_failed", section=i, error=str(e)[:160], **correlation)
-                return lines
+                return []
             lost = rewrite_keeps(lines, new, list(self._lesson_mistakes))
             if lost:
                 self.log.emit(EventType.LESSON, now(), stage="revise_rejected", section=i, reason=lost, **correlation)
-                return lines
+                return []
+            second = await self._check_section(planner, outline, i, new, revised=True, profile=profile, request_id=request_id)
+            if not second or not second["pass"]:
+                self.log.emit(EventType.LESSON, now(), stage="revise_rejected", section=i,
+                              reason="rewrite did not pass review", **correlation)
+                return []
             self.log.emit(EventType.LESSON, now(), stage="revised", section=i, feedback=feedback[:200], lines=len(new), **correlation)
-            self._spawn(self._check_section(planner, outline, i, new, revised=True, profile=profile, request_id=request_id), "lesson_check")
             return new
 
         try:
@@ -1386,7 +1583,7 @@ class Orchestrator:
         except asyncio.TimeoutError:
             self.log.emit(EventType.LESSON, now(), stage="revise_timeout", section=i,
                           deadline_s=self.cfg.lesson_revise_deadline_s, **correlation)
-            return lines
+            return []
 
     async def _switch_to(self, target: int) -> None:
         """The reply's first chunk is ready: drop what was generated before it and not yet fully shown, stop
@@ -1475,36 +1672,44 @@ class Orchestrator:
             self.director.apply(utt, decision, memory_ids=memory_ids, recall_id=recall_id)
             applied = True
             self._decisions += 1  # only applied decisions end the post-interruption wait
+            answer_segs = [x for x in self.director.queue if id(x) not in queued_before and x.line]
             if self.answer_boards and (decision or {}).get("kind") == "content" \
-                    and self.director.answer_board_missing(decision):
-                segs = [x for x in self.director.queue if id(x) not in queued_before and x.board is None and x.line]
+                    and self.director.answer_board_missing(decision) \
+                    and decision.get("_teaching_quality", {}).get("status") != "held":
+                segs = [x for x in answer_segs if x.board is None]
                 if segs:  # the responder left it out: write one now and show it from the next unlocked line
-                    self._spawn(self._answer_board(utt.text, segs), "answer_board")
+                    self._spawn(self._answer_board(utt.text, segs, utt.request_id), "answer_board")
+            elif self.answer_boards and (decision or {}).get("kind") == "content":
+                boards = {id(x.board): x.board for x in answer_segs if x.board is not None}
+                for board in boards.values():
+                    self._spawn(self._judge_answer_figures(board,
+                        [x.line for x in answer_segs if x.board is board], utt.request_id), "answer_figures")
             self._make_figures()
             kind = (decision or {}).get("kind")
-            if kind == "lesson" and self.director.exercise is not None and self.director.exercise.source != "lesson":
-                self._remind_existing_exercise(utt.request_id)  # finish the standalone question before a new lesson
-            elif kind == "lesson" and (utt.lesson_context or str((decision or {}).get("topic") or "").strip()):
-                topic = utt.lesson_context["topic"] if utt.lesson_context else str(decision["topic"]).strip()
-                self._start_lesson(topic, utt.lesson_context, utt.request_id)
-            elif kind == "lesson_stop":
-                self._stop_lesson()
-            elif kind == "exercise" and self.director.exercise is not None:
-                self._remind_existing_exercise(utt.request_id)  # one exercise at a time: the open one first
-            elif kind == "exercise":
-                topic = utt.lesson_context["topic"] if utt.lesson_context else \
-                    str((decision or {}).get("topic") or "").strip() or self.director.lesson_title or "刚才讲的内容"
-                self._spawn(self._give_exercise(topic, utt.lesson_context, input_epoch=epoch,
-                                                profile_epoch=self._profile_epoch, plan_version=self.director.plan_version,
-                                                request_id=utt.request_id), "exercise")
-            elif self.director.exercise is not None:
-                self._remind_existing_exercise(utt.request_id)  # a question while an exercise waits: back to it afterwards
-            if self.student is not None and not utt.lesson_context and (decision or {}).get("profile_update"):
-                changed = self.student.apply_update(decision["profile_update"])
-                if changed:
-                    self._save_profile()
-                    self.log.emit(EventType.LESSON, now(), stage="profile_updated", changed=changed)
-                    self._emit_profile()
+            if self.teaching:  # classroom workflows are persona-gated (D-068): a live persona answers as content/chat
+                if kind == "lesson" and self.director.exercise is not None and self.director.exercise.source != "lesson":
+                    self._remind_existing_exercise(utt.request_id)  # finish the standalone question before a new lesson
+                elif kind == "lesson" and (utt.lesson_context or str((decision or {}).get("topic") or "").strip()):
+                    topic = utt.lesson_context["topic"] if utt.lesson_context else str(decision["topic"]).strip()
+                    self._start_lesson(topic, utt.lesson_context, utt.request_id)
+                elif kind == "lesson_stop":
+                    self._stop_lesson()
+                elif kind == "exercise" and self.director.exercise is not None:
+                    self._remind_existing_exercise(utt.request_id)  # one exercise at a time: the open one first
+                elif kind == "exercise":
+                    topic = utt.lesson_context["topic"] if utt.lesson_context else \
+                        str((decision or {}).get("topic") or "").strip() or self.director.lesson_title or "刚才讲的内容"
+                    self._spawn(self._give_exercise(topic, utt.lesson_context, input_epoch=epoch,
+                                                    profile_epoch=self._profile_epoch, plan_version=self.director.plan_version,
+                                                    request_id=utt.request_id), "exercise")
+                elif self.director.exercise is not None:
+                    self._remind_existing_exercise(utt.request_id)  # a question while an exercise waits: back to it afterwards
+                if self.student is not None and not utt.lesson_context and (decision or {}).get("profile_update"):
+                    changed = self.student.apply_update(decision["profile_update"])
+                    if changed:
+                        self._save_profile()
+                        self.log.emit(EventType.LESSON, now(), stage="profile_updated", changed=changed)
+                        self._emit_profile()
         self._drain_director_events(now())  # before the erasure, so its redaction covers these events
         if term and self.memory is not None and hasattr(self.memory, "forget"):
             complete = await self._erase(term)
@@ -1540,12 +1745,14 @@ class Orchestrator:
         try:
             # Stop what the viewer could still see or hear first, then do the (slow) storage work.
             await self._drop_unpresented()
+            self.camera_off()  # discard queued camera frames and invalidate late verdicts
             # Pending QC may hold (and later log) the erased content: invalidate and drain it first.
             self._qc_epoch += 1
             pending = [t for t in self._aux]
             for t in pending:
                 t.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+            self._answer_figure_boards.clear()
             forget_async = getattr(self.memory, "forget_async", None)
             report = await forget_async(term) if forget_async is not None else self.memory.forget(term)
             # Redact every erased value, not only the responder's keyword (e.g. "妹妹" names the fact,
@@ -1561,6 +1768,9 @@ class Orchestrator:
                     sc.transcript = sc.transcript.replace(x, "[已删除]")
                     sc.action = sc.action.replace(x, "[已删除]")
                     sc.corrections = [c.replace(x, "[已删除]") for c in sc.corrections]
+                    if sc.board and (board_mentions(sc.board, x)
+                                     or sc.board.get("key") in self.director.erased_board_keys):
+                        sc.board = None  # queued media must not restore an erased image collection
                     if x in self.prompts.get(k, ""):
                         self.prompts[k] = self.prompts[k].replace(x, "[已删除]")
                 self.log.redact(x)  # in memory and in the JSONL file
@@ -1627,6 +1837,7 @@ class Orchestrator:
             "exercise": ({"concept": d.exercise.concept, "kind": d.exercise.kind,
                           "question": d.exercise.question, "option_texts": list(d.exercise.options),
                           "options": [o[:1] for o in d.exercise.options],
+                          **d.exercise.presentation(),
                           **({"request_id": d.exercise.request_id} if d.exercise.request_id is not None else {})}
                          if d.exercise is not None else None),
         }

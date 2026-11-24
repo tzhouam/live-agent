@@ -3,6 +3,8 @@
 import json
 import os
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from live_agent.backend.app import build_app
@@ -10,7 +12,10 @@ from live_agent.backend.config import parse_args
 
 
 def backend(tmp_path, students="demo", asr_url=""):
-    args = parse_args(["--generator", "mock", "--llm-url", "scripted", "--vlm-url", "mock", "--asr-url", asr_url,
+    # teaching endpoints and learner-profile sessions are teacher-persona features (D-068): a persona
+    # without a board (the config default, hanfu) serves none of them — see test_live_persona.py
+    args = parse_args(["--config", "configs/persona_teacher",
+                       "--generator", "mock", "--llm-url", "scripted", "--vlm-url", "mock", "--asr-url", asr_url,
                        "--memory-db", "", "--student-store", str(tmp_path / "students"),
                        "--log-dir", str(tmp_path / "logs"), "--students", students, "--dev-allow-uncalibrated"])
     return build_app(args)
@@ -242,7 +247,8 @@ def test_pending_exercise_snapshot_and_event_show_question_without_answer():
     orch.director.exercise = exercise
     orch._exercise_changed()
     expected = {"concept": "加法", "kind": "choice", "question": "一加二等于几？",
-                "options": ["A", "B"], "option_texts": ["A. 二", "B. 三"]}
+                "options": ["A", "B"], "option_texts": ["A. 二", "B. 三"],
+                "question_html": "一加二等于几？", "option_html": ["A. 二", "B. 三"]}
     assert orch.snapshot()["exercise"] == expected
     event = panel_event(orch.log.events[-1], 0)
     assert event["data"] == {"stage": "exercise_open", **expected}
@@ -251,6 +257,30 @@ def test_pending_exercise_snapshot_and_event_show_question_without_answer():
     orch._exercise_changed()
     assert orch.snapshot()["exercise"] is None
     assert panel_event(orch.log.events[-1], 0)["data"] == {"stage": "exercise_closed"}
+
+
+def test_exercise_math_presentation_reaches_snapshot_and_reminder_without_answer():
+    import test_pipeline as pipeline
+    from live_agent.backend.transport import panel_event
+    from live_agent.exercise import Exercise
+
+    orch, _ = pipeline.build()
+    ex = Exercise(concept="加法", question="计算 $358 + 247$ <img src=x>", answer="secret-answer", kind="choice",
+                  options=["A. $605$", "B. $505$ <script>alert(1)</script>"], request_id="question-owner")
+    orch.director.exercise = ex
+    orch._exercise_changed()
+    orch._remind_existing_exercise("new-input-owner")
+    payloads = [orch.snapshot()["exercise"], *(panel_event(event, 0)["data"] for event in orch.log.events
+                                             if event.data.get("stage") in ("exercise_open", "exercise_existing"))]
+    assert len(payloads) == 3
+    for payload in payloads:
+        assert "<math" in payload["question_html"] and "&lt;img src=x&gt;" in payload["question_html"]
+        assert all("<math" in option for option in payload["option_html"])
+        assert "&lt;script&gt;" in payload["option_html"][1] and "<script>" not in payload["option_html"][1]
+        assert "secret-answer" not in json.dumps(payload) and "answer" not in payload
+        assert payload["question"] == ex.question and payload["option_texts"] == ex.options
+    assert payloads[0]["request_id"] == payloads[1]["request_id"] == "question-owner"
+    assert payloads[2]["request_id"] == "new-input-owner" and payloads[2]["exercise_request_id"] == "question-owner"
 
 
 def saved_trace(directory, session_id, mode=None, student=None):
@@ -767,3 +797,205 @@ def test_voice_recording_started_before_newer_text_keeps_its_older_epoch(tmp_pat
     assert len(asr_calls) == 1 and calls == ["换个话题", "考考我"]
     logged = [json.loads(line) for path in (tmp_path / "logs").glob("*.jsonl") for line in path.read_text().splitlines()]
     assert not any(event["type"] == "lesson" and event["data"].get("request_id") == "voice-A" for event in logged)
+
+
+def receive_input_error(ws, request_id):
+    import time
+
+    deadline = time.monotonic() + 5
+    while True:
+        packet = receive_ws_bounded(ws, max(.001, deadline - time.monotonic()))
+        if "text" not in packet:
+            continue
+        message = json.loads(packet["text"])
+        assert message.get("type") != "error", "recoverable input must not close the session"
+        if message.get("type") == "input_error" and message.get("request_id") == request_id:
+            return message
+
+
+@pytest.mark.parametrize("failure", ["voice_empty", "voice_failed", "audio_decode_failed", "response_failed"])
+def test_failed_input_recovers_and_next_message_works_on_same_websocket(tmp_path, monkeypatch, failure):
+    import threading
+    from live_agent import asr
+    from live_agent.llm import RuleResponder
+    from live_agent.orchestrator import Orchestrator
+
+    audio, _ = mock_voice_asr(monkeypatch, [""] if failure == "voice_empty" else ["转写成功"])
+    if failure == "voice_failed":
+        async def fail_transcription(self, *args):
+            raise RuntimeError("private-provider-detail")
+
+        monkeypatch.setattr(asr.OpenAIASR, "transcribe", fail_transcription)
+    original_chat = RuleResponder.chat
+
+    async def responder(self, messages, **kwargs):
+        if messages[-1]["content"] == "失败的问题":
+            raise RuntimeError("private-provider-detail")
+        return await original_chat(self, messages, **kwargs)
+
+    monkeypatch.setattr(RuleResponder, "chat", responder)
+    original_recover, original_decode = Orchestrator.on_input_failed, asr.decode_audio_bytes
+    recovered, decode_threads = [], []
+
+    def capture_recovery(self, epoch):
+        result = original_recover(self, epoch)
+        recovered.append((result, self.director.listening, self.director.awaiting_decision, threading.get_ident()))
+        return result
+
+    def capture_decode(*args):
+        decode_threads.append(threading.get_ident())
+        return original_decode(*args)
+
+    monkeypatch.setattr(Orchestrator, "on_input_failed", capture_recovery)
+    monkeypatch.setattr(asr, "decode_audio_bytes", capture_decode)
+    with TestClient(backend(tmp_path, asr_url="http://unused.test/v1")) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "hello", "mode": "private"})
+            if failure == "response_failed":
+                ws.send_json({"type": "text", "text": "失败的问题", "request_id": "failed-A"})
+            else:
+                ws.send_json({"type": "speech_start", "request_id": "failed-A"})
+                ws.send_json({"type": "audio_end"})
+                ws.send_bytes(b"invalid audio" if failure == "audio_decode_failed" else audio)
+            error = receive_input_error(ws, "failed-A")
+            assert error == {"type": "input_error", "request_id": "failed-A", "recovered": True,
+                             "superseded": False,
+                             "code": "voice_failed" if failure == "audio_decode_failed" else failure}
+            assert recovered[0][:3] == (True, False, False)
+            if failure != "response_failed":
+                assert decode_threads and decode_threads[0] != recovered[0][3], "decoding must not block the event loop"
+            ws.send_json({"type": "text", "text": "你好", "request_id": "successful-B"})
+            records, _ = receive_utterance(ws, "successful-B")
+            assert records[1]["applied"] is True and records[1]["decision"]["kind"] == "chat"
+
+
+def test_failed_older_voice_cannot_release_newer_input_or_send_old_transcript(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+    from live_agent import asr
+    from live_agent.orchestrator import Orchestrator
+
+    audio, _ = mock_voice_asr(monkeypatch, [])
+    entered, release = threading.Event(), threading.Event()
+
+    async def held_transcription(self, *args):
+        entered.set()
+        assert await asyncio.to_thread(release.wait, 5)
+        raise RuntimeError("old voice failure")
+
+    monkeypatch.setattr(asr.OpenAIASR, "transcribe", held_transcription)
+    original_recover, recovered = Orchestrator.on_input_failed, []
+
+    def capture_recovery(self, epoch):
+        result = original_recover(self, epoch)
+        recovered.append((result, self.director.listening, self.director.awaiting_decision))
+        return result
+
+    monkeypatch.setattr(Orchestrator, "on_input_failed", capture_recovery)
+    try:
+        with TestClient(backend(tmp_path, asr_url="http://unused.test/v1")) as client:
+            with client.websocket_connect("/ws") as ws:
+                ws.send_json({"type": "hello", "mode": "private"})
+                ws.send_json({"type": "speech_start", "request_id": "voice-A"})
+                ws.send_json({"type": "audio_end"})
+                ws.send_bytes(audio)
+                assert entered.wait(3)
+                ws.send_json({"type": "text", "text": "你好", "request_id": "newer-B"})
+                ws.send_json({"type": "ping", "t": "B-queued"})
+                while True:
+                    packet = receive_ws_bounded(ws)
+                    if "text" in packet and json.loads(packet["text"]).get("t") == "B-queued":
+                        break
+                release.set()
+                error = receive_input_error(ws, "voice-A")
+                assert error["superseded"] is True and error["recovered"] is False
+                assert recovered == [(False, True, True)]
+                records, transcripts = receive_utterance(ws, "newer-B")
+                assert records[1]["applied"] is True and not transcripts
+    finally:
+        release.set()
+
+
+def test_input_recovery_resumes_lesson_preserves_lineage_and_keeps_erasure_closed():
+    import asyncio
+    import test_pipeline as pipeline
+    from live_agent.director.director import Segment
+    from live_agent.lesson import LessonLine
+
+    async def scenario():
+        orch, _ = pipeline.build()
+        d = orch.director
+        d.lesson_title = "原有课程"
+        d.add_lesson_lines([LessonLine("继续原有知识点。", None, None)])
+        await orch.on_speech_start()
+        retained = Segment(chain_id=None, plan_version=d.plan_version, line="原有回应。",
+                           memory_ids=["private-source"], recall_id="original-recall")
+        d.deferred.append(retained)
+        assert orch.on_input_failed(orch.input_epoch)
+        assert not d.listening and not d.awaiting_decision and d.lesson_title == "原有课程"
+        assert len(d.lesson_backlog) == 1 and retained in d.queue and not d.dialogue
+        assert retained.memory_ids == ["private-source"] and retained.recall_id == "original-recall"
+        d.queue.clear()
+        resumed = d._pop_segment(100)
+        assert resumed.lesson and d._pop_segment(101).line == "继续原有知识点。"
+        await orch.on_speech_start()
+        orch._ready.clear()
+        before = (d.plan_version, orch._decisions)
+        assert orch.on_input_failed(orch.input_epoch) is False
+        assert not orch._ready.is_set() and d.listening and d.awaiting_decision
+        assert (d.plan_version, orch._decisions) == before
+
+    asyncio.run(scenario())
+
+
+def test_model_clients_are_warmed_before_readiness_reused_and_closed(tmp_path, monkeypatch):
+    from live_agent import llm
+    from live_agent.orchestrator import Orchestrator
+
+    clients, sessions = [], []
+
+    class FakeModel:
+        def __init__(self, url, model, **kwargs):
+            self.model, self.url, self.options = model, url, kwargs
+            self.warmed = self.closed = self.calls = 0
+            clients.append(self)
+
+        async def warmup(self):
+            self.warmed += 1
+
+        async def close(self):
+            self.closed += 1
+
+        async def chat(self, messages, **kwargs):
+            assert self.warmed == 1 and self.closed == 0
+            self.calls += 1
+            return json.dumps({"relation": "chat", "kind": "chat", "steps": [{"intent": "", "line": "你好。"}]})
+
+    monkeypatch.setattr(llm, "make_chat_llm", FakeModel)
+    monkeypatch.setattr(llm, "OpenAICompatLLM", FakeModel)
+    start = Orchestrator.start
+
+    async def capture_session(self):
+        sessions.append((self.director.llm, self.judge.vlm))
+        assert all(model.warmed == 1 for model in sessions[-1])
+        await start(self)
+
+    monkeypatch.setattr(Orchestrator, "start", capture_session)
+    args = parse_args(["--generator", "mock", "--llm-url", "https://fixture.test/anthropic",
+                       "--llm-model", "responder-model", "--vlm-url", "https://fixture.test/v1",
+                       "--vlm-model", "vision-model", "--asr-url", "", "--memory-db", "",
+                       "--student-store", str(tmp_path / "students"), "--log-dir", str(tmp_path / "logs"),
+                       "--dev-allow-uncalibrated"])
+    with TestClient(build_app(args)) as client:
+        assert client.get("/api/health").json()["status"] == "ok"
+        assert len(clients) == 2 and all(model.warmed == 1 and model.closed == 0 for model in clients)
+        for request_id in ("first-session", "reconnected-session"):
+            with client.websocket_connect("/ws") as ws:
+                ws.send_json({"type": "hello", "mode": "private"})
+                ws.send_json({"type": "text", "text": "你好", "request_id": request_id})
+                records, _ = receive_utterance(ws, request_id)
+                assert records[1]["applied"] is True
+        assert sessions == [(clients[0], clients[1]), (clients[0], clients[1])]
+        assert clients[0].calls == 2 and clients[1].calls == 0
+        assert clients[1].options["timeout_s"] == 60.0
+    assert all(model.warmed == 1 and model.closed == 1 for model in clients)

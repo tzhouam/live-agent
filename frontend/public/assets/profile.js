@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const editions = ["primary", "secondary", "university"];
+const editions = ["primary", "secondary", "university", "live"];
 let preferredEdition = "secondary";
 try { preferredEdition = localStorage.getItem("liveAgent.edition") || preferredEdition; } catch (_) {}
 const requestedEdition = new URLSearchParams(location.search).get("edition");

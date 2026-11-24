@@ -4,9 +4,10 @@
 
 The upstream is the demo server, reached through an ssh reverse tunnel from the GPU host
 (scripts/bridge_tunnel.sh). Open http://<host>:8200/?token=<secret> once: the proxy sets an HttpOnly
-cookie and redirects to /. Every later connection (page, assets, the /ws WebSocket) must carry the
-cookie; anything else gets 401. After the first request of a connection is authorised, bytes are
-relayed verbatim (so WebSocket upgrades work). Plain HTTP: the token travels unencrypted.
+cookie and redirects to the same local path and non-token query. Every later connection (page, assets, the /ws WebSocket) must carry the
+cookie; anything else gets 401. Ordinary HTTP requests close their upstream connection so a
+reverse proxy cannot reuse an authenticated socket for another client. WebSocket upgrades keep
+their full-duplex stream. Plain HTTP: the token travels unencrypted.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import asyncio
 import hmac
 import logging
 import time
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlsplit
 
 COOKIE = "la_token"
 log = logging.getLogger("bridge")
@@ -47,6 +48,34 @@ def _reply(status: str, body: str, extra: str = "") -> bytes:
             f"Cache-Control: no-store\r\nConnection: close\r\n{extra}\r\n").encode("latin-1") + b
 
 
+def _redirect_location(target: str) -> str:
+    """Keep classroom options without reflecting a token or an external authority."""
+    parts = urlsplit(target)
+    # Always emit an origin-relative path. Encode backslashes and control characters
+    # so a supplied request target cannot become a new authority or HTTP header.
+    path = quote("/" + parts.path.lstrip("/"), safe="/%:@!$&'()*+,;=-._~")
+    query = urlencode([(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                       if key != "token"])
+    return path + ("?" + query if query else "")
+
+
+def _upstream_head(raw: bytes, hdrs: dict[str, str]) -> bytes:
+    """Keep authenticated HTTP sockets out of a reverse proxy's connection pool.
+
+    Authentication applies to the first request read by ``handle``. Ordinary HTTP
+    must therefore end after that response; only a WebSocket upgrade is a stream
+    whose subsequent bytes intentionally belong to the authenticated connection.
+    """
+    connection = {item.strip().lower() for item in hdrs.get("connection", "").split(",")}
+    if hdrs.get("upgrade", "").lower() == "websocket" and "upgrade" in connection:
+        return raw
+    lines = raw.split(b"\r\n")
+    headers = [line for line in lines[1:] if line and
+               line.partition(b":")[0].strip().lower() not in
+               (b"connection", b"proxy-connection", b"keep-alive")]
+    return b"\r\n".join([lines[0], *headers, b"Connection: close", b"", b""])
+
+
 async def _pipe(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
     try:
         while data := await r.read(65536):
@@ -71,8 +100,8 @@ async def handle(cr: asyncio.StreamReader, cw: asyncio.StreamWriter, upstream: t
     method, target, hdrs = _headers(raw)
     q = parse_qs(urlsplit(target).query)
     if hmac.compare_digest(q.get("token", [""])[0], token):
-        path = urlsplit(target).path or "/"
-        cw.write(_reply("302 Found", "", f"Location: {path}\r\nSet-Cookie: {COOKIE}={token}; HttpOnly; "
+        location = _redirect_location(target)
+        cw.write(_reply("302 Found", "", f"Location: {location}\r\nSet-Cookie: {COOKIE}={token}; HttpOnly; "
                                          f"SameSite=Lax; Max-Age=604800; Path=/\r\n"))
         await cw.drain()
         cw.close()
@@ -91,7 +120,7 @@ async def handle(cr: asyncio.StreamReader, cw: asyncio.StreamWriter, upstream: t
         await cw.drain()
         cw.close()
         return
-    uw.write(raw)
+    uw.write(_upstream_head(raw, hdrs))
     await uw.drain()
     await asyncio.gather(_pipe(cr, uw), _pipe(ur, cw))
 

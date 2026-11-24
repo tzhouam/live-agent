@@ -1,0 +1,6 @@
+Use case: precise-object-edit.
+Edit target: the provided armless torso PNG only.
+Make ONE targeted clothing correction: shorten the excessive vertical neck opening while keeping the torso, shoulder seams, blouse volume, waist belt, bow and brooch, gold embroidery, exact rendering style, front view and illumination unchanged.
+The present long collar/lapel tips rise to about y90 on this 1280-square image, shoulder seams lie near y250, and bottom of the empty V opening lies near y365. Lower the collar and adjoining lapel tips so their highest point is near y200, only a little above the shoulder seams. Raise the deepest point of the empty V opening to about y335 with natural ivory collar fabric, creating a modest SHORT neckline opening about140 pixels deep instead of275. Keep a real empty transparent neck opening for the separate head layer; do NOT paint skin, neck, head, mannequin or any other object into it.
+Preserve shoulder seam positions and all existing clothing below the brooch. Preserve the short round armless shoulder stubs. The resulting blouse collar should look like a normal adult teacher's collar, without tall spikes or a plunging V. Do not change canvas size, garment scale, waist position, bow/brooch position, colors or textures.
+Output clean transparent PNG; no matte, text, guides or background.

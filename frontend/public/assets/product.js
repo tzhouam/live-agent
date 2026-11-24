@@ -1,7 +1,7 @@
 // Student experience: data, navigation and edition copy. Streaming stays in live.js.
 (() => {
   const el = id => document.getElementById(id);
-  const editions = ['primary', 'secondary', 'university'];
+  const editions = ['primary', 'secondary', 'university', 'live'];
   const storage = {get(key) { try { return localStorage.getItem(key); } catch { return null; } }, set(key,value) { try { localStorage.setItem(key,value); return true; } catch { return false; } }};
   const query = new URLSearchParams(location.search);
   let edition = editions.includes(query.get('edition')) ? query.get('edition') : storage.get('liveAgent.edition');
@@ -19,8 +19,11 @@
   };
   const zh = {ready:'课堂服务可用',unavailable:'课堂服务不可用',checking:'正在检查课堂…',idle:'课堂准备好了',connecting:'正在准备课堂…',ended:'课堂已结束，随时可以重新开始。',readyHint:'老师准备好了，说说你的第一个问题吧。',demoProfile:'示例档案 · 这里的样例记录不是你的测评结果。',profileEvidence:'理解程度为档案中的估计值，尚未校准。',profileLoadFailed:'档案暂时加载失败，请重新选择。',studentsFailed:'学习档案加载失败，请确认后端运行后重试。',serviceFailed:'课堂服务暂时不可用，请启动后端后重试。',mockNotice:'演示模式：当前是占位视频，可体验简单对话；生成课程和练习需要配置教学模型。',rulesLesson:'当前演示不能生成课程和练习。启用教学模型后即可使用。',noTeacher:'当前人设不支持教学课程，请以 PERSONA=teacher 启动服务。',selectGoal:'先写下你想学的主题吧。',lessonWaiting:'正在准备你的课程请求…',lessonSent:'已请求课程，等待老师准备大纲…',lessonPrepared:'课程内容已备好，请跟随老师的实时讲解。',lessonFailed:'备课暂时失败了，可以换一个更具体的问题再试。',outlineReady:'课程大纲已准备：',sectionReady:'已备好：',practiceWaiting:'已请求练习，正在等待题目…',practiceClosed:'这道练习已结束，准备好后可以再来一道。',correct:'老师判定这次作答正确。',incorrect:'老师判定这次作答有误，可以请老师给你一个提示。',skipped:'这次先跳过，可以请老师再讲一遍思路。',requestSuperseded:'这项学习请求已被新的操作取代，准备好后可以重新请求。',requestNotStarted:'老师没有开始这项学习活动，可以重新提问或换一种说法。',practicePrepared:'题目已备好，请跟随老师的讲解。',practiceReady:'练习题已准备好，试着回答吧。',practiceReviewed:'作答反馈已收到，看看老师的建议吧。',exerciseFailed:'练习暂时生成失败，可以重试或换一个更具体的主题。',gradingFailed:'这次未能完成批改，可以请老师重试。',exercisePending:'有一道练习在等你作答。',noTopics:'没有找到匹配课程，试试其他年级、学科，或直接填写学习目标。',catalogueError:'课程目录暂时加载失败。',allGrades:'全部年级',topicAction:'选这个主题 ↗',textbook:'教材章节',estimate:'年级归属为估计',reference:'课程目录参考',customTopic:'自选主题请求',emptyExport:'还没有可以导出的内容。',noteSaved:'已保存到当前设备',noteFailed:'保存失败，请导出笔记以保留内容。',savedExample:'示例档案',noProfiles:'尚未配置学习档案，请联系服务维护者。',publicMode:'测试直播 · 不读取学习档案',localStorageHelp:'无法读取本浏览器中的笔记，离开前请导出新笔记。'};
   const primary = {classroom:'我的小课堂',courses:'找点新知识',profile:'我的学习卡',recordings:'看看课堂记录',todayGoal:'今天想学什么呀？',lessonHelp:'先和老师见个面，再开始学一学。',topicLabel:'我想知道',startLesson:'和老师一起学 →',stepChoose:'选一个小目标',stepChooseHelp:'你想知道什么呀？',stepLearn:'一起找答案',stepLearnHelp:'看一看，听一听，不懂就问',stepPractice:'动手试一试',stepPracticeHelp:'答一道题，说说你的想法',practice:'老师，给我一道题 ↗',courseHeading:'下一个发现，等着你',tryAsk:'可以这样问老师',inputHint:'回车发送 · 想提问，随时打断老师'};
-  function t(key, fallback='') { return (edition === 'university' ? en[key] : (edition === 'primary' ? primary[key] ?? zh[key] : zh[key])) ?? fallback; }
+  // the live edition is the non-teaching live agent (D-068): conversation first, no classroom features
+  const live = {skip:'跳到直播间',navigation:'主导航',brand:'LIVE AGENT',mySpace:'直播空间',classroom:'直播互动',recordings:'直播记录',help:'快速指南',experience:'体验',tagAsk:'随时开聊',tagPractice:'能听会说',tagPace:'记住你说过的话',retry:'重试',liveRoom:'实时直播',roomHint:'进入直播间，和主播聊起来',private:'私人会话',video:'主播画面',learner:'访客',connect:'进入直播间 ↗',disconnect:'结束直播',inputLabel:'和主播聊天',send:'发送',talk:'按住说话',inputHint:'回车发送 · 新消息会打断当前讲解',tryAsk:'不知道聊什么？试试这样',suggestions:'可以这样聊',aiNotice:'直播内容由 AI 实时生成，可能有误。',conversation:'直播对话',conversationEmpty:'你和主播的对话会留在这里。',notes:'我的随手记',localOnly:'仅保存于本浏览器',notesPlaceholder:'一个新想法，一句还想追问的话…',notesHelp:'笔记保存在当前设备。',diagnostics:'直播设置与技术诊断',footer:'LIVE AGENT · 实时直播数字人',footerDetail:'由 Live Agent 提供',close:'关闭',helpOne:'点击「进入直播间」开始。',helpTwo:'用文字或按住说话与主播交流；也可以直接提问。',helpThree:'想打断就打断，主播会接着你的话往下说。',helpFour:'笔记只保存在当前浏览器。',ready:'直播服务可用',unavailable:'直播服务不可用',checking:'正在检查服务…',idle:'准备好了',connecting:'正在进入直播…',ended:'直播已结束，随时可以重新开始。',readyHint:'主播准备好了，说点什么吧。',export:'导出',emptyExport:'还没有可以导出的内容。',noteSaved:'已保存到当前设备',noteFailed:'保存失败，请导出笔记以保留内容。',noProfiles:'当前人设不使用学习档案。',publicMode:'测试直播模式',localStorageHelp:'无法读取本浏览器中的笔记，离开前请导出新笔记。'};
+  function t(key, fallback='') { return (edition === 'university' ? en[key] : edition === 'live' ? live[key] ?? zh[key] : (edition === 'primary' ? primary[key] ?? zh[key] : zh[key])) ?? fallback; }
   function examples() {
+    if (edition === 'live') return [{label:'你在读什么书？',text:'你在读什么书？'},{label:'讲讲你读到的内容',text:'给我讲讲你读到的内容吧'},{label:'喝口茶吧',text:'喝口茶吧'},{label:'记住我喜欢科幻',text:'记住：我喜欢科幻小说'}];
     if (edition === 'university') return [{label:'Walk me through an example',text:'请给我讲一道例题'}, {label:'Explain that step again',text:'这一步我还没明白，请再解释一下'}, {label:'Let’s try a question',text:'给我出道练习题'}, {label:'A slower explanation',text:'请讲慢一点'}];
     return edition === 'primary' ? ['老师，可以举个例子吗？','这一步我还不懂','请讲慢一点','给我出道练习题'] : ['请给我讲一道例题','这一步我还没明白','给我出道练习题','请讲慢一点'];
   }
@@ -43,25 +46,36 @@
     if(el('mode').value==='public')parameters.set('mode','public');el('tracesNav').href='/traces?'+parameters;
     document.querySelector('.brand').href='/?'+parameters;
   }
-  function modePresentation(){const publicMode=el('mode').value==='public';document.querySelector('.private-label').textContent=publicMode?t('publicMode'):t('private','私人会话');document.querySelector('.student-picker').hidden=publicMode;el('profLink').hidden=publicMode;el('profCard').hidden=publicMode;el('profileNav').hidden=publicMode;}
+  function modePresentation(){const publicMode=el('mode').value==='public';const hidden=publicMode||edition==='live';document.querySelector('.private-label').textContent=publicMode?t('publicMode'):t('private','私人会话');document.querySelector('.student-picker').hidden=hidden;el('profLink').hidden=hidden;el('profCard').hidden=hidden;el('profileNav').hidden=hidden;}
+  function editionPresentation(){
+    // live edition (D-068): the stage, chat/voice, memory and diagnostics stay; classroom UI does not.
+    // modePresentation() runs after this and re-applies public-mode hiding for the shared controls.
+    const classroom=edition!=='live';
+    document.querySelector('.lesson-card').hidden=!classroom;
+    el('courses').hidden=!classroom;
+    el('board').hidden=!classroom;
+    el('board').classList.toggle('on',classroom);
+    if(!classroom){el('exerciseCard').hidden=true;el('profCard').hidden=true;if(!el('uid').value)el('uid').value='live-guest';}
+  }
+  function studentsRequired(){return el('mode').value!=='public'&&edition!=='live';}
   function setEdition(next,initial=false) {
     edition=next; document.documentElement.dataset.edition=next; document.documentElement.lang=next==='university'?'en':'zh-CN';
     el('edition').value=next; el('edition').setAttribute('aria-label',t('experience','学习体验')); storage.set('liveAgent.edition',next);
     const pageURL=new URL(location.href);pageURL.searchParams.set('edition',next);history.replaceState(null,'',pageURL);
-    document.title=next==='university'?'YāLearn · Live classroom':'芽学 · 私人课堂';
+    document.title=next==='university'?'YāLearn · Live classroom':next==='live'?'LIVE AGENT · 实时直播数字人':'芽学 · 私人课堂';
     document.querySelectorAll('[data-i18n]').forEach(node=>node.textContent=t(node.dataset.i18n, originals.get(node)));
     document.querySelectorAll('[data-i18n-aria]').forEach(node=>node.setAttribute('aria-label',t(node.dataset.i18nAria,originalAttributes.get(node))));
     document.querySelectorAll('[data-i18n-placeholder]').forEach(node=>node.placeholder=t(node.dataset.i18nPlaceholder,next==='university'?'':node.dataset.i18nPlaceholder==='notesPlaceholder'?'一个新思路，一句还想追问的话…':'搜索一个知识点…'));
-    const copy={primary:['今天也来发现一点新知识','你好，小小探索家！','想知道为什么？带着你的问题，和 AI 老师一起找答案。'],secondary:['给好奇心一点空间','今天，想弄懂什么？','从一个问题开始。和 AI 老师一起，把复杂的知识慢慢理清。'],university:['MAKE ROOM FOR A NEW IDEA','What will you understand today?','A focused space to ask, explore, and work through an idea at your own pace.']}[next];
+    const copy={primary:['今天也来发现一点新知识','你好，小小探索家！','想知道为什么？带着你的问题，和 AI 老师一起找答案。'],secondary:['给好奇心一点空间','今天，想弄懂什么？','从一个问题开始。和 AI 老师一起，把复杂的知识慢慢理清。'],university:['MAKE ROOM FOR A NEW IDEA','What will you understand today?','A focused space to ask, explore, and work through an idea at your own pace.'],live:['REAL-TIME LIVE AGENT','和主播聊聊吧','实时生成的直播数字人：能听、能说、能记住你说过的话。']}[next];
     ['welcomeEyebrow','welcomeTitle','welcomeDescription'].forEach((id,i)=>el(id).textContent=copy[i]);
-    el('sidebarNote').textContent=next==='university'?'A good question is a good beginning.':'每一个好问题，都是进步的开始。';
-    el('gentleMessage').textContent=next==='university'?'Understanding takes time. Turn uncertainty into your next question.':next==='primary'?'还不会，也没关系。再问一个问题，我们一起想。':'不用一次就会。把不懂的地方，变成下一个问题。';
-    el('text').placeholder=next==='university'?'Write your question here…':next==='primary'?'老师，我想问…':'把你的问题写在这里…';
+    el('sidebarNote').textContent=next==='university'?'A good question is a good beginning.':next==='live'?'聊点什么都可以，主播会记住你。':'每一个好问题，都是进步的开始。';
+    el('gentleMessage').textContent=next==='university'?'Understanding takes time. Turn uncertainty into your next question.':next==='primary'?'还不会，也没关系。再问一个问题，我们一起想。':next==='live'?'想聊什么就说什么，主播随时在听。':'不用一次就会。把不懂的地方，变成下一个问题。';
+    el('text').placeholder=next==='university'?'Write your question here…':next==='primary'?'老师，我想问…':next==='live'?'和主播聊聊…':'把你的问题写在这里…';
     el('lessonTopic').placeholder=next==='primary'?'例如：分数是什么':next==='university'?'A topic or question to explore…':'例如：一次函数';
     el('mode').options[0].textContent=t('classroom','私人课堂');el('mode').options[1].textContent=t('publicMode','测试直播 · 不读取档案');
-    if(connection==='disconnected'){el('conn').textContent=t('idle','待开始');el('overlay').textContent=next==='university'?'Your classroom is ready.\nEnter to meet your AI tutor.':next==='primary'?'小课堂准备好啦！\n点「进入课堂」和老师见面吧。':'课堂准备好了\n点击「进入课堂」与老师见面';}
-    if(!status)el('title').textContent=next==='university'?'AI learning companion':'AI 学习伙伴';
-    populateGrades(!initial);renderSubjects();renderCourses();updateService();updateRuntime();modePresentation();links();for(const option of el('sid').options){const student=students.find(s=>s.id===option.value);if(student)option.textContent=(student.name||student.id)+(student.id==='demo'?' · '+t('savedExample'):'');}
+    if(connection==='disconnected'){el('conn').textContent=t('idle','待开始');el('overlay').textContent=next==='university'?'Your classroom is ready.\nEnter to meet your AI tutor.':next==='primary'?'小课堂准备好啦！\n点「进入课堂」和老师见面吧。':next==='live'?'直播间准备好了\n点击「进入直播」和主播见面':'课堂准备好了\n点击「进入课堂」与老师见面';}
+    if(!status)el('title').textContent=next==='university'?'AI learning companion':next==='live'?'AI 直播数字人':'AI 学习伙伴';
+    populateGrades(!initial);renderSubjects();renderCourses();updateService();updateRuntime();editionPresentation();modePresentation();links();for(const option of el('sid').options){const student=students.find(s=>s.id===option.value);if(student)option.textContent=(student.name||student.id)+(student.id==='demo'?' · '+t('savedExample'):'');}
     if(selectedProfile&&typeof window.showProfile==='function') window.showProfile(selectedProfile);
     if(lessonMessage)setLessonStatus(lessonMessage.key,lessonMessage.suffix);else if(selectedTopic)setTopicStatus(selectedTopic);setFeedback(feedbackKey);setNoteStatus(noteStatusKey);el('sessionHint').textContent=t(sessionHintKey,originals.get(el('sessionHint')));if(recentExercise)renderExercise(recentExercise);
     if(typeof window.setChips==='function'&&!recentExercise)window.setChips(examples(),connection==='ready');window.LiveAgentMedia?.refreshLanguage?.();
@@ -93,7 +107,7 @@
   async function requestJson(path){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),15000);try{return await window.LiveAgentAPI.fetchJson(path,{signal:controller.signal});}finally{clearTimeout(timer);}}
   async function loadCatalogue(){catalogueFailed=false;el('catalogueRetry').hidden=true;try{const data=await requestJson('/api/curriculum/topics');topics=(data.topics||[]).filter(x=>typeof x.subject==='string'&&!!x.subject.trim()&&typeof x.topic==='string'&&!!x.topic.trim()&&Number.isInteger(x.grade)&&x.grade>=1&&x.grade<=12).map(x=>({...x,topic:x.topic.trim(),basis:String(x.basis||'')}));const order=['数学','英语','语文','物理','化学','生物','历史','地理'];topics.sort((a,b)=>(order.indexOf(a.subject)<0?99:order.indexOf(a.subject))-(order.indexOf(b.subject)<0?99:order.indexOf(b.subject))||a.grade-b.grade);}catch{catalogueFailed=true;topics=[];}renderSubjects();renderCourses();}
   function updateService(){el('serviceStatus').textContent=t(serviceReady?'ready':'unavailable');el('serviceDot').className=serviceReady?'ready':'error';}
-  function updateRuntime(){const messages=[];if(edition==='university')messages.push(t('languageNotice'));if((status?.generator||healthInfo?.generator)==='mock')messages.push(edition==='university'?'Video preview: the teacher video is a placeholder. Teaching availability is shown after connecting.':'视频演示：当前为占位画面，教学功能会在连接后确认。');if(status?.responder==='rules')messages.push(t('rulesLesson'));if(status&&!status.board)messages.push(t('noTeacher'));el('runtimeNotice').textContent=messages.join(' ');el('runtimeNotice').hidden=!messages.length;}
+  function updateRuntime(){const messages=[];if(edition==='university')messages.push(t('languageNotice'));if((status?.generator||healthInfo?.generator)==='mock')messages.push(edition==='university'?'Video preview: the teacher video is a placeholder. Teaching availability is shown after connecting.':'视频演示：当前为占位画面，教学功能会在连接后确认。');if(status?.responder==='rules'&&edition!=='live')messages.push(t('rulesLesson'));if(status&&!status.board&&edition!=='live')messages.push(t('noTeacher'));el('runtimeNotice').textContent=messages.join(' ');el('runtimeNotice').hidden=!messages.length;} // live edition: no board and a rules responder are by design, not warnings
   function updateLessonActions(){const allowed=serviceReady&&connection==='ready'&&status?.board&&status.responder!=='rules',busy=!!recentExercise||!!pendingActivity;el('startLesson').disabled=!allowed||!el('lessonTopic').value.trim()||busy;el('practice').disabled=connection!=='ready'||!status?.board||status?.responder==='rules'||busy;}
   function sessionChanged(state,detail={}){
     connection=state;status=state==='ready'?detail.status:state==='connecting'?null:status;
@@ -101,11 +115,12 @@
     if(state==='error'){resetLearningState();setLessonStatus('serviceFailed');pendingLesson=null;el('connectionError').hidden=false;el('connectionErrorText').textContent=detail.message||t('serviceFailed');}
     if(state==='disconnected'){resetLearningState();pendingLesson=null;recentExercise=null;el('exerciseCard').hidden=true;setLessonStatus('ended');}
     sessionHintKey=state==='ready'?'readyHint':state==='connecting'?'connecting':state==='disconnected'?'ended':'serviceFailed';el('sessionHint').textContent=t(sessionHintKey);
-    if(state!=='connecting'&&state!=='ready')el('connect').disabled=!serviceReady||(el('mode').value!=='public'&&!studentsReady);
+    if(state!=='connecting'&&state!=='ready')el('connect').disabled=!serviceReady||(studentsRequired()&&!studentsReady);
     updateLessonActions();updateRuntime();
   }
   function profileDisclaimer(p){el('profileDisclaimer').textContent=!p?'':p.id==='demo'?t('demoProfile'):t('profileEvidence');}
   async function selectProfile(){
+    if(edition==='live'){selectedProfile=null;loadingProfile=false;window.showProfile?.(null);profileDisclaimer(null);loadNotes();return;} // no learner profiles on a live persona
     const request=++profileRequest;const id=el('sid').value;const nextLearner=el('mode').value==='public'?null:id;if(visibleLearner!==null&&visibleLearner!==nextLearner)clearLearningScope();visibleLearner=nextLearner;selectedProfile=null;window.showProfile?.(null);profileDisclaimer(null);if(el('mode').value==='public'){selectedProfile=null;loadingProfile=false;window.showProfile?.(null);profileDisclaimer(null);loadNotes();return;}loadingProfile=true;el('prof').textContent=edition==='university'?'Loading this learner’s profile…':'正在加载这个学习档案…';links();storage.set('liveAgent.student',id);el('uid').value='learner:'+id;loadNotes();
     try{const p=await requestJson('/api/students/'+encodeURIComponent(id));if(request!==profileRequest)return;selectedProfile=p;window.showProfile?.(p);profileDisclaimer(p);}
     catch{if(request!==profileRequest)return;selectedProfile=null;window.showProfile?.(null);el('prof').textContent=t('profileLoadFailed');el('profileDisclaimer').textContent='';}
@@ -113,18 +128,19 @@
   }
   async function bootstrap(){
     const attempt=++bootstrapAttempt;el('connectionRetry').disabled=true;
-    const results=await Promise.allSettled([requestJson('/api/health'),el('mode').value==='public'?Promise.resolve({students:[]}):requestJson('/api/students')]);
+    const results=await Promise.allSettled([requestJson('/api/health'),studentsRequired()?requestJson('/api/students'):Promise.resolve({students:[]})]);
     if(attempt!==bootstrapAttempt)return;el('connectionRetry').disabled=false;
     serviceReady=results[0].status==='fulfilled';healthInfo=serviceReady?results[0].value:null;studentsReady=results[1].status==='fulfilled'&&Array.isArray(results[1].value.students)&&results[1].value.students.length>0;
     el('sid').replaceChildren();
     students=studentsReady?results[1].value.students:[];
     if(studentsReady){for(const student of students){const option=document.createElement('option');option.value=student.id;option.textContent=(student.name||student.id)+(student.id==='demo'?' · '+t('savedExample'):'');el('sid').append(option);}const preferred=new URLSearchParams(location.search).get('student')||storage.get('liveAgent.student');if([...el('sid').options].some(o=>o.value===preferred))el('sid').value=preferred;el('sid').disabled=connection==='ready'||connection==='connecting';await selectProfile();}
     else{const option=document.createElement('option');option.value='';option.textContent=t('noProfiles');el('sid').append(option);el('sid').disabled=true;}
-    if(connection!=='ready'&&connection!=='connecting')el('connect').disabled=!serviceReady||(el('mode').value!=='public'&&!studentsReady);
+    if(connection!=='ready'&&connection!=='connecting')el('connect').disabled=!serviceReady||(studentsRequired()&&!studentsReady);
     updateService();updateLessonActions();updateRuntime();
-    if(!serviceReady||(el('mode').value!=='public'&&!studentsReady)){el('connectionError').hidden=false;el('connectionErrorText').textContent=t(!serviceReady?'serviceFailed':'studentsFailed');}
+    if(!serviceReady||(studentsRequired()&&!studentsReady)){el('connectionError').hidden=false;el('connectionErrorText').textContent=t(!serviceReady?'serviceFailed':'studentsFailed');}
     else{el('connectionError').hidden=true;}
-    if(el('mode').value==='public')loadNotes();loadCatalogue();
+    if(!studentsRequired())loadNotes();
+    if(edition!=='live')loadCatalogue(); // a live persona has no topic catalogue (D-068)
   }
   function requestLesson(){
     const topic=el('lessonTopic').value.trim();if(!topic){setLessonStatus('selectGoal');el('lessonTopic').focus();return;}
@@ -133,7 +149,13 @@
     if(connection==='ready'){if(sendActivity('lesson',prompt,chosen)){el('stepLearn').classList.add('current');}}
     else{pendingLesson={text:prompt,context:chosen};setLessonStatus('lessonWaiting');el('connect').click();}
   }
-  function renderExercise(ex){const announcement=el('exerciseAnnouncement');const spoken=ex?[t('yourTurn','轮到你啦'),ex.question||ex.concept,...(ex.option_texts||[])].join(' '):'';if(announcement.textContent!==spoken)announcement.textContent=spoken;recentExercise=ex||null;el('exerciseCard').hidden=!ex&&!el('exerciseFeedback').textContent;if(ex){const question=ex.question||ex.concept;el('exerciseQuestion').textContent=[question,...(ex.option_texts||[])].join('\n');el('suggestionLabel').textContent=t('exercisePending');el('stepPractice').classList.add('current');}else el('suggestionLabel').textContent=t('tryAsk',originals.get(el('suggestionLabel')));updateLessonActions();}
+  function renderExercise(ex){const announcement=el('exerciseAnnouncement');const spoken=ex?[t('yourTurn','轮到你啦'),ex.question||ex.concept,...(ex.option_texts||[])].join(' '):'';if(announcement.textContent!==spoken)announcement.textContent=spoken;recentExercise=ex||null;el('exerciseCard').hidden=!ex&&!el('exerciseFeedback').textContent;if(ex){const question=ex.question||ex.concept;if(window.LiveAgentMedia?.renderExerciseQuestion)window.LiveAgentMedia.renderExerciseQuestion(el('exerciseQuestion'),ex);else el('exerciseQuestion').textContent=[question,...(ex.option_texts||[])].join('\n');el('suggestionLabel').textContent=t('exercisePending');el('stepPractice').classList.add('current');}else el('suggestionLabel').textContent=t('tryAsk',originals.get(el('suggestionLabel')));updateLessonActions();}
+  function failActivity(requestId){
+    if(!pendingActivity || requestId!==pendingActivity.requestId)return;
+    const kind=pendingActivity.kind;
+    pendingActivity=null;currentActivityId=null;latestSubmissionId=null;allowUnownedActivity=false;
+    setLessonStatus(kind==='exercise'?'exerciseFailed':'lessonFailed');updateLessonActions();
+  }
   function onLessonEvent(event) {
     const message = event.detail, data = message.data || {};
     if (message.event === 'utterance_end' && (Object.hasOwn(data, 'decision') || data.applied === false)) {
@@ -156,8 +178,7 @@
       }
     }
     if (message.event === 'error' && pendingActivity && data.request_id === pendingActivity.requestId) {
-      pendingActivity = null; currentActivityId = null; latestSubmissionId = null; allowUnownedActivity = false;
-      setLessonStatus('lessonFailed'); updateLessonActions();
+      failActivity(data.request_id);
     }
     if (message.event !== 'lesson') return;
     // A visible question keeps its owner while an answer is graded. Only an actual
@@ -209,7 +230,7 @@
   function loadNotes(){noteKey='liveAgent.notes.'+(el('mode').value==='public'?'public':encodeURIComponent(el('sid').value||'unselected'));el('notes').value=storage.get(noteKey)||'';setNoteStatus('localOnly');}
   function download(contents,name){if(!contents.trim()){setNoteStatus('emptyExport');return;}const url=URL.createObjectURL(new Blob([contents],{type:'text/plain;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
   el('edition').onchange=()=>setEdition(el('edition').value);
-  el('sid').onchange=selectProfile;el('mode').onchange=()=>{profileRequest++;selectedProfile=null;loadingProfile=false;clearLearningScope();el('uid').value=el('mode').value==='public'?'public-preview':'learner:'+el('sid').value;modePresentation();links();selectProfile();renderCourses();updateLessonActions();el('connect').disabled=!serviceReady||(el('mode').value!=='public'&&!studentsReady);el('connectionError').hidden=serviceReady&&(el('mode').value==='public'||studentsReady);if(el('mode').value!=='public'&&!studentsReady)bootstrap();window.layoutStage?.();};el('lessonTopic').oninput=()=>{selectedTopic=null;setLessonStatus('customTopic');updateLessonActions();};el('startLesson').onclick=requestLesson;
+  el('sid').onchange=selectProfile;el('mode').onchange=()=>{profileRequest++;selectedProfile=null;loadingProfile=false;clearLearningScope();el('uid').value=el('mode').value==='public'?'public-preview':edition==='live'?'live-guest':'learner:'+el('sid').value;modePresentation();links();selectProfile();renderCourses();updateLessonActions();el('connect').disabled=!serviceReady||(studentsRequired()&&!studentsReady);el('connectionError').hidden=serviceReady&&(!studentsRequired()||studentsReady);if(studentsRequired()&&!studentsReady)bootstrap();window.layoutStage?.();};el('lessonTopic').oninput=()=>{selectedTopic=null;setLessonStatus('customTopic');updateLessonActions();};el('startLesson').onclick=requestLesson;
   el('practice').onclick=()=>{const topic=el('lessonTopic').value.trim(),chosen=selectedTopic?.topic.trim()===topic?selectedTopic:null;const grade=chosen?(chosen.grade<=6?'小学'+'一二三四五六'[chosen.grade-1]+'年级':(chosen.grade<=9?'初':'高')+'一二三'[(chosen.grade-7)%3]):'';const text=chosen?'给我出道'+grade+chosen.subject+'「'+topic+'」的练习题。':'给我出道'+topic+'练习题';sendActivity('exercise',text,chosen);};
   ['subjectFilter','gradeFilter','courseSearch'].forEach(id=>el(id).addEventListener(id==='courseSearch'?'input':'change',()=>{limit=6;renderCourses();}));
   el('moreCourses').onclick=()=>{limit+=6;renderCourses();};el('catalogueRetry').onclick=loadCatalogue;
@@ -223,5 +244,6 @@
   window.addEventListener('live-agent:profile',event=>{if(loadingProfile&&!event.detail)return;selectedProfile=event.detail;profileDisclaimer(event.detail);});
   window.addEventListener('live-agent:state',event=>{const ex=event.detail.exercise;if(ex?.request_id!=null&&ex.request_id===latestSubmissionId)adoptActivity(ex.request_id,true);if(ex&&!acceptsActivity(ex.request_id))return;renderExercise(ex);});
   window.addEventListener('live-agent:event',onLessonEvent);
+  window.addEventListener('live-agent:input-error',event=>failActivity(event.detail.request_id));
   window.addEventListener('DOMContentLoaded',()=>{setEdition(edition,true);bootstrap();});
 })();

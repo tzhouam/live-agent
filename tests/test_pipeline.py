@@ -393,3 +393,53 @@ def test_a_holding_generator_is_not_left_waiting_for_a_slow_reply():
     assert any("wave" in (e.data.get("action") or "") for e in after)  # the reply comes next
     before_free, _ = _slow_reply_run(holds=False)  # a generator that keeps playing: waiting for the reply is free
     assert not before_free
+
+
+def _ready_switch_lock(blocked=None):
+    orch, _ = build(max_requests=3)
+    orch.next_lock = 1
+    orch.sched.lock_time = lambda k: now() + 60  # a filler has a distant playback deadline
+    orch.director.apply(Utterance('ready', 'user', '你好', now()),
+                        {'relation': 'chat', 'kind': 'chat', 'steps': [{'intent': '', 'line': '你好呀。'}]})
+    orch._switch_pending, orch._switch_target = True, None
+    orch._switch_plan = orch.director.plan_version
+    orch._decisions, orch._decisions_at_interrupt = 1, 0
+    if blocked == 'holding': orch.cfg.generator_holds = True
+    if blocked == 'undecided': orch._decisions = 0
+    if blocked == 'target': orch._switch_target = 0
+    if blocked == 'erasure': orch._ready.clear()
+    if blocked == 'barge': orch._barge_gate.clear()
+    submitted = []
+    submitted_event = asyncio.Event()
+    async def submit(k, prompt):
+        submitted.append((k, prompt))
+        submitted_event.set()
+    orch.gen.submit = submit
+    async def main():
+        task = asyncio.create_task(orch._lock_loop())
+        try:
+            if blocked:
+                await asyncio.sleep(.08)
+                assert not submitted and not events(orch, EventType.LOCK)
+            else:
+                await asyncio.wait_for(submitted_event.wait(), timeout=1)
+                await asyncio.sleep(.08)
+                assert not task.done() and len(submitted) == 1  # subsequent locks return to JIT pacing
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(main())
+    return orch, submitted
+
+
+def test_ready_soft_switch_bypasses_filler_deadline_once():
+    orch, submitted = _ready_switch_lock()
+    assert len(submitted) == 1 and submitted[0][0] == 1
+    assert extract_dialogue(submitted[0][1]) == '你好呀。'
+    assert orch._switch_target == 1
+    assert events(orch, EventType.LOCK)[0].data['lock_reason'] == 'ready_soft_switch'
+
+
+@pytest.mark.parametrize('blocked', ['holding', 'undecided', 'target', 'erasure', 'barge'])
+def test_ready_soft_switch_preserves_generation_and_input_gates(blocked):
+    _ready_switch_lock(blocked)

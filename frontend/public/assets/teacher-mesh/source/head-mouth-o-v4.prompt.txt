@@ -1,0 +1,3 @@
+Use case: identity-preserve.
+Asset type: EXACTLY registered speaking O state of the input VTuber head.
+Edit the supplied image in place: change ONLY the mouth and immediately adjacent lips to a small rounded open speaking mouth for the vowel OH, a relaxed conversational opening with natural lips and warm dark interior. Keep eyes open exactly as input. Keep the whole head, face proportions, nose, cheeks, jaw, ears, glasses, hair, ponytail, gold pin, neck, colors, lighting, canvas framing and transparent background unchanged. Do not shift, rotate, resize, crop or reinterpret the head. Preserve identical canvas and complete composition. Every pixel outside the immediate mouth opening should match input. Genuine alpha transparency preserved. No objects or text.

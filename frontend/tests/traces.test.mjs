@@ -72,6 +72,33 @@ test("generated-only files are not presented as a classroom replay", async () =>
   assert.equal(nodes.some(node => node.textContent === "Generated material may include content that was never shown in the session."),true);
 });
 
+test("browser avatar sessions clearly label server fallback video while preserving grouping and recording parts", async () => {
+  const page=library({edition:"university"});
+  await page.respond([session([
+    {label:"presented part10",url:"/traces/file/sess-test-part10.mp4",visual_source:"server_video_fallback"},
+    {label:"presented",url:"/traces/file/sess-test.mp4",visual_source:"server_video_fallback"},
+    {label:"generated part2",url:"/traces/file/sess-test.generated-part2.mp4",visual_source:"server_video_fallback"},
+  ])]);
+  const nodes=descendants(page.get("sessions")),video=nodes.find(node=>node.tagName==="video");
+  assert.equal(video.src,"/traces/file/sess-test.mp4");
+  assert.match(video["aria-label"],/fallback avatar/);
+  assert.ok(nodes.some(node=>node.textContent==="Server fallback video"));
+  assert.ok(nodes.some(node=>node.textContent?.includes("movements are not recorded")));
+  const downloads=nodes.filter(node=>node.tagName==="a");
+  assert.equal(downloads.find(node=>node.textContent==="Download fallback video").href,"/traces/file/sess-test.mp4");
+  assert.equal(downloads.find(node=>node.textContent==="Fallback video · Part 10").href,"/traces/file/sess-test-part10.mp4");
+  assert.equal(downloads.find(node=>node.textContent==="Generated fallback material · Part 2").href,"/traces/file/sess-test.generated-part2.mp4");
+});
+
+test("fallback recording labels explain the missing browser appearance in Chinese too", async () => {
+  const page=library({edition:"secondary"});
+  await page.respond([session([{label:"presented",url:"/traces/file/sess-test.mp4",visual_source:"server_video_fallback"}])]);
+  const nodes=descendants(page.get("sessions"));
+  assert.ok(nodes.some(node=>node.textContent==="备用老师视频"));
+  assert.ok(nodes.some(node=>node.textContent?.includes("其外观与动作没有录入这份视频")));
+  assert.ok(nodes.some(node=>node.textContent==="下载备用视频"));
+});
+
 test("failed fetch exposes an actionable error and re-enables refresh", async () => {
   const page = library({edition:"university"});
   page.requests[0].reject(new Error("offline"));

@@ -24,6 +24,7 @@ from live_agent.ledger import StateLedger
 from live_agent.orchestrator import CorrectionMode, Orchestrator, OrchestratorConfig
 from live_agent.timeline import EventLog, LockScheduler, SchedulerConfig
 from live_agent.types import EventType, Utterance, new_id, now
+from live_agent.backend.avatar import configure_manifest as configure_avatar_manifest, negotiated as negotiate_avatar
 from live_agent.backend.config import BOARD_IMAGES, CURRICULUM, STUDENT_SEEDS, parse_args
 from live_agent.backend.resources import register_resources
 from live_agent.backend.runtime import llm_api_key, make_generator, make_memory
@@ -65,8 +66,14 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
     cfg_dir = Path(args.config)
     canon = json.loads((cfg_dir / "canon.json").read_text(encoding="utf-8"))
+    # D-068: classroom features (curriculum, lessons, boards, exercises, learner profiles, attention
+    # checks) belong to personas that declare a board. A persona without one (e.g. the hanfu reading
+    # host) is a plain live agent: its backend serves no teaching endpoints and attaches no learner.
+    teaching = bool(canon.get("board"))
 
     app.state.shared_gen = None
+    app.state.chat_llm = None
+    app.state.vision_llm = None
     app.state.session_lock = asyncio.Lock()
     from live_agent.student import ProfileStore
 
@@ -75,39 +82,42 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                             [x for x in (args.students or args.student).split(",")
                              if re.fullmatch(r"[A-Za-z0-9_-]{1,32}", x)])
     app.state.profiles = profiles
-    from live_agent.curriculum import Curriculum
 
-    curriculum = Curriculum.load(CURRICULUM)  # course knowledge base (empty if not present)
-    app.state.curriculum = curriculum
+    curriculum = None
+    if teaching:
+        from live_agent.curriculum import Curriculum
 
-    @app.get("/api/curriculum")
-    async def curriculum_summary() -> dict:
-        return curriculum.summary()
+        curriculum = Curriculum.load(CURRICULUM)  # course knowledge base (empty if not present)
+        app.state.curriculum = curriculum
 
-    @app.get("/api/curriculum/topics")
-    async def curriculum_topics() -> dict:
-        topics = []
-        for subject in curriculum.subjects:
-            name = subject.get("subject")
-            entries = subject.get("grade_topics")
-            if not isinstance(name, str) or not isinstance(entries, dict):
-                continue
-            for grade_text, entry in entries.items():
-                if not re.fullmatch(r"[0-9]{1,2}", str(grade_text)) or not 1 <= int(grade_text) <= 12 or not isinstance(entry, dict):
+        @app.get("/api/curriculum")
+        async def curriculum_summary() -> dict:
+            return curriculum.summary()
+
+        @app.get("/api/curriculum/topics")
+        async def curriculum_topics() -> dict:
+            topics = []
+            for subject in curriculum.subjects:
+                name = subject.get("subject")
+                entries = subject.get("grade_topics")
+                if not isinstance(name, str) or not isinstance(entries, dict):
                     continue
-                values = entry.get("topics")
-                if not isinstance(values, list):
-                    continue
-                for topic in values:
-                    if not isinstance(topic, str) or not topic.strip():
+                for grade_text, entry in entries.items():
+                    if not re.fullmatch(r"[0-9]{1,2}", str(grade_text)) or not 1 <= int(grade_text) <= 12 or not isinstance(entry, dict):
                         continue
-                    basis = entry.get("basis")
-                    item = {"subject": name, "grade": int(grade_text), "topic": topic.strip(),
-                            "basis": basis if isinstance(basis, str) else ""}
-                    if isinstance(entry.get("source"), str):
-                        item["source"] = entry["source"]
-                    topics.append(item)
-        return {"topics": topics}
+                    values = entry.get("topics")
+                    if not isinstance(values, list):
+                        continue
+                    for topic in values:
+                        if not isinstance(topic, str) or not topic.strip():
+                            continue
+                        basis = entry.get("basis")
+                        item = {"subject": name, "grade": int(grade_text), "topic": topic.strip(),
+                                "basis": basis if isinstance(basis, str) else ""}
+                        if isinstance(entry.get("source"), str):
+                            item["source"] = entry["source"]
+                        topics.append(item)
+            return {"topics": topics}
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -119,8 +129,17 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 log.info("finalised %d interrupted recording(s): %s", len(fixed), ", ".join(fixed))
         from live_agent.llm import OpenAICompatLLM, make_chat_llm
 
+        warmups = []
         if args.llm_url != "scripted":
-            await make_chat_llm(args.llm_url, args.llm_model, api_key=llm_api_key(args)).warmup()  # SDK lazy imports
+            app.state.chat_llm = make_chat_llm(args.llm_url, args.llm_model, api_key=llm_api_key(args))
+            warmups.append(app.state.chat_llm.warmup())
+        if args.vlm_url and args.vlm_url != "mock":
+            hosted = not args.vlm_url.startswith(("http://127.", "http://localhost"))
+            app.state.vision_llm = OpenAICompatLLM(args.vlm_url, args.vlm_model,
+                                                 api_key=llm_api_key(args) if hosted else "EMPTY", timeout_s=60.0)
+            warmups.append(app.state.vision_llm.warmup())
+        # Both SDK paths must finish lazy resource imports before any session starts streaming.
+        await asyncio.gather(*warmups)
         # Heavy generators are started once and shared (reset per session); the mock and the CPU
         # puppet are per session (trivial start-up, no worker processes).
         if args.generator not in ("mock", "puppet"):
@@ -134,10 +153,14 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
-        if app.state.shared_gen is not None:
-            await app.state.shared_gen.close()
+        try:
+            if app.state.shared_gen is not None:
+                await app.state.shared_gen.close()
+        finally:
+            await asyncio.gather(*(model.close() for model in (app.state.chat_llm, app.state.vision_llm)
+                                   if model is not None))
 
-    register_resources(app, args, profiles)
+    register_resources(app, args, profiles, teaching=teaching)
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
@@ -149,7 +172,9 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         if record_path is not None:
             record_path.parent.mkdir(parents=True, exist_ok=True)
         codec = "h264" if args.video_codec == "auto" and "h264" in (hello.get("video_codecs") or []) else "jpeg"
-        transport = WSTransport(ws, record_path, video_codec=codec)
+        mesh_avatar = negotiate_avatar(hello, generator=args.generator, teacher=teaching and args.director_mode == "closed_loop")
+        transport = WSTransport(ws, record_path, video_codec=codec, avatar_mesh=mesh_avatar,
+                                avatar_video_frames=hello.get("avatar_video_frames") is True)
         shared = app.state.shared_gen is not None
         if shared:
             if app.state.session_lock.locked():
@@ -161,15 +186,15 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         inputs: asyncio.Queue = asyncio.Queue()
         worker = None
         try:
-            from live_agent.llm import OpenAICompatLLM, make_chat_llm
-
             manifest = CapabilityManifest.load(cfg_dir / "capabilities.json")
+            if mesh_avatar:
+                configure_avatar_manifest(manifest)
             if args.llm_url == "scripted":  # CPU-only demo: rule-based responder, no model server
                 from live_agent.llm import RuleResponder
 
                 llm = RuleResponder(manifest)
             else:
-                llm = make_chat_llm(args.llm_url, args.llm_model, api_key=llm_api_key(args))
+                llm = app.state.chat_llm
             if args.dev_allow_uncalibrated:
                 manifest.min_status = Status.DOCUMENTED
             ledger = StateLedger.from_config(cfg_dir / "canon.json")
@@ -180,7 +205,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                 listen_intent=intents.get("listen", "listen"),
                                 speak_intent=intents.get("speak"),
                                 responder_style=canon.get("responder_style", ""),
-                                responder_examples=canon.get("responder_examples"))
+                                responder_examples=canon.get("responder_examples"),
+                                teaching_review=args.answer_self_check and teaching)
             director.present_intent = intents.get("present")  # gesture toward the page's board
             generator = SessionView(app.state.shared_gen) if shared else make_generator(args)
             sched = LockScheduler(SchedulerConfig(request_s=generator.info.request_seconds,
@@ -195,10 +221,7 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             elif args.vlm_url:
                 from live_agent.qc.judge import VLMJudge
 
-                hosted = not args.vlm_url.startswith(("http://127.", "http://localhost"))
-                judge = VLMJudge(OpenAICompatLLM(args.vlm_url, args.vlm_model,
-                                                 api_key=llm_api_key(args) if hosted else "EMPTY", timeout_s=60.0),
-                                 k=8, contrast=True)
+                judge = VLMJudge(app.state.vision_llm, k=8, contrast=True)
             asr = None
             if args.asr_url.startswith("wss://"):  # hosted realtime audio model: user speech only (no per-request
                 from live_agent.asr import HostedRealtimeASR  # speech QC: an API call per 5 s line, ~6 s each)
@@ -221,30 +244,38 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                                        correction_mode=CorrectionMode(args.correction_mode),
                                                        # the demo's vLLM-Omni configs hold for every prompt
                                                        generator_holds=args.generator == "vllm_omni_h3",
-                                                       lesson_self_check=args.lesson_self_check))
+                                                       lesson_self_check=args.lesson_self_check if teaching else "off"))
             transport.orchestrator = orch
             if args.image_url:
                 from live_agent.board_images import ImageMaker
 
                 orch.image_maker = ImageMaker(args.image_url, BOARD_IMAGES)
-            orch.figure_dir = BOARD_IMAGES  # exact plots need no model
-            orch.answer_boards = bool(canon.get("board"))
-            orch.curriculum = curriculum  # a persona with a board writes one for every knowledge answer
+            elif teaching and args.llm_url != "scripted":
+                from live_agent.board_images import LocalDiagramMaker
+
+                orch.image_maker = LocalDiagramMaker(llm, BOARD_IMAGES)
+            orch.figure_dir = BOARD_IMAGES if teaching else None  # exact plots need no model
+            orch.answer_boards = teaching
+            if teaching:
+                orch.curriculum = curriculum  # a persona with a board writes one for every knowledge answer
+            orch.teaching = teaching
             # the page may pick a profile only from the server's allow-list: the demo has one shared access token and no
             # per-student accounts, so the operator decides which profiles this deployment exposes
             allowed = profiles.allowed
             student_id = str(hello.get("student") or args.student)
             if student_id not in allowed:
                 student_id = args.student
-            if mode == "private" and student_id in allowed:
+            if teaching and mode == "private" and student_id in allowed:
                 # personal data: only a private session reads or updates the saved profile (the shared copy)
                 orch.student = profiles.get(student_id)
                 orch.profile_store = profiles
                 if orch.student is not None:
                     profiles.subscribe(student_id, orch.on_profile_edited)
             orch.log.emit(EventType.AUDIT, now(), where="session_start", session_id=session_id,
-                          mode=mode, student_id=orch.student.student_id if orch.student is not None else None)
-            if getattr(judge, "vlm", None) is not None:  # the camera focus check uses the judge's VLM (opt-in)
+                          mode=mode, student_id=orch.student.student_id if orch.student is not None else None,
+                          **({"renderer": "mesh", "avatar_model": "teacher-mesh-v1",
+                              "server_recording_visual_source": "server_video_fallback"} if mesh_avatar else {}))
+            if teaching and getattr(judge, "vlm", None) is not None:  # the camera focus check uses the judge's VLM (opt-in)
                 from live_agent.attention import AttentionMonitor
 
                 orch.attention = AttentionMonitor(judge.vlm)
@@ -288,7 +319,8 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                            "examples": canon.get("examples", []),
                                            "attention": orch.attention is not None,
                                            "board": bool(canon.get("board")),
-                                           "student": orch.student.view() if orch.student is not None else None},
+                                           "student": orch.student.view() if orch.student is not None else None,
+                                           **({"avatar": transport.avatar_status()} if mesh_avatar else {})},
                                           ensure_ascii=False))
 
             async def handle_inputs() -> None:
@@ -296,16 +328,25 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 and barge-in keep being read (and timestamped) while ASR / the LLM run."""
                 while True:
                     kind, payload, t_end, epoch, lesson_context, request_id = await inputs.get()  # epoch stamped at receipt
+                    correlation = {"request_id": request_id} if request_id is not None else {}
+                    stage = "voice" if kind == "audio" else "response"
                     try:
                         if kind == "audio":
                             from live_agent.asr import decode_audio_bytes
 
-                            audio = decode_audio_bytes(payload, 16000)
-                            text = await asr.transcribe(audio, 16000)
-                            correlation = {"request_id": request_id} if request_id is not None else {}
-                            await ws.send_text(json.dumps({"type": "transcript", "text": text, **correlation}))
+                            audio = await asyncio.to_thread(decode_audio_bytes, payload, 16000)
+                            text = (await asr.transcribe(audio, 16000)).strip()
+                            if not text:
+                                recovered = orch.on_input_failed(epoch)
+                                await transport.send_json({"type": "input_error", "code": "voice_empty",
+                                                           "recovered": recovered, "superseded": epoch != orch.input_epoch,
+                                                           **correlation})
+                                continue
+                            if epoch == orch.input_epoch:
+                                await transport.send_json({"type": "transcript", "text": text, **correlation})
                         else:
                             text = payload
+                        stage = "response"
                         if text:
                             # t_end = when the user stopped speaking / sent (client clock, mapped), so
                             # ASR and queueing delay count toward the deadlines (proposal §7)
@@ -315,6 +356,10 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                                                          epoch=epoch)
                     except Exception:  # noqa: BLE001
                         log.exception("input handling failed")
+                        recovered = orch.on_input_failed(epoch)
+                        await transport.send_json({"type": "input_error", "code": f"{stage}_failed",
+                                                   "recovered": recovered, "superseded": epoch != orch.input_epoch,
+                                                   **correlation})
 
             worker = asyncio.create_task(handle_inputs())
             audio_end = now()
@@ -349,6 +394,10 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                 t = data.get("type")
                 if t in ("chunk_start", "chunk_end", "chunk_received"):
                     transport.on_client_message(data)
+                elif t == "avatar_frame":
+                    await transport.on_avatar_frame(data)
+                elif t == "avatar_renderer":
+                    transport.on_avatar_renderer(data)
                 elif t == "speech_start":
                     request_id = data.get("request_id")
                     if "request_id" in data and not _valid_request_id(request_id):
@@ -364,8 +413,9 @@ def build_app(args: argparse.Namespace) -> FastAPI:
                         continue
                     lesson_context = None
                     if "lesson_context" in data:
-                        lesson_context = _validated_lesson_context(curriculum, data["lesson_context"])
-                        if lesson_context is None:
+                        # a live persona has no catalogue: the field is ignored, not an error
+                        lesson_context = _validated_lesson_context(curriculum, data["lesson_context"]) if teaching else None
+                        if teaching and lesson_context is None:
                             await ws.send_json({"type": "error", "error": "invalid catalogue topic selection"})
                             continue
                     # a typed instruction interrupts like speech does (before its LLM work is queued)
